@@ -19,6 +19,17 @@ echo "[1/4] Dumping Postgres ($POSTGRES_DB)..."
 docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   | gzip > "$OUT/postgres.sql.gz"
 
+# Auto-update README "마지막 백업" line so git/local backup snapshots
+# always carry an up-to-date timestamp. (박세훈 룰 — 백업 = README 최신화 필수)
+if [ -f README.md ]; then
+  KST_TS="$(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M:%S KST')"
+  if grep -q '^_마지막 백업:' README.md; then
+    sed -i "s|^_마지막 백업:.*|_마지막 백업: ${KST_TS}_|" README.md
+  else
+    printf '\n---\n\n_마지막 백업: %s_\n' "$KST_TS" >> README.md
+  fi
+fi
+
 echo "[2/4] Copying config + SPEC + project docs..."
 # Secrets and infra config
 cp .env "$OUT/.env"

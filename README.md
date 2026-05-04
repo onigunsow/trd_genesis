@@ -3,7 +3,8 @@
 박세훈 개인 자본 1,000만원 모의 자동 매매 시스템. KIS Open API + Anthropic Claude 5-페르소나 + Static Context + Dynamic Memory.
 
 - **SPEC**: `.moai/specs/SPEC-TRADING-001/spec.md` (M1~M5 본 SPEC, v0.2.0)
-- **SPEC**: `.moai/specs/SPEC-TRADING-007/spec.md` (페르소나 메모리 시스템)
+- **SPEC**: `.moai/specs/SPEC-TRADING-007/spec.md` (페르소나 메모리 시스템 + Static Context)
+- **SPEC**: `.moai/specs/SPEC-TRADING-008/spec.md` (Cost Optimization — Prompt Caching)
 - **프로젝트 컨텍스트**: `.moai/project/{product,structure,tech}.md`
 
 ## 마일스톤 진행 상태
@@ -17,6 +18,7 @@
 - [x] **Phase 2** (정밀화) — 거래 안전성 (거래정지·상하한가·매수가능금액)
 - [x] **Phase 3** (정밀화) — 시스템 에러 알림 + 누적 손익 + 분할 매매 룰 + gitleaks + 백업 무결성
 - [x] **Phase 4** (정밀화) — SPEC-007: Static Context (.md cron) + Dynamic Memory (페르소나 자가 관리)
+- [x] **Phase A** (비용 절감) — SPEC-008: Anthropic Prompt Caching (`cache_control: ephemeral`) + 메모리 user_msg 분리 + `persona_runs.cache_*` 컬럼 + 일일 리포트 캐시 적중률
 - [ ] **M6** — 실거래 진입 (SPEC-TRADING-002 별도 작성 예정, 모의 3주 검증 후)
 
 ## 페르소나 시스템
@@ -71,7 +73,18 @@
 | 매도 KOSPI (수수료+거래세+농특세) | 0.345% |
 | 매도 KOSDAQ (수수료+거래세) | 0.195% |
 | Round-trip KOSPI | ≈ 0.36% |
-| Anthropic 비용 (M5+ 풀 가동) | 월 ~30~50만원 |
+| Anthropic 비용 (M5+ 풀 가동, 캐시 전) | 월 ~30~50만원 |
+| Anthropic 비용 (Phase A 캐시 적용 후) | 월 ~18~30만원 (≈40% 절감 검증, 1주 운영 후 재산정) |
+
+### SPEC-008 Prompt Caching (Phase A)
+
+- 시스템 프롬프트에 `cache_control: ephemeral` 적용 (TTL 5분)
+- 메모리 블록은 `user_message` 로 분리 → 시스템 해시 안정화 → cache hit 보장
+- `persona_runs` 테이블에 `cache_read_tokens`, `cache_creation_tokens` 컬럼
+- 비용 계산: input 1.0x · cache_creation 1.25x · cache_read 0.10x
+- 일일 리포트에 캐시 적중률 라인 노출 (운영 1주차 검증 게이트: ≥50%)
+- Phase B (Claude Code subprocess 활용) 는 ToS 회색지대 + Max 구독 한도 위험으로 Future Scope 보류
+
 
 ## 운영 명령어
 
@@ -154,3 +167,7 @@ BACKUP_KEEP=7 ./backup.sh                            # retention 일시 변경
 ## 라이선스
 
 Proprietary — 박세훈 개인 자본 운용 시스템. 외부 사용 X.
+
+---
+
+_마지막 백업: 2026-05-04 23:13:47 KST_
