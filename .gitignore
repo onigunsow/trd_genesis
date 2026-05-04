@@ -1,0 +1,42 @@
+# Secrets
+.env
+.env.local
+
+# Data and logs (machine-specific)
+data/
+logs/
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv lockfile is committed (uv.lock); pip equivalents below are not
+pip-log.txt
+
+# Local jupyter
+*.local.ipynb

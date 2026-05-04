@@ -1,0 +1,140 @@
+name: trading
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: Asia/Seoul
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/trading/db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - trading-net
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  app:
+    build: .
+    image: trading-app:latest
+    container_name: trading-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Seoul
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    user: "1000:1000"
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "trading.healthcheck", "--quiet"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - trading-net
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  bot:
+    image: trading-app:latest
+    container_name: trading-bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      app:
+        condition: service_started
+    environment:
+      TZ: Asia/Seoul
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    user: "1000:1000"
+    command: ["trading", "bot"]
+    networks:
+      - trading-net
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  scheduler:
+    image: trading-app:latest
+    container_name: trading-scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      app:
+        condition: service_started
+    environment:
+      TZ: Asia/Seoul
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    user: "1000:1000"
+    command: ["trading", "scheduler"]
+    networks:
+      - trading-net
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+
+networks:
+  trading-net:
+    driver: bridge

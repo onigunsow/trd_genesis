@@ -1,0 +1,87 @@
+[project]
+name = "trading"
+version = "0.1.0"
+description = "Korean stock 5-persona AI trading system (paper auto-trading, M1~M5)"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "onigunsow" }]
+license = { text = "Proprietary" }
+
+dependencies = [
+    # HTTP / async
+    "httpx>=0.28",
+    "tenacity>=9.0",
+    # Config / validation
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    # Database
+    "psycopg[binary]>=3.2",
+    "sqlalchemy>=2.0",
+    # Logging
+    "structlog>=25.1",
+    # Telegram
+    "python-telegram-bot>=21.10",
+    # Scheduling
+    "apscheduler>=3.11",
+    # Templates (persona prompts)
+    "jinja2>=3.1",
+    # Anthropic (M4)
+    "anthropic>=0.42",
+    # Time + holidays
+    "pytz>=2025.1",
+    "holidays>=0.66",   # 한국 KRX 휴장일 자동 (어린이날/부처님오신날 등) — 토큰 낭비 방지
+    "feedparser>=6.0",  # SPEC-007: RSS 피드 파싱 (Tier 1~4 매크로 뉴스)
+    # M3 data
+    "pykrx>=1.2.8",   # KRX 홈페이지 로그인 필수화 대응 (KRX_ID/KRX_PW env required)
+    "setuptools>=78,<81",   # pykrx imports pkg_resources, removed in setuptools 81+
+    "yfinance>=0.2.55",
+    "pandas>=2.2",
+    "numpy>=2.2",
+    "fredapi>=0.5",
+    # DART OpenAPI consumed via direct httpx (no third-party SDK).
+    # M3 backtest — own vectorised engine (src/trading/backtest/engine.py),
+    # avoiding vectorbt's heavy numba/llvmlite dependency.
+    "matplotlib>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "ipykernel>=6.29",
+]
+
+[project.scripts]
+trading = "trading.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trading"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "PT", "RUF"]
+ignore = ["S101"]  # allow assert in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --cov=trading --cov-report=term-missing"
