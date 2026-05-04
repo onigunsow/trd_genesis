@@ -34,13 +34,38 @@ PRICING_USD_PER_MTOK = {
     "claude-opus-4.7":   (15.0, 75.0),
 }
 
+# SPEC-008 REQ-CACHE-01-* — Anthropic prompt cache pricing multipliers.
+# - cache_creation: input_rate × 1.25 (첫 캐시 작성 시 25% premium)
+# - cache_read:     input_rate × 0.10 (재사용 시 90% 할인)
+CACHE_CREATE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
 
-def _cost_krw(model: str, in_tok: int, out_tok: int) -> float:
+
+def _cost_krw(
+    model: str,
+    in_tok: int,
+    out_tok: int,
+    cache_read: int = 0,
+    cache_create: int = 0,
+) -> float:
+    """Compute KRW cost honoring Anthropic prompt cache pricing.
+
+    Total input rate splits into:
+    - regular input (in_tok - cache_read - cache_create) at full price
+    - cache_create at 1.25x
+    - cache_read at 0.10x
+    """
     pricing = PRICING_USD_PER_MTOK.get(model)
     if not pricing:
         return 0.0
     in_rate, out_rate = pricing
-    usd = (in_tok / 1_000_000) * in_rate + (out_tok / 1_000_000) * out_rate
+    regular_in = max(0, in_tok - cache_read - cache_create)
+    usd = (
+        (regular_in / 1_000_000) * in_rate
+        + (cache_create / 1_000_000) * in_rate * CACHE_CREATE_MULTIPLIER
+        + (cache_read / 1_000_000) * in_rate * CACHE_READ_MULTIPLIER
+        + (out_tok / 1_000_000) * out_rate
+    )
     return usd * KRW_PER_USD
 
 
@@ -93,24 +118,37 @@ def call_persona(
     text = ""
     in_tok = 0
     out_tok = 0
+    cache_read = 0
+    cache_create = 0
     try:
+        # SPEC-008 REQ-CACHE-01-1/2 — Mark long, stable system prompt as cacheable.
+        # Anthropic API expects either a string (no cache) or a list of content blocks
+        # (with optional cache_control on the last block to cache up to that point).
+        system_blocks = [
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+        ]
         msg = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=system_blocks,
             messages=[{"role": "user", "content": user_message}],
         )
         # Concatenate all text blocks
         for blk in msg.content:
             if getattr(blk, "type", "") == "text":
                 text += blk.text
-        in_tok = msg.usage.input_tokens if msg.usage else 0
-        out_tok = msg.usage.output_tokens if msg.usage else 0
+        usage = msg.usage
+        if usage:
+            in_tok = usage.input_tokens
+            out_tok = usage.output_tokens
+            # Optional fields (may be 0/None depending on SDK version)
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
     except Exception as e:  # noqa: BLE001
         error = f"{type(e).__name__}: {e}"
         LOG.exception("persona call failed: %s", persona_name)
     latency_ms = int((time.time() - start) * 1000)
-    cost = _cost_krw(model, in_tok, out_tok)
+    cost = _cost_krw(model, in_tok, out_tok, cache_read=cache_read, cache_create=cache_create)
 
     response_json = None
     if expect_json and text:
@@ -124,8 +162,9 @@ def call_persona(
         INSERT INTO persona_runs
             (persona_name, model, cycle_kind, trigger_context,
              prompt, response, response_json,
-             input_tokens, output_tokens, cost_krw, latency_ms, error)
-        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
+             input_tokens, output_tokens, cost_krw, latency_ms, error,
+             cache_read_tokens, cache_creation_tokens)
+        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """
     with connection() as conn, conn.cursor() as cur:
@@ -142,6 +181,8 @@ def call_persona(
             cost,
             latency_ms,
             error,
+            cache_read,
+            cache_create,
         ))
         row = cur.fetchone()
         run_id = row["id"]

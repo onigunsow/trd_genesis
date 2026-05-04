@@ -80,7 +80,4 @@
 {{ static_news }}
 {% endif %}
 
-{% if memory %}
-[활성 매크로 메모리 (과거 인사이트)]
-{{ memory }}
-{% endif %}
+{# SPEC-008 REQ-CACHE-01-2 — 메모리는 변동성 큰 영역이라 system prompt에서 제외하고 user_message로 분리. 캐시 안정성 확보. #}

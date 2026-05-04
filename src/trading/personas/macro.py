@@ -36,10 +36,17 @@ def latest_cached(max_age_days: int = 7) -> dict[str, Any] | None:
 def run(input_data: dict[str, Any], cycle_kind: str = "weekly"):
     """Invoke the macro persona. input_data fields are passed to the Jinja template."""
     today = input_data.get("today") or date.today().isoformat()
+    # SPEC-008: memory는 system_prompt에서 제외하고 user_msg에 prepend (캐시 안정성).
+    memory_block = input_data.pop("memory", None) if "memory" in input_data else input_data.get("memory")
     system_prompt = render_prompt("macro.jinja", **{**input_data, "today": today})
-    user_msg = (
+
+    user_parts = []
+    if memory_block:
+        user_parts.append(f"[활성 매크로 메모리 (과거 인사이트, 참고용)]\n{memory_block}\n")
+    user_parts.append(
         "위 입력 데이터를 바탕으로 향후 1주 한국 주식시장에 대한 매크로 분석을 JSON으로 제출하세요."
     )
+    user_msg = "\n".join(user_parts)
     return call_persona(
         persona_name=PERSONA,
         model=MODEL,

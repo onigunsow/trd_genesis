@@ -28,7 +28,10 @@ def _gather_today() -> dict[str, Any]:
           FROM orders WHERE ts::date = CURRENT_DATE ORDER BY id
     """
     sql_runs = """
-        SELECT persona_name, COUNT(*) AS n, SUM(cost_krw) AS cost
+        SELECT persona_name, COUNT(*) AS n, SUM(cost_krw) AS cost,
+               SUM(input_tokens) AS in_tok,
+               SUM(cache_read_tokens) AS cache_read,
+               SUM(cache_creation_tokens) AS cache_create
           FROM persona_runs WHERE ts::date = CURRENT_DATE GROUP BY persona_name
     """
     sql_risk = """
@@ -80,6 +83,10 @@ def _fallback_text(data: dict[str, Any]) -> str:
     n_buys = sum(1 for o in orders if o["side"] == "buy")
     n_sells = sum(1 for o in orders if o["side"] == "sell")
     persona_cost_total = sum(float(r.get("cost") or 0) for r in runs)
+    in_tok_total = sum(int(r.get("in_tok") or 0) for r in runs)
+    cache_read_total = sum(int(r.get("cache_read") or 0) for r in runs)
+    cache_create_total = sum(int(r.get("cache_create") or 0) for r in runs)
+    cache_hit_pct = (cache_read_total / in_tok_total * 100) if in_tok_total else 0.0
     risk_str = ", ".join(f"{r['verdict']}={r['n']}" for r in risk) or "—"
 
     exec_fee = int(cost.get("exec_fee_total") or 0)
@@ -94,6 +101,7 @@ def _fallback_text(data: dict[str, Any]) -> str:
         f"매매: 매수 {n_buys} / 매도 {n_sells} (총 {len(orders)}건, 체결 {cost.get('executed_count', 0)}건)\n"
         f"매매 비용 추정: 체결분 {exec_fee:,}원 (시도 합계 {attempted_fee:,}원)\n"
         f"페르소나 비용: {persona_cost_total:,.0f}원\n"
+        f"캐시 적중률: {cache_hit_pct:.1f}% (read {cache_read_total:,} / total {in_tok_total:,} 토큰, SPEC-008)\n"
         f"Risk verdict: {risk_str}\n"
         f"누적 (7D/30D): 매매 {week_orders}/{month_orders}건, 수수료 {week_fee:,}/{month_fee:,}원\n"
         "(Anthropic API 미구성 또는 호출 실패로 LLM 요약 생략)"
