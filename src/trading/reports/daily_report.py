@@ -53,6 +53,23 @@ def _gather_today() -> dict[str, Any]:
             (SELECT COALESCE(SUM(fee), 0) FROM orders WHERE ts >= CURRENT_DATE - INTERVAL '7 days')  AS week_fee,
             (SELECT COALESCE(SUM(fee), 0) FROM orders WHERE ts >= CURRENT_DATE - INTERVAL '30 days') AS month_fee
     """
+    # SPEC-009 REQ-PTOOL-02-9: Tool usage stats
+    sql_tools = """
+        SELECT
+            COUNT(*) AS total_calls,
+            COUNT(*) FILTER (WHERE success = false) AS failures,
+            COUNT(DISTINCT persona_run_id) AS persona_invocations
+          FROM tool_call_log WHERE created_at::date = CURRENT_DATE
+    """
+    # SPEC-009 REQ-REFL-03-7: Reflection stats
+    sql_reflection = """
+        SELECT
+            COUNT(*) AS total_rounds,
+            COUNT(*) FILTER (WHERE final_verdict = 'APPROVE') AS approved,
+            COUNT(*) FILTER (WHERE final_verdict = 'REJECT') AS rejected,
+            COUNT(*) FILTER (WHERE final_verdict = 'WITHDRAWN') AS withdrawn
+          FROM reflection_rounds WHERE created_at::date = CURRENT_DATE
+    """
     with connection() as conn, conn.cursor() as cur:
         cur.execute(sql_orders)
         orders = [dict(r) for r in cur.fetchall()]
@@ -64,6 +81,18 @@ def _gather_today() -> dict[str, Any]:
         cost = dict(cur.fetchone() or {})
         cur.execute(sql_cum)
         cum = dict(cur.fetchone() or {})
+        # Tool stats (graceful if table does not exist yet)
+        try:
+            cur.execute(sql_tools)
+            tool_stats = dict(cur.fetchone() or {})
+        except Exception:  # noqa: BLE001
+            tool_stats = {"total_calls": 0, "failures": 0, "persona_invocations": 0}
+        # Reflection stats (graceful if table does not exist yet)
+        try:
+            cur.execute(sql_reflection)
+            reflection_stats = dict(cur.fetchone() or {})
+        except Exception:  # noqa: BLE001
+            reflection_stats = {"total_rounds": 0, "approved": 0, "rejected": 0, "withdrawn": 0}
     return {
         "today": today.isoformat(),
         "orders": orders,
@@ -71,6 +100,8 @@ def _gather_today() -> dict[str, Any]:
         "risk": risk,
         "cost": cost,
         "cumulative": cum,
+        "tool_stats": tool_stats,
+        "reflection_stats": reflection_stats,
     }
 
 
@@ -80,6 +111,8 @@ def _fallback_text(data: dict[str, Any]) -> str:
     risk = data["risk"]
     cost = data.get("cost") or {}
     cum = data.get("cumulative") or {}
+    tool_stats = data.get("tool_stats") or {}
+    reflection_stats = data.get("reflection_stats") or {}
     n_buys = sum(1 for o in orders if o["side"] == "buy")
     n_sells = sum(1 for o in orders if o["side"] == "sell")
     persona_cost_total = sum(float(r.get("cost") or 0) for r in runs)
@@ -96,6 +129,26 @@ def _fallback_text(data: dict[str, Any]) -> str:
     month_orders = int(cum.get("month_orders") or 0)
     month_fee = int(cum.get("month_fee") or 0)
 
+    # SPEC-009 REQ-PTOOL-02-9: Tool usage summary
+    tool_total = int(tool_stats.get("total_calls") or 0)
+    tool_failures = int(tool_stats.get("failures") or 0)
+    tool_invocations = int(tool_stats.get("persona_invocations") or 0)
+    tool_avg = (tool_total / tool_invocations) if tool_invocations else 0.0
+    tool_line = f"Tool 호출: 총 {tool_total}회, 평균 {tool_avg:.1f}회/페르소나, 실패 {tool_failures}건"
+
+    # SPEC-009 REQ-REFL-03-7: Reflection summary
+    refl_total = int(reflection_stats.get("total_rounds") or 0)
+    refl_approved = int(reflection_stats.get("approved") or 0)
+    refl_rejected = int(reflection_stats.get("rejected") or 0)
+    refl_withdrawn = int(reflection_stats.get("withdrawn") or 0)
+    refl_line = (
+        f"Reflection: 시도 {refl_total}건, 성공(APPROVE) {refl_approved}건, "
+        f"최종 REJECT {refl_rejected}건, 철회 {refl_withdrawn}건"
+    )
+
+    # REQ-NFR-09-4: Observability metrics
+    refl_success_rate = (refl_approved / refl_total * 100) if refl_total else 0.0
+
     return (
         f"[일일 리포트 · {data['today']}]\n"
         f"매매: 매수 {n_buys} / 매도 {n_sells} (총 {len(orders)}건, 체결 {cost.get('executed_count', 0)}건)\n"
@@ -103,6 +156,10 @@ def _fallback_text(data: dict[str, Any]) -> str:
         f"페르소나 비용: {persona_cost_total:,.0f}원\n"
         f"캐시 적중률: {cache_hit_pct:.1f}% (read {cache_read_total:,} / total {in_tok_total:,} 토큰, SPEC-008)\n"
         f"Risk verdict: {risk_str}\n"
+        f"{tool_line}\n"
+        f"{refl_line}\n"
+        f"Observability: tool_calls_total={tool_total}, tool_failures={tool_failures}, "
+        f"reflection_rounds={refl_total}, reflection_success_rate={refl_success_rate:.1f}%\n"
         f"누적 (7D/30D): 매매 {week_orders}/{month_orders}건, 수수료 {week_fee:,}/{month_fee:,}원\n"
         "(Anthropic API 미구성 또는 호출 실패로 LLM 요약 생략)"
     )

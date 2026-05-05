@@ -95,3 +95,8 @@
 [이벤트 트리거 컨텍스트]
 {{ event_trigger }}
 {% endif %}
+
+{# SPEC-009 REQ-PTOOL-02-8 — Tool-use instruction (active when tools provided) #}
+{% if tools is defined and tools %}
+필요한 정보가 있으면 제공된 Tool을 호출하여 조회하세요. 불필요한 정보를 미리 요청하지 말고, 분석에 꼭 필요한 데이터만 능동적으로 가져오세요.
+{% endif %}

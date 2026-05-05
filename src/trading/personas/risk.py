@@ -13,7 +13,20 @@ MODEL = "claude-sonnet-4-6"
 PERSONA = "risk"
 
 
-def run(input_data: dict[str, Any], decision_id: int, cycle_kind: str = "pre_market"):
+def run(
+    input_data: dict[str, Any],
+    decision_id: int,
+    cycle_kind: str = "pre_market",
+    tools: list[dict[str, Any]] | None = None,
+):
+    """Invoke Risk persona.
+
+    Args:
+        input_data: Context data for the persona prompt.
+        decision_id: Reference to persona_decisions row.
+        cycle_kind: Cycle type.
+        tools: Optional tool definitions for tool-calling mode (SPEC-009).
+    """
     today = input_data.get("today") or date.today().isoformat()
     system_prompt = render_prompt("risk.jinja", **{
         **input_data,
@@ -30,6 +43,7 @@ def run(input_data: dict[str, Any], decision_id: int, cycle_kind: str = "pre_mar
         trigger_context={"decision_id": decision_id, "cycle_kind": cycle_kind},
         max_tokens=2000,
         expect_json=True,
+        tools=tools,
     )
 
     verdict = (res.response_json or {}).get("verdict", "HOLD")

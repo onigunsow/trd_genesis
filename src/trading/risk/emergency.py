@@ -8,6 +8,8 @@ Commands honoured (REQ-RISK-05-4):
 - /pnl     print today's PnL (best-effort estimate)
 - /verbose exit silent_mode (REQ-FATIGUE-05-10)
 - /silent  enter silent_mode manually
+- /tool-calling on|off  toggle tool-calling mode (REQ-COMPAT-04-7)
+- /reflection on|off    toggle reflection loop (REQ-COMPAT-04-7)
 - /help    list commands
 """
 
@@ -44,21 +46,54 @@ def handle(text: str, actor: str = "telegram") -> str:
         update_system_state(silent_mode=True, updated_by=actor)
         audit("SILENT_MODE_ON", actor=actor, details={"reason": "manual"})
         return "✓ silent_mode=true. 주요 이벤트만 발송."
+    # SPEC-009 REQ-COMPAT-04-7: Tool-calling and reflection toggle commands
+    if cmd == "/tool-calling":
+        return _handle_tool_calling(text, actor)
+    if cmd == "/reflection":
+        return _handle_reflection(text, actor)
     if cmd in ("/help", "/start"):
         return _help()
     return f"unknown command: {cmd or '(empty)'}\n{_help()}"
 
 
+def _handle_tool_calling(text: str, actor: str) -> str:
+    """Toggle tool-calling feature flag (REQ-COMPAT-04-7)."""
+    parts = text.strip().split()
+    if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+        return "사용법: /tool-calling on|off"
+    enable = parts[1].lower() == "on"
+    update_system_state(tool_calling_enabled=enable, updated_by=actor)
+    event = "TOOL_CALLING_ACTIVATED" if enable else "TOOL_CALLING_DEACTIVATED"
+    audit(event, actor=actor, details={"enabled": enable})
+    status = "활성화" if enable else "비활성화"
+    return f"✓ tool_calling_enabled={enable}. Tool-calling {status}됨."
+
+
+def _handle_reflection(text: str, actor: str) -> str:
+    """Toggle reflection loop feature flag (REQ-COMPAT-04-7)."""
+    parts = text.strip().split()
+    if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+        return "사용법: /reflection on|off"
+    enable = parts[1].lower() == "on"
+    update_system_state(reflection_loop_enabled=enable, updated_by=actor)
+    event = "REFLECTION_LOOP_ACTIVATED" if enable else "REFLECTION_LOOP_DEACTIVATED"
+    audit(event, actor=actor, details={"enabled": enable})
+    status = "활성화" if enable else "비활성화"
+    return f"✓ reflection_loop_enabled={enable}. Reflection Loop {status}됨."
+
+
 def _help() -> str:
     return (
         "사용 가능한 명령어:\n"
-        "/halt    매매 정지 (신규 주문 차단)\n"
-        "/resume  매매 재개\n"
-        "/status  현재 시스템 상태\n"
-        "/pnl     오늘 손익\n"
-        "/verbose 풀 브리핑 모드\n"
-        "/silent  침묵 모드\n"
-        "/help    이 메시지"
+        "/halt          매매 정지 (신규 주문 차단)\n"
+        "/resume        매매 재개\n"
+        "/status        현재 시스템 상태\n"
+        "/pnl           오늘 손익\n"
+        "/verbose       풀 브리핑 모드\n"
+        "/silent        침묵 모드\n"
+        "/tool-calling on|off  Tool-calling 전환\n"
+        "/reflection on|off    Reflection Loop 전환\n"
+        "/help          이 메시지"
     )
 
 

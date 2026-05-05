@@ -1,4 +1,7 @@
-"""Micro persona — Sonnet 4.6, pre-market 07:30 KST + intraday cache reuse."""
+"""Micro persona — Sonnet 4.6, pre-market 07:30 KST + intraday cache reuse.
+
+SPEC-009 REQ-PTOOL-02-4: Supports tool-calling mode for active information retrieval.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,18 @@ MODEL = "claude-sonnet-4-6"
 PERSONA = "micro"
 
 
-def run(input_data: dict[str, Any], cycle_kind: str = "pre_market"):
+def run(
+    input_data: dict[str, Any],
+    cycle_kind: str = "pre_market",
+    tools: list[dict[str, Any]] | None = None,
+):
+    """Invoke Micro persona.
+
+    Args:
+        input_data: Context data for the persona prompt.
+        cycle_kind: Cycle type (pre_market, intraday, etc.).
+        tools: Optional tool definitions for tool-calling mode (SPEC-009).
+    """
     today = input_data.get("today") or date.today().isoformat()
     # SPEC-008: memory를 user_msg로 분리 (캐시 안정성)
     memory_block = input_data.get("memory")
@@ -33,4 +47,5 @@ def run(input_data: dict[str, Any], cycle_kind: str = "pre_market"):
         trigger_context={"input_keys": list(input_data.keys())},
         max_tokens=3000,
         expect_json=True,
+        tools=tools,
     )

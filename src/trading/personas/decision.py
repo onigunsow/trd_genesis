@@ -20,7 +20,17 @@ PERSONA = "decision"
 def run(input_data: dict[str, Any],
         cycle_kind: str = "pre_market",
         macro_run_id: int | None = None,
-        micro_run_id: int | None = None):
+        micro_run_id: int | None = None,
+        tools: list[dict[str, Any]] | None = None):
+    """Invoke Decision persona.
+
+    Args:
+        input_data: Context data for the persona prompt.
+        cycle_kind: Cycle type.
+        macro_run_id: Reference to macro persona run.
+        micro_run_id: Reference to micro persona run.
+        tools: Optional tool definitions for tool-calling mode (SPEC-009).
+    """
     today = input_data.get("today") or date.today().isoformat()
     system_prompt = render_prompt("decision.jinja", **{
         **input_data,
@@ -44,6 +54,7 @@ def run(input_data: dict[str, Any],
         },
         max_tokens=3000,
         expect_json=True,
+        tools=tools,
     )
 
     # Persist each signal as a row in persona_decisions.

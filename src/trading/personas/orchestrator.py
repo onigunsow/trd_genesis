@@ -8,11 +8,16 @@ Intraday cycle (09:30, 11:00, 13:30, 14:30):
 
 Event-trigger cycle (price ±3%, new disclosure, VIX spike):
     Decision (with trigger context) → Risk → execute
+
+SPEC-009: Tool-calling integration + Reflection Loop.
+- REQ-PTOOL-02-3~6: Per-persona tool sets via registry.
+- REQ-REFL-03-1~10: Risk REJECT Reflection Loop (max 2 rounds, 30s timeout).
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
@@ -32,10 +37,16 @@ from trading.personas import context as ctx
 from trading.risk import circuit_breaker
 from trading.risk.limits import check_pre_order, record_breach
 from trading.risk.market_safety import check_pre_order_safety
+from trading.tools.registry import get_tools_for_persona
 
 LOG = logging.getLogger(__name__)
 
 CycleKind = Literal["pre_market", "intraday", "event", "weekly", "manual"]
+
+# SPEC-009 REQ-REFL-03-2: Maximum reflection rounds (Decision re-invoke + Risk re-evaluate).
+MAX_REFLECTION_ROUNDS: int = 2
+# SPEC-009 REQ-REFL-03-10: Combined timeout per reflection round (seconds).
+REFLECTION_ROUND_TIMEOUT: float = 30.0
 
 
 def _summarize_persona(name: str, response_json: dict[str, Any] | None, max_lines: int = 5) -> str:
@@ -128,6 +139,260 @@ def _maybe_enter_silent_mode(latest_signal_count: int) -> None:
               details={"reason": "3 consecutive no-signal decisions"})
 
 
+def _get_persona_tools(persona_name: str, state: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Return tool definitions for a persona if tool_calling_enabled, else None.
+
+    REQ-COMPAT-04-1: Respects the tool_calling_enabled feature flag.
+    """
+    if not state.get("tool_calling_enabled"):
+        return None
+    tools = get_tools_for_persona(persona_name)
+    return tools if tools else None
+
+
+def _run_reflection_loop(
+    *,
+    original_signal: dict[str, Any],
+    risk_response_json: dict[str, Any],
+    dec_input: dict[str, Any],
+    cycle_kind: str,
+    decision_id: int,
+    macro_run_id: int | None,
+    micro_run_id: int | None,
+    assets: dict[str, Any],
+    cash_pct: float,
+    macro_summary: str | None,
+    micro_summary: str,
+    today: str,
+    state: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None, int | None]:
+    """Execute Reflection Loop when Risk returns REJECT.
+
+    REQ-REFL-03-1~10: Extract rejection feedback, re-invoke Decision with context,
+    re-invoke Risk on revised signal. Max 2 rounds with 30s timeout per round.
+
+    Returns:
+        Tuple of (final_verdict, revised_signal_or_none, revised_risk_run_id_or_none).
+    """
+    rationale = risk_response_json.get("rationale", "")
+    concerns = risk_response_json.get("concerns", [])
+
+    decision_tools = _get_persona_tools("decision", state)
+    risk_tools = _get_persona_tools("risk", state)
+
+    for round_num in range(1, MAX_REFLECTION_ROUNDS + 1):
+        round_start = time.time()
+
+        # REQ-REFL-03-3: Build rejection_feedback context for Decision re-invoke
+        rejection_feedback = {
+            "round": round_num,
+            "risk_verdict": "REJECT",
+            "risk_rationale": rationale,
+            "risk_concerns": concerns,
+            "original_signal": original_signal,
+            "instruction": (
+                "위 거부 사유를 반영하여 시그널을 수정하거나, 철회(withdraw)하세요. "
+                "새 시그널은 Risk가 제기한 모든 우려를 해소해야 합니다."
+            ),
+        }
+
+        # Build Decision re-invoke input with feedback
+        revised_dec_input = {**dec_input, "rejection_feedback": rejection_feedback}
+
+        try:
+            dec_res, revised_sig_ids = decision_persona.run(
+                revised_dec_input,
+                cycle_kind=cycle_kind,
+                macro_run_id=macro_run_id,
+                micro_run_id=micro_run_id,
+                tools=decision_tools,
+            )
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("Reflection round %d Decision re-invoke failed: %s", round_num, e)
+            _persist_reflection_round(
+                cycle_kind=cycle_kind,
+                original_decision_id=decision_id,
+                round_number=round_num,
+                risk_persona_run_id=None,
+                risk_rationale=rationale,
+                revised_decision_run_id=None,
+                revised_risk_run_id=None,
+                final_verdict="REJECT",
+            )
+            return "REJECT", None, None
+
+        # Check timeout
+        elapsed = time.time() - round_start
+        if elapsed > REFLECTION_ROUND_TIMEOUT:
+            LOG.warning("REFLECTION_TIMEOUT round=%d elapsed=%.1fs", round_num, elapsed)
+            audit("REFLECTION_TIMEOUT", actor="orchestrator", details={
+                "round": round_num, "decision_id": decision_id, "elapsed_s": elapsed,
+            })
+            tg.system_briefing(
+                "Reflection Timeout",
+                f"Round {round_num} timeout ({elapsed:.1f}s > {REFLECTION_ROUND_TIMEOUT}s). "
+                f"원래 REJECT 유지.",
+            )
+            _persist_reflection_round(
+                cycle_kind=cycle_kind,
+                original_decision_id=decision_id,
+                round_number=round_num,
+                risk_persona_run_id=None,
+                risk_rationale=rationale,
+                revised_decision_run_id=dec_res.persona_run_id,
+                revised_risk_run_id=None,
+                final_verdict="REJECT",
+            )
+            return "REJECT", None, None
+
+        # REQ-REFL-03-4: Check for withdrawal
+        revised_json = dec_res.response_json or {}
+        revised_signals = revised_json.get("signals", [])
+        is_withdrawn = revised_json.get("withdraw", False) or not revised_signals
+
+        if is_withdrawn:
+            LOG.info("Reflection round %d: Decision withdrew signal", round_num)
+            audit("REFLECTION_WITHDRAWN", actor="orchestrator", details={
+                "round": round_num, "decision_id": decision_id,
+            })
+            _persist_reflection_round(
+                cycle_kind=cycle_kind,
+                original_decision_id=decision_id,
+                round_number=round_num,
+                risk_persona_run_id=None,
+                risk_rationale=rationale,
+                revised_decision_run_id=dec_res.persona_run_id,
+                revised_risk_run_id=None,
+                final_verdict="WITHDRAWN",
+            )
+            return "WITHDRAWN", None, None
+
+        # Re-invoke Risk on revised signal (REQ-REFL-03-9: Risk is unaware of reflection)
+        revised_sig = revised_signals[0] if revised_signals else original_signal
+        rk_input = {
+            "today": today,
+            "decision_signals": [revised_sig],
+            "assets": assets,
+            "cash_pct": cash_pct,
+            "daily_order_count": 0,
+            "daily_pnl_pct": 0.0,
+            "macro_summary": macro_summary or "(없음)",
+            "micro_summary": micro_summary,
+        }
+
+        try:
+            rk_res, review_id, revised_verdict = risk_persona.run(
+                rk_input,
+                decision_id=revised_sig_ids[0] if revised_sig_ids else decision_id,
+                cycle_kind=cycle_kind,
+                tools=risk_tools,
+            )
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("Reflection round %d Risk re-invoke failed: %s", round_num, e)
+            _persist_reflection_round(
+                cycle_kind=cycle_kind,
+                original_decision_id=decision_id,
+                round_number=round_num,
+                risk_persona_run_id=None,
+                risk_rationale=rationale,
+                revised_decision_run_id=dec_res.persona_run_id,
+                revised_risk_run_id=None,
+                final_verdict="REJECT",
+            )
+            return "REJECT", None, None
+
+        # Check timeout again after Risk call
+        elapsed = time.time() - round_start
+        if elapsed > REFLECTION_ROUND_TIMEOUT:
+            LOG.warning("REFLECTION_TIMEOUT after Risk round=%d elapsed=%.1fs", round_num, elapsed)
+            audit("REFLECTION_TIMEOUT", actor="orchestrator", details={
+                "round": round_num, "decision_id": decision_id, "elapsed_s": elapsed,
+            })
+            _persist_reflection_round(
+                cycle_kind=cycle_kind,
+                original_decision_id=decision_id,
+                round_number=round_num,
+                risk_persona_run_id=rk_res.persona_run_id,
+                risk_rationale=rationale,
+                revised_decision_run_id=dec_res.persona_run_id,
+                revised_risk_run_id=rk_res.persona_run_id,
+                final_verdict="REJECT",
+            )
+            return "REJECT", None, None
+
+        # REQ-REFL-03-8: Telegram briefing for reflection outcome
+        tg.persona_briefing(
+            persona=f"Risk (Reflection R{round_num}) -> {revised_verdict}",
+            model="claude-sonnet-4-6",
+            summary=f"[Risk -> REJECT -> Reflection Round {round_num} -> {revised_verdict}]",
+            input_tokens=rk_res.input_tokens,
+            output_tokens=rk_res.output_tokens,
+            cost_krw=rk_res.cost_krw,
+        )
+
+        # Persist reflection round (REQ-REFL-03-6)
+        _persist_reflection_round(
+            cycle_kind=cycle_kind,
+            original_decision_id=decision_id,
+            round_number=round_num,
+            risk_persona_run_id=rk_res.persona_run_id,
+            risk_rationale=rationale,
+            revised_decision_run_id=dec_res.persona_run_id,
+            revised_risk_run_id=rk_res.persona_run_id,
+            final_verdict=revised_verdict,
+        )
+
+        if revised_verdict == "APPROVE":
+            return "APPROVE", revised_sig, rk_res.persona_run_id
+
+        if revised_verdict != "REJECT":
+            # HOLD or unknown verdict => treat as final rejection
+            return revised_verdict, None, rk_res.persona_run_id
+
+        # REJECT again: update rationale/concerns for next round
+        revised_risk_json = rk_res.response_json or {}
+        rationale = revised_risk_json.get("rationale", rationale)
+        concerns = revised_risk_json.get("concerns", concerns)
+
+    # All rounds exhausted, final REJECT
+    return "REJECT", None, None
+
+
+def _persist_reflection_round(
+    *,
+    cycle_kind: str,
+    original_decision_id: int,
+    round_number: int,
+    risk_persona_run_id: int | None,
+    risk_rationale: str,
+    revised_decision_run_id: int | None,
+    revised_risk_run_id: int | None,
+    final_verdict: str,
+) -> None:
+    """Persist a reflection round to reflection_rounds table (REQ-REFL-03-6)."""
+    try:
+        sql = """
+            INSERT INTO reflection_rounds
+                (cycle_kind, original_decision_id, round_number,
+                 risk_persona_run_id, risk_rationale,
+                 revised_decision_run_id, revised_risk_run_id, final_verdict)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (
+                cycle_kind,
+                original_decision_id,
+                round_number,
+                risk_persona_run_id,
+                risk_rationale,
+                revised_decision_run_id,
+                revised_risk_run_id,
+                final_verdict,
+            ))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Failed to persist reflection_round: %s", e)
+
+
 def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) -> int | None:
     """Submit a buy/sell order based on a decision signal. Returns DB orders.id or None."""
     side = sig.get("side", "hold")
@@ -165,10 +430,14 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         res.macro_run_id = int(cached_macro["id"])
         macro_summary = (cached_macro["response"] or "")[:500]
 
+    # SPEC-009: Check tool_calling_enabled and reflection_loop_enabled feature flags
+    state = get_system_state()
+    micro_tools = _get_persona_tools("micro", state)
+
     # 2. Micro
     micro_input = _build_micro_input(today, macro_summary)
     try:
-        micro_res = micro_persona.run(micro_input, cycle_kind="pre_market")
+        micro_res = micro_persona.run(micro_input, cycle_kind="pre_market", tools=micro_tools)
     except Exception as e:  # noqa: BLE001
         tg.system_error("Micro persona", e, context=f"cycle=pre_market today={today}")
         raise
@@ -183,6 +452,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     )
 
     # 3. Decision
+    decision_tools = _get_persona_tools("decision", state)
     assets = _gather_assets()
     cash_pct = (assets["cash_d2"] / assets["total_assets"] * 100) if assets["total_assets"] else 100.0
     dec_input = {
@@ -200,6 +470,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             cycle_kind="pre_market",
             macro_run_id=res.macro_run_id,
             micro_run_id=res.micro_run_id,
+            tools=decision_tools,
         )
     except Exception as e:  # noqa: BLE001
         tg.system_error("Decision persona", e, context=f"cycle=pre_market today={today}")
@@ -220,13 +491,14 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         _maybe_enter_silent_mode(0)
         return res
     s = get_settings()
-    state = get_system_state()
     if state["halt_state"]:
         tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
         return res
 
+    risk_tools = _get_persona_tools("risk", state)
     client = KisClient(s.trading_mode)
     signals = (dec_res.response_json or {}).get("signals", [])
+    micro_summary_text = _summarize_persona("micro", micro_res.response_json)
     for sig, decision_id in zip(signals, sig_ids, strict=False):
         rk_input = {
             "today": today,
@@ -236,21 +508,51 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             "daily_order_count": 0,
             "daily_pnl_pct": 0.0,
             "macro_summary": macro_summary or "(없음)",
-            "micro_summary": _summarize_persona("micro", micro_res.response_json),
+            "micro_summary": micro_summary_text,
         }
         rk_res, review_id, verdict = risk_persona.run(
-            rk_input, decision_id=decision_id, cycle_kind="pre_market"
+            rk_input, decision_id=decision_id, cycle_kind="pre_market",
+            tools=risk_tools,
         )
         res.risk_run_ids.append(rk_res.persona_run_id)
         tg.persona_briefing(
-            persona=f"Risk → {verdict}",
+            persona=f"Risk -> {verdict}",
             model="claude-sonnet-4-6",
             summary=_summarize_persona("risk", rk_res.response_json),
             input_tokens=rk_res.input_tokens,
             output_tokens=rk_res.output_tokens,
             cost_krw=rk_res.cost_krw,
         )
-        if verdict != "APPROVE":
+
+        # SPEC-009 REQ-REFL-03-1: Reflection Loop on REJECT
+        if verdict == "REJECT" and state.get("reflection_loop_enabled"):
+            final_verdict, revised_sig, revised_risk_run_id = _run_reflection_loop(
+                original_signal=sig,
+                risk_response_json=rk_res.response_json or {},
+                dec_input=dec_input,
+                cycle_kind="pre_market",
+                decision_id=decision_id,
+                macro_run_id=res.macro_run_id,
+                micro_run_id=res.micro_run_id,
+                assets=assets,
+                cash_pct=cash_pct,
+                macro_summary=macro_summary,
+                micro_summary=micro_summary_text,
+                today=today,
+                state=state,
+            )
+            if revised_risk_run_id:
+                res.risk_run_ids.append(revised_risk_run_id)
+
+            if final_verdict == "APPROVE" and revised_sig:
+                # Use revised signal for execution
+                sig = revised_sig
+                verdict = "APPROVE"
+            else:
+                # REJECT, WITHDRAWN, or HOLD — reject signal
+                res.rejected.append(decision_id)
+                continue
+        elif verdict != "APPROVE":
             res.rejected.append(decision_id)
             continue
 
@@ -345,8 +647,10 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
 def run_weekly_macro(today: str | None = None) -> int:
     """Friday 17:00 KST: invoke Macro persona. Returns persona_run_id."""
     today_str = today or date.today().isoformat()
+    state = get_system_state()
+    macro_tools = _get_persona_tools("macro", state)
     macro_input = ctx.assemble_macro_input()
-    res = macro_persona.run(macro_input, cycle_kind="weekly")
+    res = macro_persona.run(macro_input, cycle_kind="weekly", tools=macro_tools)
     tg.persona_briefing(
         persona="Macro",
         model="claude-opus-4-7",

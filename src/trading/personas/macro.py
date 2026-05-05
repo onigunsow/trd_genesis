@@ -33,8 +33,18 @@ def latest_cached(max_age_days: int = 7) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def run(input_data: dict[str, Any], cycle_kind: str = "weekly"):
-    """Invoke the macro persona. input_data fields are passed to the Jinja template."""
+def run(
+    input_data: dict[str, Any],
+    cycle_kind: str = "weekly",
+    tools: list[dict[str, Any]] | None = None,
+):
+    """Invoke the macro persona. input_data fields are passed to the Jinja template.
+
+    Args:
+        input_data: Context data for the persona prompt.
+        cycle_kind: Cycle type (weekly, manual, etc.).
+        tools: Optional tool definitions for tool-calling mode (SPEC-009).
+    """
     today = input_data.get("today") or date.today().isoformat()
     # SPEC-008: memory는 system_prompt에서 제외하고 user_msg에 prepend (캐시 안정성).
     memory_block = input_data.pop("memory", None) if "memory" in input_data else input_data.get("memory")
@@ -56,4 +66,5 @@ def run(input_data: dict[str, Any], cycle_kind: str = "weekly"):
         trigger_context={"input_keys": list(input_data.keys())},
         max_tokens=3000,
         expect_json=True,
+        tools=tools,
     )
