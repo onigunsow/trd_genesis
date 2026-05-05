@@ -31,9 +31,9 @@ def insert_articles(articles: list[Article]) -> tuple[int, int]:
 
     sql = """
         INSERT INTO news_articles
-            (title, url, summary, source_name, sector, language,
+            (title, url, summary, body_text, source_name, sector, language,
              published_at, crawled_at, content_hash, date_inferred)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (content_hash) DO NOTHING
     """
 
@@ -44,6 +44,7 @@ def insert_articles(articles: list[Article]) -> tuple[int, int]:
                 article.title,
                 article.url,
                 article.summary,
+                article.body_text,
                 article.source_name,
                 article.sector,
                 article.language,
@@ -91,7 +92,8 @@ def get_articles_by_sector(
     """
     params: list = [sector, days]
     sql = """
-        SELECT title, url, source_name, sector, language, published_at
+        SELECT title, url, source_name, sector, language, published_at,
+               summary, body_text
           FROM news_articles
          WHERE sector = %s
            AND published_at >= NOW() - make_interval(days => %s)

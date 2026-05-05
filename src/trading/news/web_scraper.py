@@ -33,6 +33,25 @@ class ScrapeRule:
     link_selector: str
     date_selector: str | None = None
     encoding: str = "utf-8"
+    # CSS selectors to extract article body text from individual article pages
+    body_selectors: tuple[str, ...] = (
+        "article",
+        ".article-body",
+        ".news-content",
+        "#article-body",
+        "#articleBody",
+        ".article_body",
+        "#news_body_area",
+        ".view-content",
+        "#newsViewArea",
+        ".article-view-body",
+    )
+
+
+# Maximum articles to fetch full body for per web source per crawl
+MAX_ARTICLES_PER_SOURCE = 10
+# Delay between article body fetches (seconds)
+ARTICLE_FETCH_DELAY = 1.0
 
 
 # Registry of 8 scrape rules — one per web source
@@ -172,6 +191,9 @@ class WebScraper:
             )
             return [], False
 
+        # Fetch article body text for up to MAX_ARTICLES_PER_SOURCE articles
+        items = await self._fetch_article_bodies(client, items, rule)
+
         return items, True
 
     @staticmethod
@@ -182,6 +204,64 @@ class WebScraper:
             return "lxml"
         except ImportError:
             return "html.parser"
+
+    async def _fetch_article_bodies(
+        self,
+        client: httpx.AsyncClient,
+        items: list[dict[str, Any]],
+        rule: ScrapeRule,
+    ) -> list[dict[str, Any]]:
+        """Fetch article body text for top articles. Sequential with rate limiting.
+
+        Only fetches up to MAX_ARTICLES_PER_SOURCE articles to stay polite.
+        If a fetch fails, the article keeps its title-only entry (graceful degradation).
+        """
+        fetch_count = min(len(items), MAX_ARTICLES_PER_SOURCE)
+
+        for i in range(fetch_count):
+            url = items[i].get("url", "")
+            if not url:
+                continue
+
+            # Rate limit: 1s between article fetches
+            if i > 0:
+                await asyncio.sleep(ARTICLE_FETCH_DELAY)
+
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                # Decode with rule encoding
+                if rule.encoding != "utf-8":
+                    page_html = response.content.decode(rule.encoding, errors="replace")
+                else:
+                    page_html = response.text
+                body_text = self._extract_body_text(page_html, rule)
+                if body_text:
+                    items[i]["body_text"] = body_text
+            except Exception as e:  # noqa: BLE001
+                LOG.debug(
+                    "Article body fetch failed: %s — %s", url[:80], e,
+                )
+                # Graceful degradation: keep article with title-only
+
+        return items
+
+    def _extract_body_text(self, html: str, rule: ScrapeRule) -> str | None:
+        """Extract main article body text from an article page.
+
+        Tries multiple CSS selectors in order. Returns plain text (HTML stripped).
+        """
+        soup = BeautifulSoup(html, self._get_parser())
+
+        for selector in rule.body_selectors:
+            element = soup.select_one(selector)
+            if element:
+                # Get text, stripping HTML tags
+                text = element.get_text(separator=" ", strip=True)
+                if text and len(text) > 50:  # Minimum content threshold
+                    return text
+
+        return None
 
     def _extract_articles(
         self, html: str, source: NewsSource, rule: ScrapeRule,
@@ -207,6 +287,7 @@ class WebScraper:
                 "title": title,
                 "url": url,
                 "summary": None,
+                "body_text": None,
                 "published_at": None,  # Deferred to normalizer
                 "source_name": source.name,
                 "sector": source.sector,

@@ -79,7 +79,7 @@ def get_sector_for_ticker(ticker: str) -> str:
 
 
 def _format_article_line(article: dict[str, Any]) -> str:
-    """Format a single article as markdown bullet."""
+    """Format a single article as markdown bullet with summary preview."""
     title = article.get("title", "")
     source = article.get("source_name", "")
     pub = article.get("published_at")
@@ -87,7 +87,23 @@ def _format_article_line(article: dict[str, Any]) -> str:
         date_str = pub.astimezone(KST).strftime("%m/%d %H:%M")
     else:
         date_str = ""
-    return f"- {title} | {source} | {date_str}"
+
+    # Base line with bold title
+    line = f"- **{title}** | {source} | {date_str}"
+
+    # Add summary preview (first 200 chars of summary or body_text)
+    summary = article.get("summary") or ""
+    if not summary:
+        body = article.get("body_text") or ""
+        if body:
+            summary = body[:200]
+    if summary:
+        preview = summary[:200]
+        if len(summary) > 200:
+            preview = preview.rstrip() + "..."
+        line += f"\n  Summary: {preview}"
+
+    return line
 
 
 def _format_sector_section(sector: str, articles: list[dict[str, Any]]) -> str:

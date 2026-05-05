@@ -21,6 +21,7 @@ class Article:
     title: str
     url: str
     summary: str | None
+    body_text: str | None
     source_name: str
     sector: str
     language: Literal["en", "ko"]
@@ -32,6 +33,10 @@ class Article:
 
 # Maximum summary length (truncated at word boundary)
 MAX_SUMMARY_LENGTH = 500
+# Maximum body text length
+MAX_BODY_TEXT_LENGTH = 5000
+# Summary auto-generated from body_text if no explicit summary
+AUTO_SUMMARY_LENGTH = 300
 
 
 def normalize_title(raw_title: str) -> str:
@@ -51,6 +56,34 @@ def normalize_title(raw_title: str) -> str:
 def compute_content_hash(normalized_title: str) -> str:
     """Compute SHA-256 hash of normalized title for deduplication."""
     return hashlib.sha256(normalized_title.encode("utf-8")).hexdigest()
+
+
+def strip_html(text: str) -> str:
+    """Remove HTML tags and collapse whitespace to produce plain text."""
+    # Remove HTML tags
+    clean = re.sub(r"<[^>]+>", " ", text)
+    # Decode HTML entities
+    clean = html.unescape(clean)
+    # Collapse whitespace
+    clean = re.sub(r"\s+", " ", clean)
+    return clean.strip()
+
+
+def truncate_body_text(body: str | None, max_length: int = MAX_BODY_TEXT_LENGTH) -> str | None:
+    """Truncate body text to max_length characters."""
+    if body is None:
+        return None
+    body = body.strip()
+    if not body:
+        return None
+    if len(body) <= max_length:
+        return body
+    # Truncate at word boundary
+    truncated = body[:max_length]
+    last_space = truncated.rfind(" ")
+    if last_space > max_length // 2:
+        return truncated[:last_space] + "..."
+    return truncated + "..."
 
 
 def truncate_summary(summary: str | None, max_length: int = MAX_SUMMARY_LENGTH) -> str | None:
@@ -115,13 +148,26 @@ def normalize_articles(
         if published_at.tzinfo is None:
             published_at = published_at.replace(tzinfo=timezone.utc)
 
+        # Process body_text: strip HTML, truncate to MAX_BODY_TEXT_LENGTH
+        raw_body = raw.get("body_text")
+        if raw_body and isinstance(raw_body, str):
+            body_text = strip_html(raw_body)
+            body_text = truncate_body_text(body_text)
+        else:
+            body_text = None
+
         # Truncate summary (REQ-NEWS-04-6)
         summary = truncate_summary(raw.get("summary"))
+
+        # Auto-generate summary from body_text if no explicit summary
+        if summary is None and body_text:
+            summary = truncate_summary(body_text, max_length=AUTO_SUMMARY_LENGTH)
 
         articles.append(Article(
             title=title,
             url=raw.get("url", "")[:500],
             summary=summary,
+            body_text=body_text,
             source_name=raw.get("source_name", ""),
             sector=raw.get("sector", ""),
             language=raw.get("language", "ko"),
