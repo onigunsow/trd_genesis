@@ -17,6 +17,8 @@ dependencies = [
     # Database
     "psycopg[binary]>=3.2",
     "sqlalchemy>=2.0",
+    # SPEC-010: pgvector Python adapter for vector type registration
+    "pgvector>=0.3.6",
     # Logging
     "structlog>=25.1",
     # Telegram

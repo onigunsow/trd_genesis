@@ -29,6 +29,7 @@ from trading.kis.account import balance
 from trading.kis.client import KisClient
 from trading.kis.order import buy as kis_buy
 from trading.kis.order import sell as kis_sell
+from trading.models.router import resolve_model
 from trading.personas import decision as decision_persona
 from trading.personas import macro as macro_persona
 from trading.personas import micro as micro_persona
@@ -434,24 +435,28 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     state = get_system_state()
     micro_tools = _get_persona_tools("micro", state)
 
-    # 2. Micro
+    # 2. Micro — SPEC-010 REQ-ROUTER-01-4: Use Model Router for model resolution
+    micro_model = resolve_model("micro")
     micro_input = _build_micro_input(today, macro_summary)
     try:
-        micro_res = micro_persona.run(micro_input, cycle_kind="pre_market", tools=micro_tools)
+        micro_res = micro_persona.run(
+            micro_input, cycle_kind="pre_market", tools=micro_tools, model=micro_model,
+        )
     except Exception as e:  # noqa: BLE001
         tg.system_error("Micro persona", e, context=f"cycle=pre_market today={today}")
         raise
     res.micro_run_id = micro_res.persona_run_id
     tg.persona_briefing(
         persona="Micro",
-        model="claude-sonnet-4-6",
+        model=micro_model,
         summary=_summarize_persona("micro", micro_res.response_json),
         input_tokens=micro_res.input_tokens,
         output_tokens=micro_res.output_tokens,
         cost_krw=micro_res.cost_krw,
     )
 
-    # 3. Decision
+    # 3. Decision — SPEC-010: Model Router resolves model
+    decision_model = resolve_model("decision")
     decision_tools = _get_persona_tools("decision", state)
     assets = _gather_assets()
     cash_pct = (assets["cash_d2"] / assets["total_assets"] * 100) if assets["total_assets"] else 100.0
@@ -471,6 +476,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             macro_run_id=res.macro_run_id,
             micro_run_id=res.micro_run_id,
             tools=decision_tools,
+            model=decision_model,
         )
     except Exception as e:  # noqa: BLE001
         tg.system_error("Decision persona", e, context=f"cycle=pre_market today={today}")
@@ -479,7 +485,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     res.decisions = sig_ids
     tg.persona_briefing(
         persona="Decision · 박세훈",
-        model="claude-sonnet-4-6",
+        model=decision_model,
         summary=_summarize_persona("decision", dec_res.response_json),
         input_tokens=dec_res.input_tokens,
         output_tokens=dec_res.output_tokens,
@@ -495,6 +501,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
         return res
 
+    risk_model = resolve_model("risk")
     risk_tools = _get_persona_tools("risk", state)
     client = KisClient(s.trading_mode)
     signals = (dec_res.response_json or {}).get("signals", [])
@@ -513,11 +520,12 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         rk_res, review_id, verdict = risk_persona.run(
             rk_input, decision_id=decision_id, cycle_kind="pre_market",
             tools=risk_tools,
+            model=risk_model,
         )
         res.risk_run_ids.append(rk_res.persona_run_id)
         tg.persona_briefing(
             persona=f"Risk -> {verdict}",
-            model="claude-sonnet-4-6",
+            model=risk_model,
             summary=_summarize_persona("risk", rk_res.response_json),
             input_tokens=rk_res.input_tokens,
             output_tokens=rk_res.output_tokens,
@@ -648,12 +656,13 @@ def run_weekly_macro(today: str | None = None) -> int:
     """Friday 17:00 KST: invoke Macro persona. Returns persona_run_id."""
     today_str = today or date.today().isoformat()
     state = get_system_state()
+    macro_model = resolve_model("macro")
     macro_tools = _get_persona_tools("macro", state)
     macro_input = ctx.assemble_macro_input()
-    res = macro_persona.run(macro_input, cycle_kind="weekly", tools=macro_tools)
+    res = macro_persona.run(macro_input, cycle_kind="weekly", tools=macro_tools, model=macro_model)
     tg.persona_briefing(
         persona="Macro",
-        model="claude-opus-4-7",
+        model=macro_model,
         summary=_summarize_persona("macro", res.response_json),
         input_tokens=res.input_tokens,
         output_tokens=res.output_tokens,

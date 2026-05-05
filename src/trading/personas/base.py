@@ -34,9 +34,12 @@ MAX_TOOL_ROUNDS: int = 8
 PRICING_USD_PER_MTOK = {
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-7":   (15.0, 75.0),
+    # SPEC-010 REQ-COST-04-2: Haiku pricing
+    "claude-haiku-4-5":  (0.80, 4.0),
     # Fallbacks for dated model IDs.
     "claude-sonnet-4.6": (3.0, 15.0),
     "claude-opus-4.7":   (15.0, 75.0),
+    "claude-haiku-4.5":  (0.80, 4.0),
 }
 
 # SPEC-008 REQ-CACHE-01-* — Anthropic prompt cache pricing multipliers.

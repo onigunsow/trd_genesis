@@ -34,6 +34,14 @@ def _gather_today() -> dict[str, Any]:
                SUM(cache_creation_tokens) AS cache_create
           FROM persona_runs WHERE ts::date = CURRENT_DATE GROUP BY persona_name
     """
+    # SPEC-010 REQ-COST-04-1: Per-model cost breakdown
+    sql_model_breakdown = """
+        SELECT model, COUNT(*) AS n,
+               SUM(cost_krw) AS cost,
+               SUM(input_tokens) AS in_tok,
+               SUM(output_tokens) AS out_tok
+          FROM persona_runs WHERE ts::date = CURRENT_DATE GROUP BY model
+    """
     sql_risk = """
         SELECT verdict, COUNT(*) AS n
           FROM risk_reviews WHERE ts::date = CURRENT_DATE GROUP BY verdict
@@ -93,6 +101,12 @@ def _gather_today() -> dict[str, Any]:
             reflection_stats = dict(cur.fetchone() or {})
         except Exception:  # noqa: BLE001
             reflection_stats = {"total_rounds": 0, "approved": 0, "rejected": 0, "withdrawn": 0}
+        # SPEC-010: Per-model breakdown (graceful if column does not exist yet)
+        try:
+            cur.execute(sql_model_breakdown)
+            model_breakdown = [dict(r) for r in cur.fetchall()]
+        except Exception:  # noqa: BLE001
+            model_breakdown = []
     return {
         "today": today.isoformat(),
         "orders": orders,
@@ -102,6 +116,7 @@ def _gather_today() -> dict[str, Any]:
         "cumulative": cum,
         "tool_stats": tool_stats,
         "reflection_stats": reflection_stats,
+        "model_breakdown": model_breakdown,
     }
 
 
@@ -113,6 +128,7 @@ def _fallback_text(data: dict[str, Any]) -> str:
     cum = data.get("cumulative") or {}
     tool_stats = data.get("tool_stats") or {}
     reflection_stats = data.get("reflection_stats") or {}
+    model_breakdown = data.get("model_breakdown") or []
     n_buys = sum(1 for o in orders if o["side"] == "buy")
     n_sells = sum(1 for o in orders if o["side"] == "sell")
     persona_cost_total = sum(float(r.get("cost") or 0) for r in runs)
@@ -149,11 +165,30 @@ def _fallback_text(data: dict[str, Any]) -> str:
     # REQ-NFR-09-4: Observability metrics
     refl_success_rate = (refl_approved / refl_total * 100) if refl_total else 0.0
 
+    # SPEC-010 REQ-COST-04-1: Per-model cost breakdown
+    model_lines: list[str] = []
+    for mb in model_breakdown:
+        model_name = (mb.get("model") or "unknown").split("-")[-1]  # e.g., "haiku-4-5" -> "4-5"
+        short_name = mb.get("model", "unknown")
+        if "opus" in short_name:
+            short_name = "Opus"
+        elif "sonnet" in short_name:
+            short_name = "Sonnet"
+        elif "haiku" in short_name:
+            short_name = "Haiku"
+        n = int(mb.get("n") or 0)
+        mc = float(mb.get("cost") or 0)
+        model_lines.append(f"  {short_name}: {n}건 × {mc/n:,.0f}원 = {mc:,.0f}원" if n else "")
+    model_section = "\n".join(l for l in model_lines if l)
+    if not model_section:
+        model_section = "  (모델별 내역 없음)"
+
     return (
         f"[일일 리포트 · {data['today']}]\n"
         f"매매: 매수 {n_buys} / 매도 {n_sells} (총 {len(orders)}건, 체결 {cost.get('executed_count', 0)}건)\n"
         f"매매 비용 추정: 체결분 {exec_fee:,}원 (시도 합계 {attempted_fee:,}원)\n"
         f"페르소나 비용: {persona_cost_total:,.0f}원\n"
+        f"[모델별 내역]\n{model_section}\n"
         f"캐시 적중률: {cache_hit_pct:.1f}% (read {cache_read_total:,} / total {in_tok_total:,} 토큰, SPEC-008)\n"
         f"Risk verdict: {risk_str}\n"
         f"{tool_line}\n"

@@ -131,7 +131,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_static_context",
-        "description": "Static .md 컨텍스트 파일 로드",
+        "description": "Static .md 컨텍스트 로드 (semantic/full 모드)",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -139,6 +139,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Context file name (macro_context, micro_context, macro_news, micro_news)",
                     "enum": ["macro_context", "micro_context", "macro_news", "micro_news"],
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "Retrieval mode: 'full' for entire file, 'semantic' for relevant chunks",
+                    "enum": ["full", "semantic"],
+                    "default": "full",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query for semantic mode (required when mode=semantic)",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of chunks to return in semantic mode",
+                    "default": 7,
+                    "minimum": 1,
+                    "maximum": 20,
                 },
             },
             "required": ["name"],

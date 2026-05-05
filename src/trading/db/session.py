@@ -64,6 +64,7 @@ def get_system_state() -> dict[str, Any]:
         cur.execute(
             "SELECT id, live_unlocked, halt_state, silent_mode, trading_mode, "
             "tool_calling_enabled, reflection_loop_enabled, "
+            "model_routing, semantic_retrieval_enabled, shadow_test_active, "
             "updated_at, updated_by FROM system_state WHERE id = 1"
         )
         row = cur.fetchone()
