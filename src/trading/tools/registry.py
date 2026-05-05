@@ -3,6 +3,7 @@
 REQ-TOOL-01-1: All tools defined in Anthropic `tools` parameter format.
 REQ-TOOL-01-2: 10 tools covering macro, market, context, portfolio.
 REQ-TOOL-01-6: Each definition includes cache_control for SPEC-008 compatibility.
+SPEC-011 REQ-TOOLINT-05-3: 3 new tools (delta_events, prototype_similarity, intraday_price).
 
 Usage:
     from trading.tools.registry import get_all_tool_definitions, get_tools_for_persona
@@ -208,9 +209,61 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
         "cache_control": {"type": "ephemeral"},
     },
+    # SPEC-011 REQ-TOOLINT-05-3: New JIT pipeline and prototype tools
+    {
+        "name": "get_delta_events",
+        "description": "장중 실시간 이벤트 조회 (가격/공시/뉴스)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "KRX stock code (e.g. 005930)",
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": "Filter by event type",
+                    "enum": ["price_update", "disclosure", "news"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum events to return",
+                    "default": 10,
+                },
+            },
+            "required": ["ticker"],
+        },
+        "cache_control": {"type": "ephemeral"},
+    },
+    {
+        "name": "get_market_prototype_similarity",
+        "description": "시장 프로토타입 유사도 분석 (ProtoHedge)",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        "cache_control": {"type": "ephemeral"},
+    },
+    {
+        "name": "get_intraday_price_history",
+        "description": "장중 가격 변동 히스토리 (실시간 델타)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "KRX stock code",
+                },
+            },
+            "required": ["ticker"],
+        },
+        "cache_control": {"type": "ephemeral"},
+    },
 ]
 
 # Per-persona tool assignments (REQ-PTOOL-02-3 through REQ-PTOOL-02-6)
+# SPEC-011 REQ-TOOLINT-05-4: Risk persona gets prototype tool when enabled.
 PERSONA_TOOLS: dict[str, list[str]] = {
     "macro": [
         "get_macro_indicators",
@@ -226,6 +279,8 @@ PERSONA_TOOLS: dict[str, list[str]] = {
         "get_static_context",
         "get_active_memory",
         "get_watchlist",
+        "get_delta_events",
+        "get_intraday_price_history",
     ],
     "decision": [
         "get_portfolio_status",
@@ -233,22 +288,29 @@ PERSONA_TOOLS: dict[str, list[str]] = {
         "get_ticker_fundamentals",
         "get_static_context",
         "get_active_memory",
+        "get_delta_events",
     ],
     "risk": [
         "get_portfolio_status",
         "get_ticker_technicals",
         "get_ticker_flows",
+        "get_delta_events",
+        "get_market_prototype_similarity",
     ],
 }
 
 
 def get_all_tool_definitions() -> list[dict[str, Any]]:
-    """Return all 10 tool definitions in Anthropic API format."""
+    """Return all tool definitions in Anthropic API format."""
     return TOOL_DEFINITIONS.copy()
 
 
 def get_tools_for_persona(persona_name: str) -> list[dict[str, Any]]:
     """Return tool definitions assigned to a specific persona.
+
+    SPEC-011 REQ-TOOLINT-05-4: Conditionally includes prototype tool for Risk
+    when prototype_risk_enabled=true. Conditionally includes JIT tools when
+    jit_pipeline_enabled=true.
 
     Args:
         persona_name: One of 'macro', 'micro', 'decision', 'risk'.
@@ -257,5 +319,28 @@ def get_tools_for_persona(persona_name: str) -> list[dict[str, Any]]:
         List of tool definition dicts for the persona's allowed tools.
         Empty list if persona has no tool assignments.
     """
-    allowed_names = PERSONA_TOOLS.get(persona_name, [])
+    allowed_names = list(PERSONA_TOOLS.get(persona_name, []))
+
+    # SPEC-011 REQ-TOOLINT-05-4/05-6: Filter JIT/prototype tools based on feature flags
+    try:
+        from trading.db.session import get_system_state
+        state = get_system_state()
+
+        jit_enabled = state.get("jit_pipeline_enabled", False)
+        proto_enabled = state.get("prototype_risk_enabled", False)
+
+        # Remove JIT tools if JIT pipeline is disabled
+        if not jit_enabled:
+            jit_tools = {"get_delta_events", "get_intraday_price_history"}
+            allowed_names = [n for n in allowed_names if n not in jit_tools]
+
+        # Remove prototype tool if prototype risk is disabled
+        if not proto_enabled:
+            allowed_names = [n for n in allowed_names if n != "get_market_prototype_similarity"]
+
+    except Exception:
+        # If system_state unavailable, exclude all SPEC-011 tools (safe fallback)
+        spec011_tools = {"get_delta_events", "get_intraday_price_history", "get_market_prototype_similarity"}
+        allowed_names = [n for n in allowed_names if n not in spec011_tools]
+
     return [t for t in TOOL_DEFINITIONS if t["name"] in allowed_names]

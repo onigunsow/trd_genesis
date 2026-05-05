@@ -10,6 +10,9 @@ Commands honoured (REQ-RISK-05-4):
 - /silent  enter silent_mode manually
 - /tool-calling on|off  toggle tool-calling mode (REQ-COMPAT-04-7)
 - /reflection on|off    toggle reflection loop (REQ-COMPAT-04-7)
+- /jit on|off|ws|dart|news  toggle JIT pipeline (SPEC-011 REQ-MIGR-06-3)
+- /prototype on|off     toggle prototype risk (SPEC-011 REQ-MIGR-06-3)
+- /prototype-status     show ProtoHedge status (SPEC-011 REQ-DYNRISK-04-10)
 - /help    list commands
 """
 
@@ -51,6 +54,13 @@ def handle(text: str, actor: str = "telegram") -> str:
         return _handle_tool_calling(text, actor)
     if cmd == "/reflection":
         return _handle_reflection(text, actor)
+    # SPEC-011 REQ-MIGR-06-3: JIT pipeline and prototype toggle commands
+    if cmd == "/jit":
+        return _handle_jit(text, actor)
+    if cmd == "/prototype":
+        return _handle_prototype(text, actor)
+    if cmd == "/prototype-status":
+        return _handle_prototype_status()
     if cmd in ("/help", "/start"):
         return _help()
     return f"unknown command: {cmd or '(empty)'}\n{_help()}"
@@ -82,6 +92,105 @@ def _handle_reflection(text: str, actor: str) -> str:
     return f"✓ reflection_loop_enabled={enable}. Reflection Loop {status}됨."
 
 
+def _handle_jit(text: str, actor: str) -> str:
+    """Toggle JIT pipeline feature flags (SPEC-011 REQ-MIGR-06-3)."""
+    parts = text.strip().split()
+    if len(parts) < 2:
+        return "사용법: /jit on|off | /jit ws|dart|news on|off"
+
+    sub = parts[1].lower()
+
+    # Master toggle: /jit on|off
+    if sub in ("on", "off"):
+        enable = sub == "on"
+        update_system_state(jit_pipeline_enabled=enable, updated_by=actor)
+        event = "JIT_PIPELINE_ENABLED" if enable else "JIT_PIPELINE_DISABLED"
+        audit(event, actor=actor, details={"enabled": enable})
+        if not enable:
+            # Stop pipeline if running
+            try:
+                from trading.jit.pipeline import get_pipeline
+                get_pipeline().stop()
+            except Exception:
+                pass
+        status = "활성화" if enable else "비활성화"
+        return f"JIT Pipeline {status}됨. WebSocket은 다음 장 개시 시 연결됩니다."
+
+    # Sub-toggle: /jit ws|dart|news on|off
+    if len(parts) < 3 or parts[2].lower() not in ("on", "off"):
+        return "사용법: /jit ws|dart|news on|off"
+
+    enable = parts[2].lower() == "on"
+
+    if sub == "ws":
+        update_system_state(jit_websocket_enabled=enable, updated_by=actor)
+        audit("JIT_WEBSOCKET_TOGGLED", actor=actor, details={"enabled": enable})
+        if not enable:
+            try:
+                from trading.jit.pipeline import get_pipeline
+                get_pipeline().stop_websocket()
+            except Exception:
+                pass
+        status = "활성화" if enable else "비활성화"
+        return f"WebSocket {status}됨. DART/News 폴링은 유지됩니다."
+
+    elif sub == "dart":
+        update_system_state(jit_dart_polling_enabled=enable, updated_by=actor)
+        audit("JIT_DART_TOGGLED", actor=actor, details={"enabled": enable})
+        if not enable:
+            try:
+                from trading.jit.pipeline import get_pipeline
+                get_pipeline().stop_dart()
+            except Exception:
+                pass
+        status = "활성화" if enable else "비활성화"
+        return f"DART 폴링 {status}됨."
+
+    elif sub == "news":
+        update_system_state(jit_news_polling_enabled=enable, updated_by=actor)
+        audit("JIT_NEWS_TOGGLED", actor=actor, details={"enabled": enable})
+        if not enable:
+            try:
+                from trading.jit.pipeline import get_pipeline
+                get_pipeline().stop_news()
+            except Exception:
+                pass
+        status = "활성화" if enable else "비활성화"
+        return f"News 폴링 {status}됨."
+
+    return "사용법: /jit on|off | /jit ws|dart|news on|off"
+
+
+def _handle_prototype(text: str, actor: str) -> str:
+    """Toggle prototype risk feature flag (SPEC-011 REQ-MIGR-06-3)."""
+    parts = text.strip().split()
+    if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+        return "사용법: /prototype on|off"
+    enable = parts[1].lower() == "on"
+    update_system_state(prototype_risk_enabled=enable, updated_by=actor)
+    event = "PROTOTYPE_RISK_ENABLED" if enable else "PROTOTYPE_RISK_DISABLED"
+    audit(event, actor=actor, details={"enabled": enable})
+    status = "활성화" if enable else "비활성화"
+    return f"Prototype Risk {status}됨."
+
+
+def _handle_prototype_status() -> str:
+    """Show ProtoHedge status (SPEC-011 REQ-DYNRISK-04-10)."""
+    try:
+        state = get_system_state()
+        if not state.get("prototype_risk_enabled", False):
+            return "[ProtoHedge] 비활성화 상태. /prototype on 으로 활성화하세요."
+
+        from trading.prototypes.exposure import format_prototype_status
+        from trading.prototypes.similarity import build_current_state_text, compute_similarity
+
+        state_text = build_current_state_text()
+        matches = compute_similarity(state_text, cycle_kind="intraday")
+        return format_prototype_status(matches)
+    except Exception as e:
+        return f"[ProtoHedge] 상태 조회 실패: {e}"
+
+
 def _help() -> str:
     return (
         "사용 가능한 명령어:\n"
@@ -93,6 +202,10 @@ def _help() -> str:
         "/silent        침묵 모드\n"
         "/tool-calling on|off  Tool-calling 전환\n"
         "/reflection on|off    Reflection Loop 전환\n"
+        "/jit on|off           JIT Pipeline 전환\n"
+        "/jit ws|dart|news on|off  개별 소스 전환\n"
+        "/prototype on|off     ProtoHedge 전환\n"
+        "/prototype-status     ProtoHedge 현황\n"
         "/help          이 메시지"
     )
 

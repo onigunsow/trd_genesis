@@ -59,14 +59,12 @@ def audit(event_type: str, actor: str, details: dict[str, Any] | None = None) ->
 
 
 def get_system_state() -> dict[str, Any]:
-    """Read system_state singleton row."""
+    """Read system_state singleton row.
+
+    Uses SELECT * to be resilient to column additions across migrations.
+    """
     with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, live_unlocked, halt_state, silent_mode, trading_mode, "
-            "tool_calling_enabled, reflection_loop_enabled, "
-            "model_routing, semantic_retrieval_enabled, shadow_test_active, "
-            "updated_at, updated_by FROM system_state WHERE id = 1"
-        )
+        cur.execute("SELECT * FROM system_state WHERE id = 1")
         row = cur.fetchone()
         if not row:
             raise RuntimeError("system_state row missing — migration 001 not applied?")

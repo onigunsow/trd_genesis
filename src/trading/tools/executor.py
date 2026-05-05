@@ -39,6 +39,12 @@ def _get_dispatch_table() -> dict[str, Any]:
             get_ticker_technicals,
         )
         from trading.tools.portfolio_tools import get_portfolio_status, get_watchlist
+        # SPEC-011 REQ-TOOLINT-05-3: New JIT/prototype tools
+        from trading.tools.jit_tools import (
+            get_delta_events,
+            get_intraday_price_history,
+            get_market_prototype_similarity,
+        )
 
         _TOOL_DISPATCH = {
             "get_macro_indicators": get_macro_indicators,
@@ -51,6 +57,10 @@ def _get_dispatch_table() -> dict[str, Any]:
             "get_active_memory": get_active_memory,
             "get_portfolio_status": get_portfolio_status,
             "get_watchlist": get_watchlist,
+            # SPEC-011 tools
+            "get_delta_events": get_delta_events,
+            "get_market_prototype_similarity": get_market_prototype_similarity,
+            "get_intraday_price_history": get_intraday_price_history,
         }
     return _TOOL_DISPATCH
 
