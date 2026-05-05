@@ -34,9 +34,24 @@ def _run_news_crawl() -> None:
 
 
 def _run_news_intelligence() -> None:
-    """SPEC-014: Run news intelligence analysis pipeline (feature flag checked internally)."""
+    """SPEC-014: Run news intelligence analysis pipeline (legacy single-step).
+
+    Kept for backward compatibility. Prefer split export/import jobs.
+    """
     from trading.news.intelligence.scheduler import scheduled_run
     scheduled_run()
+
+
+def _run_news_export() -> None:
+    """SPEC-014: Export unanalyzed articles for host Claude CLI processing."""
+    from trading.news.intelligence.scheduler import scheduled_export
+    scheduled_export()
+
+
+def _run_news_import() -> None:
+    """SPEC-014: Import host CLI results and run post-analysis pipeline."""
+    from trading.news.intelligence.scheduler import scheduled_import
+    scheduled_import()
 
 
 def _wrap(name: str, fn, *args, **kwargs):
@@ -85,20 +100,37 @@ def main() -> None:
                       id=f"news_crawl_{h:02d}{m:02d}",
                       name=f"news_crawl_v2 {h:02d}:{m:02d}")
 
-    # SPEC-014 — News intelligence analysis 6x/day (10 min after each crawl)
-    _NEWS_INTEL_TIMES = [
-        (8, 10),    # post crawl 08:00
-        (11, 10),   # post crawl 11:00
-        (14, 40),   # post crawl 14:30
-        (22, 10),   # post crawl 22:00
-        (1, 10),    # post crawl 01:00
-        (4, 10),    # post crawl 04:00
+    # SPEC-014 — News intelligence: 2-step host CLI pipeline
+    # Step 1: Export articles for host Claude CLI (5 min after each crawl)
+    _NEWS_EXPORT_TIMES = [
+        (8, 5),     # post crawl 08:00
+        (11, 5),    # post crawl 11:00
+        (14, 35),   # post crawl 14:30
+        (22, 5),    # post crawl 22:00
+        (1, 5),     # post crawl 01:00
+        (4, 5),     # post crawl 04:00
     ]
-    for h, m in _NEWS_INTEL_TIMES:
-        sched.add_job(lambda: _safe_call("news_intelligence", _run_news_intelligence),
+    for h, m in _NEWS_EXPORT_TIMES:
+        sched.add_job(lambda: _safe_call("news_export", _run_news_export),
                       CronTrigger(hour=h, minute=m, timezone=KST),
-                      id=f"news_intel_{h:02d}{m:02d}",
-                      name=f"news_intelligence {h:02d}:{m:02d}")
+                      id=f"news_export_{h:02d}{m:02d}",
+                      name=f"news_export {h:02d}:{m:02d}")
+
+    # Step 2: Import host results + run pipeline (15 min after each crawl)
+    # Allows 10 min for host cron to run claude CLI at :10/:40
+    _NEWS_IMPORT_TIMES = [
+        (8, 15),    # host analyzes at 08:10
+        (11, 15),   # host analyzes at 11:10
+        (14, 45),   # host analyzes at 14:40
+        (22, 15),   # host analyzes at 22:10
+        (1, 15),    # host analyzes at 01:10
+        (4, 15),    # host analyzes at 04:10
+    ]
+    for h, m in _NEWS_IMPORT_TIMES:
+        sched.add_job(lambda: _safe_call("news_import", _run_news_import),
+                      CronTrigger(hour=h, minute=m, timezone=KST),
+                      id=f"news_import_{h:02d}{m:02d}",
+                      name=f"news_import {h:02d}:{m:02d}")
 
     # SPEC-007 — Static context builders (run regardless of trading day; cheap)
     # macro_context 06:00 — every day (uses cached data)

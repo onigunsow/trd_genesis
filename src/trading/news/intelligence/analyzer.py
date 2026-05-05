@@ -1,18 +1,24 @@
-"""Article Analyzer — Haiku LLM batch analysis (SPEC-TRADING-014 Module 1).
+"""Article Analyzer — LLM batch analysis (SPEC-TRADING-014 Module 1).
 
-Processes unanalyzed articles from news_articles using Claude Haiku 4.5.
-Batches of 10 articles per API call, max 100 articles per run.
-Includes pre-filtering for obvious noise and post-analysis quality checks.
+Primary path: Claude Code CLI on host (Max subscription, zero marginal cost).
+Fallback path: Anthropic Haiku API (when CLI results unavailable).
+
+Architecture (host/container split):
+  Container :05 -> export_pending_for_host() writes data/pending_analysis.json
+  Host :10     -> scripts/analyze_news.sh runs `claude -p` on pending prompt
+  Container :15 -> import_host_results() reads data/analysis_results.json into DB
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from pathlib import Path
 
 from anthropic import Anthropic
 
@@ -36,6 +42,11 @@ RETRY_DELAY = 5.0
 # Haiku pricing: input $0.80/M, output $4.00/M
 HAIKU_IN_RATE = 0.80
 HAIKU_OUT_RATE = 4.0
+
+# Shared volume paths (host <-> container via ./data/ mount)
+_DATA_DIR = Path(os.environ.get("TRADING_DATA_DIR", "/app/data"))
+PENDING_FILE = _DATA_DIR / "pending_analysis.json"
+RESULTS_FILE = _DATA_DIR / "analysis_results.json"
 
 # Pre-filter: title keywords indicating noise (PR/CSR/HR/events)
 NOISE_TITLE_KEYWORDS = [
@@ -654,3 +665,206 @@ def _clear_today_analyses(sector: str | None = None) -> int:
         deleted = cur.rowcount
     LOG.info("Cleared %d existing analyses (force mode)", deleted)
     return deleted
+
+
+# ---------------------------------------------------------------------------
+# Host CLI bridge: export / import via shared volume
+# ---------------------------------------------------------------------------
+
+def export_pending_for_host(
+    *,
+    sector: str | None = None,
+    max_articles: int = MAX_ARTICLES_PER_RUN,
+) -> int:
+    """Export unanalyzed articles as a Claude CLI prompt to the shared volume.
+
+    Writes data/pending_analysis.json with format:
+      {"prompt": "<system + user prompt>", "article_ids": [1, 2, ...]}
+
+    The host cron job reads this file and passes the prompt to `claude -p`.
+    Pre-filtered noise articles are stored directly (no CLI call needed).
+
+    Returns the number of articles exported for host analysis.
+    """
+    articles = get_unanalyzed_articles(sector=sector, limit=max_articles)
+    if not articles:
+        LOG.info("export_pending: no unanalyzed articles")
+        return 0
+
+    # Pre-filter noise articles (same logic as analyze_articles)
+    noise_articles = []
+    real_articles = []
+    for art in articles:
+        if is_noise_title(art["title"]):
+            noise_articles.append(art)
+        else:
+            real_articles.append(art)
+
+    # Store pre-filtered noise directly — no need to send to host
+    if noise_articles:
+        count = _store_prefiltered_noise(noise_articles)
+        LOG.info("export_pending: pre-filtered %d noise articles", count)
+
+    if not real_articles:
+        LOG.info("export_pending: all articles were noise, nothing to export")
+        return 0
+
+    # Build the full prompt (system instructions embedded in user message)
+    batch_data = _prepare_batch(real_articles)
+    user_prompt = build_analysis_prompt(batch_data)
+    full_prompt = (
+        f"{ARTICLE_ANALYSIS_SYSTEM}\n\n"
+        f"---\n\n"
+        f"{user_prompt}"
+    )
+
+    article_ids = [art["id"] for art in real_articles]
+
+    # Write to shared volume
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "prompt": full_prompt,
+        "article_ids": article_ids,
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "count": len(article_ids),
+    }
+    PENDING_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    # Write a separate metadata file that survives the host script's rm of pending
+    meta_file = _DATA_DIR / "pending_metadata.json"
+    meta_file.write_text(json.dumps({
+        "article_ids": article_ids,
+        "exported_at": payload["exported_at"],
+        "count": len(article_ids),
+    }, ensure_ascii=False))
+
+    audit("NEWS_INTEL_EXPORT_PENDING", actor="analyzer", details={
+        "articles_exported": len(article_ids),
+        "noise_prefiltered": len(noise_articles),
+    })
+    LOG.info(
+        "export_pending: wrote %d articles to %s (%d noise pre-filtered)",
+        len(article_ids), PENDING_FILE, len(noise_articles),
+    )
+    return len(article_ids)
+
+
+def import_host_results() -> int:
+    """Import analysis results produced by the host Claude CLI.
+
+    Reads data/analysis_results.json (raw Claude response) and
+    data/pending_analysis.json (for article_ids mapping).
+
+    Returns the number of articles successfully imported, or 0 if no results.
+    """
+    if not RESULTS_FILE.exists() or RESULTS_FILE.stat().st_size == 0:
+        LOG.info("import_results: no results file found")
+        return 0
+
+    # We need the article IDs from the pending file (or a companion metadata file).
+    # The pending file is deleted by the host script after writing results.
+    # So we store article_ids in a separate metadata file alongside the results.
+    meta_file = _DATA_DIR / "pending_metadata.json"
+
+    # Try to read article IDs from metadata or pending file
+    article_ids: list[int] = []
+    for candidate in [meta_file, PENDING_FILE]:
+        if candidate.exists():
+            try:
+                meta = json.loads(candidate.read_text())
+                article_ids = meta.get("article_ids", [])
+                if article_ids:
+                    break
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+    if not article_ids:
+        LOG.warning("import_results: results file exists but no article_ids metadata found")
+        # Try to match by fetching currently unanalyzed articles
+        articles = get_unanalyzed_articles(limit=MAX_ARTICLES_PER_RUN)
+        # Filter out noise (they were already stored during export)
+        article_ids = [a["id"] for a in articles if not is_noise_title(a["title"])]
+        if not article_ids:
+            LOG.warning("import_results: cannot determine which articles to map results to")
+            return 0
+
+    # Read the raw response
+    raw_text = RESULTS_FILE.read_text().strip()
+    if not raw_text:
+        LOG.warning("import_results: results file is empty")
+        return 0
+
+    # Parse using the same robust parser
+    results = _parse_analysis_response(raw_text, len(article_ids))
+    if results is None:
+        LOG.error("import_results: failed to parse Claude CLI response (len=%d)", len(raw_text))
+        audit("NEWS_INTEL_IMPORT_PARSE_FAIL", actor="analyzer", details={
+            "raw_length": len(raw_text),
+            "first_200": raw_text[:200],
+        })
+        return 0
+
+    # Fetch article details for quality checks
+    article_map = _fetch_articles_by_ids(article_ids)
+
+    # Apply quality checks (title-similarity penalty)
+    articles_for_check = [article_map.get(aid, {"title": ""}) for aid in article_ids]
+    results = _apply_quality_checks(articles_for_check, results)
+
+    # Store results in DB
+    stored_count = 0
+    sql = """
+        INSERT INTO news_analysis
+            (article_id, summary_2line, impact_score, keywords, sentiment,
+             classification, model_used, token_input, token_output, cost_krw)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (article_id) DO NOTHING
+    """
+    with connection() as conn, conn.cursor() as cur:
+        for i, result in enumerate(results):
+            if i >= len(article_ids):
+                break
+            aid = article_ids[i]
+            cur.execute(sql, (
+                aid,
+                result["summary_2line"],
+                result["impact_score"],
+                result["keywords"],
+                result["sentiment"],
+                result["classification"],
+                "claude-cli",  # model_used: distinguish from haiku API
+                0,  # token_input: not tracked by CLI (Max subscription)
+                0,  # token_output: not tracked by CLI
+                0.0,  # cost_krw: zero marginal cost with Max subscription
+            ))
+            stored_count += 1
+
+    # Clean up processed files
+    RESULTS_FILE.unlink(missing_ok=True)
+    meta_file.unlink(missing_ok=True)
+    # Pending file may already be deleted by host script
+    PENDING_FILE.unlink(missing_ok=True)
+
+    audit("NEWS_INTEL_IMPORT_OK", actor="analyzer", details={
+        "articles_imported": stored_count,
+        "results_parsed": len(results),
+    })
+    LOG.info("import_results: stored %d analysis results from host CLI", stored_count)
+    return stored_count
+
+
+def _fetch_articles_by_ids(article_ids: list[int]) -> dict[int, dict]:
+    """Fetch article details by IDs for quality checks."""
+    if not article_ids:
+        return {}
+
+    placeholders = ",".join(["%s"] * len(article_ids))
+    sql = f"""
+        SELECT id, title, source_name, sector, body_text, summary, published_at
+          FROM news_articles
+         WHERE id IN ({placeholders})
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, article_ids)
+        rows = cur.fetchall()
+    return {row["id"]: row for row in rows}

@@ -135,9 +135,12 @@ def run_intelligence_pipeline(
 
 
 def scheduled_run() -> None:
-    """Entry point for cron-triggered runs.
+    """Entry point for cron-triggered runs (legacy: single-step pipeline).
 
     REQ-INTEL-06-6: Check feature flag before executing.
+
+    NOTE: Prefer scheduled_export() + scheduled_import() for the host CLI path.
+    This function is kept for backward compatibility and fallback scenarios.
     """
     if not is_intelligence_enabled():
         LOG.info("News intelligence pipeline skipped (feature disabled)")
@@ -147,6 +150,87 @@ def scheduled_run() -> None:
         return
 
     run_intelligence_pipeline()
+
+
+def scheduled_export() -> None:
+    """Container cron step 1: Export unanalyzed articles for host CLI processing.
+
+    Runs at :05 after each crawl. Pre-filters noise, writes prompt to shared volume.
+    The host cron picks up the pending file 5 minutes later.
+    """
+    if not is_intelligence_enabled():
+        LOG.info("News intelligence export skipped (feature disabled)")
+        return
+
+    from trading.news.intelligence.analyzer import export_pending_for_host
+    try:
+        count = export_pending_for_host()
+        LOG.info("Scheduled export: %d articles pending for host analysis", count)
+    except Exception:  # noqa: BLE001
+        LOG.exception("Scheduled export failed")
+
+
+def scheduled_import() -> None:
+    """Container cron step 2: Import host CLI results and run remaining pipeline.
+
+    Runs at :15 after each crawl cycle. If host results are available, imports
+    them and runs clustering/trends/relevance/reporter. If no results are found
+    (host CLI failed or hasn't run), falls back to Haiku API for analysis.
+    """
+    if not is_intelligence_enabled():
+        LOG.info("News intelligence import skipped (feature disabled)")
+        return
+
+    from trading.news.intelligence.analyzer import (
+        RESULTS_FILE,
+        import_host_results,
+    )
+
+    imported = 0
+    try:
+        imported = import_host_results()
+    except Exception:  # noqa: BLE001
+        LOG.exception("Host result import failed")
+
+    if imported == 0 and not RESULTS_FILE.exists():
+        # Fallback: host CLI did not produce results, try Haiku API
+        LOG.warning("No host CLI results found — falling back to Haiku API")
+        audit("NEWS_INTEL_FALLBACK_HAIKU", actor="scheduler", details={
+            "reason": "no_host_results",
+        })
+        try:
+            from trading.news.intelligence.analyzer import analyze_articles
+            metrics = analyze_articles()
+            imported = metrics.articles_processed
+        except Exception:  # noqa: BLE001
+            LOG.exception("Haiku fallback also failed")
+
+    if imported > 0:
+        # Run the rest of the pipeline (clustering, trends, relevance, reporter)
+        _run_post_analysis_pipeline()
+
+
+def _run_post_analysis_pipeline() -> None:
+    """Run pipeline modules 2-5 (after analysis results are in DB)."""
+    try:
+        from trading.news.intelligence.clustering import cluster_stories
+        clusters = cluster_stories()
+        LOG.info("Post-analysis: %d clusters formed", len(clusters))
+
+        from trading.news.intelligence.trends import compute_daily_trends
+        trends = compute_daily_trends()
+        LOG.info("Post-analysis: %d trends updated", len(trends))
+
+        from trading.news.intelligence.relevance import tag_portfolio_relevance
+        relevance = tag_portfolio_relevance()
+        LOG.info("Post-analysis: %d articles tagged for relevance", relevance["tagged"])
+
+        from trading.news.intelligence.reporter import write_intelligence_reports
+        macro_bytes, micro_bytes = write_intelligence_reports()
+        LOG.info("Post-analysis: reports written (macro=%d, micro=%d bytes)", macro_bytes, micro_bytes)
+
+    except Exception:  # noqa: BLE001
+        LOG.exception("Post-analysis pipeline failed")
 
 
 def cli_analyze_news(
