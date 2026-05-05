@@ -288,7 +288,23 @@ def call_persona(
         try:
             response_json = _extract_json(text)
         except Exception as e:  # noqa: BLE001
-            LOG.warning("could not parse persona JSON: %s", e)
+            LOG.warning("could not parse persona JSON (attempt 1): %s", e)
+            # Retry: ask LLM to fix its JSON (single retry, no tool-use)
+            try:
+                retry_msg = client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "user", "content": "Your previous response had invalid JSON. Return ONLY valid JSON, nothing else."},
+                        {"role": "assistant", "content": text[:500]},
+                        {"role": "user", "content": "Fix the JSON above. Output ONLY the corrected JSON object."},
+                    ],
+                )
+                retry_text = retry_msg.content[0].text if retry_msg.content else ""
+                response_json = _extract_json(retry_text)
+                LOG.info("JSON retry succeeded for %s", persona_name)
+            except Exception:  # noqa: BLE001
+                LOG.warning("JSON retry also failed for %s — proceeding with response_json=None", persona_name)
 
     # Persist to persona_runs with tool usage accounting (REQ-PTOOL-02-7)
     sql = """

@@ -42,7 +42,8 @@ def compute_similarity(
     # Step 1: Generate embedding for current state
     embedding = _generate_embedding(current_state_text)
     if not embedding:
-        LOG.warning("Failed to generate current state embedding")
+        # Fallback: skip prototype matching silently (no embedding API configured)
+        LOG.debug("Embedding unavailable — prototype similarity skipped (non-critical)")
         return []
 
     # Step 2: pgvector cosine similarity search

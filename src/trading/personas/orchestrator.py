@@ -49,7 +49,7 @@ CycleKind = Literal["pre_market", "intraday", "event", "weekly", "manual"]
 # SPEC-009 REQ-REFL-03-2: Maximum reflection rounds (Decision re-invoke + Risk re-evaluate).
 MAX_REFLECTION_ROUNDS: int = 2
 # SPEC-009 REQ-REFL-03-10: Combined timeout per reflection round (seconds).
-REFLECTION_ROUND_TIMEOUT: float = 30.0
+REFLECTION_ROUND_TIMEOUT: float = 45.0
 
 
 def _summarize_persona(name: str, response_json: dict[str, Any] | None, max_lines: int = 5) -> str:
