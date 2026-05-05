@@ -2,14 +2,17 @@
 
 Processes unanalyzed articles from news_articles using Claude Haiku 4.5.
 Batches of 10 articles per API call, max 100 articles per run.
+Includes pre-filtering for obvious noise and post-analysis quality checks.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from anthropic import Anthropic
 
@@ -34,6 +37,29 @@ RETRY_DELAY = 5.0
 HAIKU_IN_RATE = 0.80
 HAIKU_OUT_RATE = 4.0
 
+# Pre-filter: title keywords indicating noise (PR/CSR/HR/events)
+NOISE_TITLE_KEYWORDS = [
+    "협약", "봉사", "기부", "후원", "사회공헌", "어린이날", "축제",
+    "수상", "취임", "인사", "부고", "ESG 보고서", "사회적 책임",
+    "자원봉사", "장학금", "나눔", "기념식", "체육대회", "사내",
+    "임직원", "복지", "동호회", "사보", "공채", "채용설명회",
+]
+
+# Regex pattern for promotional/ad content in titles
+NOISE_TITLE_PATTERNS = re.compile(
+    r"(출시\s*기념|할인|이벤트|프로모션|경품|쿠폰|무료\s*체험|"
+    r"신제품\s*출시.*%|얼리버드|사전\s*예약.*혜택)",
+    re.IGNORECASE,
+)
+
+# Threshold for title-summary similarity check
+TITLE_SIMILARITY_THRESHOLD = 0.80
+
+# Valid classifications
+VALID_CLASSIFICATIONS = frozenset({
+    "macro_market_moving", "sector_specific", "company_specific", "noise",
+})
+
 
 @dataclass
 class AnalysisRunMetrics:
@@ -41,6 +67,7 @@ class AnalysisRunMetrics:
 
     articles_processed: int = 0
     articles_deferred: int = 0
+    articles_prefiltered: int = 0
     batches_sent: int = 0
     haiku_calls_succeeded: int = 0
     haiku_calls_failed: int = 0
@@ -48,6 +75,32 @@ class AnalysisRunMetrics:
     total_output_tokens: int = 0
     total_cost_krw: float = 0.0
     duration_seconds: float = 0.0
+
+
+def is_noise_title(title: str) -> bool:
+    """Check if an article title indicates obvious noise content.
+
+    Returns True if the title contains noise keywords (PR/CSR/HR/events)
+    or matches promotional patterns. These articles skip Haiku analysis.
+    """
+    title_lower = title.lower()
+    for keyword in NOISE_TITLE_KEYWORDS:
+        if keyword.lower() in title_lower:
+            return True
+    if NOISE_TITLE_PATTERNS.search(title):
+        return True
+    return False
+
+
+def check_title_similarity(title: str, implication: str) -> float:
+    """Check if investment_implication is too similar to the title.
+
+    Returns similarity ratio (0.0 to 1.0). Higher means more similar (bad).
+    """
+    # Normalize both strings for comparison
+    title_clean = re.sub(r"[^\w\s]", "", title).strip()
+    impl_clean = re.sub(r"[^\w\s]", "", implication).strip()
+    return SequenceMatcher(None, title_clean, impl_clean).ratio()
 
 
 def get_unanalyzed_articles(
@@ -93,6 +146,41 @@ def _prepare_batch(articles: list[dict]) -> list[dict]:
     return batch
 
 
+def _store_prefiltered_noise(articles: list[dict]) -> int:
+    """Store pre-filtered noise articles directly with impact=0, classification=noise.
+
+    These articles are identified by title keywords alone and skip Haiku analysis
+    to save cost.
+    """
+    if not articles:
+        return 0
+
+    sql = """
+        INSERT INTO news_analysis
+            (article_id, summary_2line, impact_score, keywords, sentiment,
+             classification, model_used, token_input, token_output, cost_krw)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (article_id) DO NOTHING
+    """
+    stored = 0
+    with connection() as conn, conn.cursor() as cur:
+        for art in articles:
+            cur.execute(sql, (
+                art["id"],
+                "(투자 관련성 없음 - 자동 필터링)",
+                0,  # impact_score = 0
+                [],  # no keywords
+                "neutral",
+                "noise",
+                "pre-filter",
+                0,
+                0,
+                0.0,
+            ))
+            stored += 1
+    return stored
+
+
 def _call_haiku(batch: list[dict]) -> tuple[list[dict] | None, int, int]:
     """Call Haiku API with a batch of articles.
 
@@ -127,7 +215,10 @@ def _call_haiku(batch: list[dict]) -> tuple[list[dict] | None, int, int]:
 
 
 def _parse_analysis_response(text: str, expected_count: int) -> list[dict] | None:
-    """Parse the JSON array response from Haiku."""
+    """Parse the JSON array response from Haiku.
+
+    Handles the new response format with classification and investment_implication.
+    """
     text = text.strip()
     # Strip markdown code fences if present
     if text.startswith("```"):
@@ -159,37 +250,87 @@ def _parse_analysis_response(text: str, expected_count: int) -> list[dict] | Non
     for item in data[:expected_count]:
         if not isinstance(item, dict):
             continue
-        # Validate required fields
-        summary = item.get("summary_2line", "")
-        impact = item.get("impact_score", 3)
-        keywords = item.get("keywords", [])
-        sentiment = item.get("sentiment", "neutral")
 
-        # Clamp impact score
+        # Extract classification (new field)
+        classification = item.get("classification", "company_specific")
+        if classification not in VALID_CLASSIFICATIONS:
+            classification = "company_specific"
+
+        # Extract impact score (now 0-5)
+        impact = item.get("impact_score", 3)
         if not isinstance(impact, int):
             try:
                 impact = int(impact)
             except (ValueError, TypeError):
                 impact = 3
-        impact = max(1, min(5, impact))
+        impact = max(0, min(5, impact))
 
-        # Validate sentiment
-        if sentiment not in ("positive", "neutral", "negative"):
-            sentiment = "neutral"
+        # Force noise articles to impact 0
+        if classification == "noise":
+            impact = 0
 
-        # Ensure keywords is a list of strings
+        # Extract investment_implication (replaces summary_2line conceptually)
+        # Support both field names for backward compatibility
+        implication = (
+            item.get("investment_implication")
+            or item.get("summary_2line", "")
+        )
+
+        # Extract keywords
+        keywords = item.get("keywords", [])
         if not isinstance(keywords, list):
             keywords = []
         keywords = [str(k) for k in keywords[:5]]
 
+        # Validate sentiment
+        sentiment = item.get("sentiment", "neutral")
+        if sentiment not in ("positive", "neutral", "negative"):
+            sentiment = "neutral"
+
         validated.append({
-            "summary_2line": str(summary),
+            "summary_2line": str(implication),
             "impact_score": impact,
             "keywords": keywords,
             "sentiment": sentiment,
+            "classification": classification,
         })
 
     return validated if validated else None
+
+
+def _apply_quality_checks(
+    articles: list[dict],
+    results: list[dict],
+) -> list[dict]:
+    """Apply post-analysis quality checks to Haiku results.
+
+    Fix 4: Check if investment_implication is too similar to the article title.
+    If so, penalize the impact score.
+    """
+    checked = []
+    for i, result in enumerate(results):
+        if i >= len(articles):
+            break
+
+        title = articles[i].get("title", "")
+        implication = result["summary_2line"]
+
+        # Check title-summary similarity
+        if implication and title:
+            similarity = check_title_similarity(title, implication)
+            if similarity >= TITLE_SIMILARITY_THRESHOLD:
+                LOG.warning(
+                    "Haiku produced title-restating summary (sim=%.2f) for: %s",
+                    similarity, title[:60],
+                )
+                # Penalize: reduce impact by 1, minimum 0
+                result["impact_score"] = max(result["impact_score"] - 1, 0)
+                # If impact dropped to 0, mark as noise
+                if result["impact_score"] == 0:
+                    result["classification"] = "noise"
+
+        checked.append(result)
+    return checked
 
 
 def _store_results(
@@ -208,8 +349,8 @@ def _store_results(
     sql = """
         INSERT INTO news_analysis
             (article_id, summary_2line, impact_score, keywords, sentiment,
-             model_used, token_input, token_output, cost_krw)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             classification, model_used, token_input, token_output, cost_krw)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (article_id) DO NOTHING
     """
 
@@ -226,6 +367,7 @@ def _store_results(
                 result["impact_score"],
                 result["keywords"],
                 result["sentiment"],
+                result["classification"],
                 HAIKU_MODEL,
                 in_tok // len(results),
                 out_tok // len(results),
@@ -238,6 +380,7 @@ def _store_results(
                 impact_score=result["impact_score"],
                 keywords=result["keywords"],
                 sentiment=result["sentiment"],
+                classification=result["classification"],
                 token_input=in_tok // len(results),
                 token_output=out_tok // len(results),
                 cost_krw=cost_per_article,
@@ -256,6 +399,13 @@ def analyze_articles(
 
     REQ-INTEL-01-7: Max 100 articles per run.
     REQ-INTEL-01-8: Retry once on API failure, then skip batch.
+
+    Pipeline:
+    1. Fetch unanalyzed articles
+    2. Pre-filter obvious noise (skip Haiku, save cost)
+    3. Send remaining articles to Haiku in batches
+    4. Apply quality checks (title-similarity penalty)
+    5. Store results
     """
     start_time = time.time()
     metrics = AnalysisRunMetrics()
@@ -277,9 +427,28 @@ def analyze_articles(
         metrics.articles_deferred = total_available - max_articles
         articles = articles[:max_articles]
 
-    # Process in batches
-    for batch_start in range(0, len(articles), BATCH_SIZE):
-        batch_articles = articles[batch_start:batch_start + BATCH_SIZE]
+    # --- Fix 2: Pre-filter obvious noise articles ---
+    noise_articles = []
+    haiku_articles = []
+    for art in articles:
+        if is_noise_title(art["title"]):
+            noise_articles.append(art)
+        else:
+            haiku_articles.append(art)
+
+    # Store pre-filtered noise directly (no Haiku call)
+    if noise_articles:
+        prefiltered_count = _store_prefiltered_noise(noise_articles)
+        metrics.articles_prefiltered = prefiltered_count
+        metrics.articles_processed += prefiltered_count
+        LOG.info(
+            "Pre-filtered %d noise articles (skipped Haiku)",
+            prefiltered_count,
+        )
+
+    # Process remaining articles in batches via Haiku
+    for batch_start in range(0, len(haiku_articles), BATCH_SIZE):
+        batch_articles = haiku_articles[batch_start:batch_start + BATCH_SIZE]
         batch_data = _prepare_batch(batch_articles)
         metrics.batches_sent += 1
 
@@ -311,6 +480,9 @@ def analyze_articles(
             LOG.warning("Haiku returned unparseable response for batch %d", batch_start // BATCH_SIZE + 1)
             continue
 
+        # --- Fix 4: Apply quality checks ---
+        results = _apply_quality_checks(batch_articles, results)
+
         # Store results
         stored = _store_results(batch_articles, results, in_tok, out_tok)
         metrics.haiku_calls_succeeded += 1
@@ -330,6 +502,7 @@ def analyze_articles(
     audit("NEWS_INTEL_ANALYZE_OK", actor="analyzer", details={
         "articles_processed": metrics.articles_processed,
         "articles_deferred": metrics.articles_deferred,
+        "articles_prefiltered": metrics.articles_prefiltered,
         "batches_sent": metrics.batches_sent,
         "haiku_calls_succeeded": metrics.haiku_calls_succeeded,
         "haiku_calls_failed": metrics.haiku_calls_failed,
@@ -340,9 +513,9 @@ def analyze_articles(
     })
 
     LOG.info(
-        "Analysis complete: %d articles, %d batches, %.1f KRW, %.1fs",
-        metrics.articles_processed, metrics.batches_sent,
-        metrics.total_cost_krw, metrics.duration_seconds,
+        "Analysis complete: %d articles (%d pre-filtered), %d batches, %.1f KRW, %.1fs",
+        metrics.articles_processed, metrics.articles_prefiltered,
+        metrics.batches_sent, metrics.total_cost_krw, metrics.duration_seconds,
     )
     return metrics
 

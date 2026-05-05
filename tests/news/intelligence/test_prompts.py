@@ -8,13 +8,31 @@ from trading.news.intelligence.prompts import (
 
 class TestArticleAnalysisPrompt:
     def test_system_prompt_contains_key_instructions(self):
-        assert "financial news analyst" in ARTICLE_ANALYSIS_SYSTEM
-        assert "Korean stock market" in ARTICLE_ANALYSIS_SYSTEM
+        assert "senior equity research analyst" in ARTICLE_ANALYSIS_SYSTEM
+        assert "classification" in ARTICLE_ANALYSIS_SYSTEM
         assert "impact_score" in ARTICLE_ANALYSIS_SYSTEM
-        assert "sentiment" in ARTICLE_ANALYSIS_SYSTEM
+        assert "investment_implication" in ARTICLE_ANALYSIS_SYSTEM
         assert "keywords" in ARTICLE_ANALYSIS_SYSTEM
-        assert "summary_2line" in ARTICLE_ANALYSIS_SYSTEM
+        assert "sentiment" in ARTICLE_ANALYSIS_SYSTEM
         assert "JSON array" in ARTICLE_ANALYSIS_SYSTEM
+
+    def test_system_prompt_defines_classifications(self):
+        assert "macro_market_moving" in ARTICLE_ANALYSIS_SYSTEM
+        assert "sector_specific" in ARTICLE_ANALYSIS_SYSTEM
+        assert "company_specific" in ARTICLE_ANALYSIS_SYSTEM
+        assert "noise" in ARTICLE_ANALYSIS_SYSTEM
+
+    def test_system_prompt_includes_noise_guidance(self):
+        assert "PR" in ARTICLE_ANALYSIS_SYSTEM
+        assert "CSR" in ARTICLE_ANALYSIS_SYSTEM
+        assert "HR" in ARTICLE_ANALYSIS_SYSTEM
+        assert "impact_score=0" in ARTICLE_ANALYSIS_SYSTEM
+
+    def test_system_prompt_demands_actionable_implications(self):
+        # Must not restate headlines
+        assert "DO NOT restate" in ARTICLE_ANALYSIS_SYSTEM
+        # Must answer what to DO
+        assert "투자자는 어떤 포지션 조정을 고려해야 하는가" in ARTICLE_ANALYSIS_SYSTEM
 
     def test_build_prompt_single_article(self):
         articles = [{

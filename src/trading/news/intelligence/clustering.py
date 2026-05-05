@@ -117,13 +117,20 @@ def get_analyzed_articles_for_clustering(
     hours: int = CLUSTER_WINDOW_HOURS,
     sector: str | None = None,
 ) -> list[dict]:
-    """Fetch analyzed articles within the clustering window."""
+    """Fetch analyzed articles within the clustering window.
+
+    Excludes noise articles (classification='noise') to prevent
+    PR/CSR/HR articles from forming clusters.
+    """
     sql = """
         SELECT a.id, a.title, a.source_name, a.sector, a.published_at,
-               na.impact_score, na.keywords, na.sentiment, na.summary_2line
+               na.impact_score, na.keywords, na.sentiment, na.summary_2line,
+               na.classification
           FROM news_articles a
           JOIN news_analysis na ON na.article_id = a.id
          WHERE a.published_at >= NOW() - make_interval(hours => %s)
+           AND na.classification != 'noise'
+           AND na.impact_score >= 1
     """
     params: list = [hours]
     if sector:

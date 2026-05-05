@@ -11,10 +11,11 @@ class AnalysisResult:
     """Per-article analysis output from Haiku."""
 
     article_id: int
-    summary_2line: str
-    impact_score: int  # 1-5
+    summary_2line: str  # investment_implication (actionable 2-line Korean)
+    impact_score: int  # 0-5 (0 = noise/no investment relevance)
     keywords: list[str]
     sentiment: str  # positive | neutral | negative
+    classification: str = "company_specific"  # macro_market_moving | sector_specific | company_specific | noise
     token_input: int = 0
     token_output: int = 0
     cost_krw: float = 0.0

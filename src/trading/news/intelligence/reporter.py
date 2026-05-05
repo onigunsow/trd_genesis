@@ -2,6 +2,11 @@
 
 Generates intelligence_macro.md and intelligence_micro.md from story clusters.
 Each run OVERWRITES the files (snapshot, not accumulation).
+
+Key filtering rules:
+- Macro report: ONLY classification == "macro_market_moving", impact >= 3
+- Micro report: ONLY classification IN ("sector_specific", "company_specific"), impact >= 3
+- Noise (classification == "noise") and low-impact (<=2) articles are EXCLUDED from both.
 """
 
 from __future__ import annotations
@@ -23,20 +28,23 @@ LOG = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
 
 # REQ-INTEL-05-7: Maximum clusters per file
-MAX_MACRO_CLUSTERS = 50
-MAX_MICRO_CLUSTERS_PER_SECTOR = 30
+MAX_MACRO_STORIES = 15
+MAX_MICRO_STORIES_PER_SECTOR = 10
+
+# Minimum impact score for inclusion in reports
+MIN_REPORT_IMPACT = 3
 
 
 def _format_cluster_entry(cluster: dict) -> str:
     """Format a single story cluster for the intelligence report.
 
-    REQ-INTEL-05-4: Standard format with [투자 주목] prefix for relevant stories.
+    New format with action-oriented arrows and keywords visible.
     """
     title = cluster["representative_title"]
     impact = cluster["impact_max"]
     source_count = cluster["source_count"]
-    portfolio_relevant = cluster.get("portfolio_relevant", False)
     first_published = cluster.get("first_published")
+    keywords = cluster.get("keywords", [])
 
     # Date formatting
     if isinstance(first_published, datetime):
@@ -44,44 +52,75 @@ def _format_cluster_entry(cluster: dict) -> str:
     else:
         date_str = str(date.today())
 
-    # Source names from article_ids (query or use available data)
-    sources_str = f"{source_count}건"
+    # Keywords display (top 3)
+    keywords_str = ", ".join(keywords[:3]) if keywords else ""
 
-    # Header with optional [투자 주목] tag
-    tag = "[투자 주목] " if (portfolio_relevant and impact >= 4) else ""
+    # Header with [투자 주목] for high impact
+    tag = "[투자 주목] " if impact >= 4 else ""
     header = f"### {tag}{title} (Impact: {impact}/5)"
 
-    # Source line
-    source_line = f"_Sources: {sources_str} | {date_str}_"
+    # Metadata line with source count, date, keywords
+    meta_parts = [f"{source_count} sources", date_str]
+    if keywords_str:
+        meta_parts.append(f"Keywords: {keywords_str}")
+    meta_line = f"_{' | '.join(meta_parts)}_"
 
-    # Summary lines (from representative article's analysis)
+    # Investment implications with arrow prefix
     summary = _get_cluster_summary(cluster)
-    summary_lines = []
+    impl_lines = []
     if summary:
         for line in summary.split("\n"):
             line = line.strip()
             if line:
-                summary_lines.append(f"- {line}")
-    if not summary_lines:
-        summary_lines = ["- (분석 데이터 없음)"]
+                impl_lines.append(f"\u2192 {line}")
+    if not impl_lines:
+        impl_lines = ["\u2192 (투자 시사점 분석 대기중)"]
 
-    parts = [header, source_line]
-    parts.extend(summary_lines)
+    parts = [header, meta_line]
+    parts.extend(impl_lines)
     parts.append("")
     return "\n".join(parts)
 
 
 def _get_cluster_summary(cluster: dict) -> str:
-    """Get the summary for the representative article in a cluster."""
+    """Get the investment implication for the representative article in a cluster."""
     article_ids = cluster.get("article_ids", [])
     if not article_ids:
         return ""
 
-    # Get the summary from the highest-impact article
+    # Get the summary from the highest-impact article (excluding noise)
     sql = """
         SELECT na.summary_2line
           FROM news_analysis na
          WHERE na.article_id = ANY(%s)
+           AND na.classification != 'noise'
+           AND na.impact_score >= %s
+         ORDER BY na.impact_score DESC
+         LIMIT 1
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (article_ids, MIN_REPORT_IMPACT))
+            row = cur.fetchone()
+            return row["summary_2line"] if row else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _get_cluster_classification(cluster: dict) -> str:
+    """Determine the dominant classification for a cluster.
+
+    Uses the classification of the highest-impact article in the cluster.
+    """
+    article_ids = cluster.get("article_ids", [])
+    if not article_ids:
+        return "company_specific"
+
+    sql = """
+        SELECT na.classification
+          FROM news_analysis na
+         WHERE na.article_id = ANY(%s)
+           AND na.classification != 'noise'
          ORDER BY na.impact_score DESC
          LIMIT 1
     """
@@ -89,9 +128,17 @@ def _get_cluster_summary(cluster: dict) -> str:
         with connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (article_ids,))
             row = cur.fetchone()
-            return row["summary_2line"] if row else ""
+            return row["classification"] if row else "company_specific"
     except Exception:  # noqa: BLE001
-        return ""
+        return "company_specific"
+
+
+def _is_valid_implication(cluster: dict) -> bool:
+    """Check if the cluster has a valid (non-empty, non-title-restating) implication."""
+    summary = _get_cluster_summary(cluster)
+    if not summary or summary == "(투자 관련성 없음 - 자동 필터링)":
+        return False
+    return True
 
 
 def _format_trend_snapshot(trend_date: date | None = None) -> str:
@@ -133,7 +180,7 @@ def _format_trend_snapshot(trend_date: date | None = None) -> str:
             elif neg > pos:
                 label = f"Negative({neg:.0f}%)"
             else:
-                label = f"Neutral"
+                label = "Neutral"
             sentiment_parts.append(f"{display_name}: {label}")
         lines.append(f"섹터 센티멘트: {', '.join(sentiment_parts[:6])}")
     else:
@@ -142,75 +189,98 @@ def _format_trend_snapshot(trend_date: date | None = None) -> str:
     return "\n".join(lines)
 
 
-def _get_clusters_by_sector(
+def _get_clusters_for_report(
     cluster_date: date,
-    sectors: list[str],
-    max_per_sector: int,
-) -> dict[str, list[dict]]:
-    """Fetch story clusters grouped by sector.
+    classification_filter: list[str],
+    min_impact: int = MIN_REPORT_IMPACT,
+    max_stories: int = 50,
+    sectors: list[str] | None = None,
+) -> list[dict]:
+    """Fetch story clusters filtered by article classification and minimum impact.
 
-    REQ-INTEL-05-5: Sorted by impact_max DESC, then source_count DESC.
+    This is the key filtering function that ensures:
+    - Only articles with the correct classification appear in each report
+    - Impact >= min_impact (default 3) filters out low-relevance noise
+    - Clusters without valid investment implications are excluded
     """
+    # Base query: join clusters with their articles' analysis to filter by classification
     sql = """
-        SELECT *
-          FROM story_clusters
-         WHERE cluster_date = %s
-           AND sector = ANY(%s)
-         ORDER BY impact_max DESC, source_count DESC
+        SELECT sc.*,
+               (
+                   SELECT na.classification
+                     FROM news_analysis na
+                    WHERE na.article_id = ANY(sc.article_ids)
+                      AND na.classification = ANY(%s)
+                    ORDER BY na.impact_score DESC
+                    LIMIT 1
+               ) AS dominant_classification
+          FROM story_clusters sc
+         WHERE sc.cluster_date = %s
+           AND sc.impact_max >= %s
+           AND EXISTS (
+               SELECT 1 FROM news_analysis na
+                WHERE na.article_id = ANY(sc.article_ids)
+                  AND na.classification = ANY(%s)
+                  AND na.impact_score >= %s
+           )
     """
+    params: list = [classification_filter, cluster_date, min_impact, classification_filter, min_impact]
+
+    if sectors:
+        sql += " AND sc.sector = ANY(%s)"
+        params.append(sectors)
+
+    sql += " ORDER BY sc.impact_max DESC, sc.source_count DESC LIMIT %s"
+    params.append(max_stories)
+
     with connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (cluster_date, sectors))
+        cur.execute(sql, params)
         rows = list(cur.fetchall())
 
-    # Group by sector with per-sector limit
-    result: dict[str, list[dict]] = {s: [] for s in sectors}
+    # Additional filter: exclude clusters with empty/invalid implications
+    valid_clusters = []
     for row in rows:
-        sector = row["sector"]
-        if sector in result and len(result[sector]) < max_per_sector:
-            result[sector].append(row)
+        if _is_valid_implication(row):
+            valid_clusters.append(row)
 
-    return result
+    return valid_clusters
 
 
 def build_intelligence_macro(cluster_date: date | None = None) -> str:
     """Generate intelligence_macro.md content.
 
-    REQ-INTEL-05-2: Global macro intelligence (macro, finance, energy sectors).
-    REQ-INTEL-05-3: OVERWRITES each run.
+    ONLY includes articles classified as "macro_market_moving" with impact >= 3.
+    Maximum 15 stories. Excludes PR/CSR/company-specific news entirely.
     """
     if cluster_date is None:
         cluster_date = date.today()
 
     parts = [
-        f"# Intelligence Report (Macro) — {cluster_date.isoformat()}",
+        f"# Intelligence Report (Macro) \u2014 {cluster_date.isoformat()}",
         f"_Generated: {now_kst_str()} | Source: News Intelligence Pipeline_",
         "",
     ]
 
-    sector_clusters = _get_clusters_by_sector(
-        cluster_date, MACRO_SECTORS, MAX_MACRO_CLUSTERS,
+    # Fetch ONLY macro_market_moving clusters with impact >= 3
+    clusters = _get_clusters_for_report(
+        cluster_date=cluster_date,
+        classification_filter=["macro_market_moving"],
+        min_impact=MIN_REPORT_IMPACT,
+        max_stories=MAX_MACRO_STORIES,
     )
 
-    total_clusters = 0
-    for sector in MACRO_SECTORS:
-        display_name = SECTOR_DISPLAY_NAMES.get(sector, sector)
-        clusters = sector_clusters.get(sector, [])
-
-        if not clusters:
-            # REQ-INTEL-05-8: Show DATA UNAVAILABLE for empty sectors
-            parts.append(f"## {display_name} [DATA UNAVAILABLE — awaiting analysis]")
-            parts.append("")
-            continue
-
-        parts.append(f"## {display_name} ({len(clusters)} stories)")
+    if len(clusters) < 3:
+        # Not enough market-moving events to report
+        parts.append("## 시장 변동 이벤트 없음")
+        parts.append("")
+        parts.append("_금일 주요 시장 변동 이벤트가 감지되지 않았습니다._")
+        parts.append("_Impact 3 이상의 macro_market_moving 뉴스가 3건 미만입니다._")
+        parts.append("")
+    else:
+        parts.append(f"## Market-Moving Events ({len(clusters)} stories)")
         parts.append("")
         for cluster in clusters:
             parts.append(_format_cluster_entry(cluster))
-            total_clusters += 1
-            if total_clusters >= MAX_MACRO_CLUSTERS:
-                break
-        if total_clusters >= MAX_MACRO_CLUSTERS:
-            break
 
     # Trend snapshot at bottom
     parts.append("---")
@@ -218,7 +288,11 @@ def build_intelligence_macro(cluster_date: date | None = None) -> str:
     parts.append(_format_trend_snapshot(cluster_date))
     parts.append("")
     parts.append("---")
-    parts.append(f"_Total: {total_clusters} stories | Pipeline: SPEC-014 | Model: Haiku 4.5_")
+    parts.append(
+        f"_Total: {len(clusters)} stories | "
+        f"Filter: macro_market_moving, impact>={MIN_REPORT_IMPACT} | "
+        f"Pipeline: SPEC-014 | Model: Haiku 4.5_"
+    )
 
     return "\n".join(parts)
 
@@ -229,7 +303,8 @@ def build_intelligence_micro(
 ) -> str:
     """Generate intelligence_micro.md content.
 
-    REQ-INTEL-05-2: Sector-specific intelligence matching watchlist.
+    ONLY includes articles classified as "sector_specific" or "company_specific"
+    with impact >= 3. Grouped by sector, max 10 per sector.
     """
     if cluster_date is None:
         cluster_date = date.today()
@@ -244,30 +319,46 @@ def build_intelligence_micro(
         target_sectors = list(SECTOR_DISPLAY_NAMES.keys())
 
     parts = [
-        f"# Intelligence Report (Micro) — {cluster_date.isoformat()}",
+        f"# Intelligence Report (Micro) \u2014 {cluster_date.isoformat()}",
         f"_Generated: {now_kst_str()} | Source: News Intelligence Pipeline_",
         "",
     ]
 
-    sector_clusters = _get_clusters_by_sector(
-        cluster_date, target_sectors, MAX_MICRO_CLUSTERS_PER_SECTOR,
+    # Fetch sector_specific and company_specific clusters
+    all_clusters = _get_clusters_for_report(
+        cluster_date=cluster_date,
+        classification_filter=["sector_specific", "company_specific"],
+        min_impact=MIN_REPORT_IMPACT,
+        max_stories=MAX_MICRO_STORIES_PER_SECTOR * len(target_sectors),
+        sectors=target_sectors,
     )
 
-    total_clusters = 0
+    # Group by sector
+    sector_groups: dict[str, list[dict]] = {s: [] for s in target_sectors}
+    for cluster in all_clusters:
+        sector = cluster.get("sector", "stock_market")
+        if sector in sector_groups and len(sector_groups[sector]) < MAX_MICRO_STORIES_PER_SECTOR:
+            sector_groups[sector].append(cluster)
+
+    total_stories = 0
     for sector in target_sectors:
         display_name = SECTOR_DISPLAY_NAMES.get(sector, sector)
-        clusters = sector_clusters.get(sector, [])
+        clusters = sector_groups.get(sector, [])
 
         if not clusters:
-            parts.append(f"## {display_name} [DATA UNAVAILABLE — awaiting analysis]")
-            parts.append("")
-            continue
+            continue  # Skip empty sectors (no [DATA UNAVAILABLE] noise)
 
         parts.append(f"## {display_name} ({len(clusters)} stories)")
         parts.append("")
         for cluster in clusters:
             parts.append(_format_cluster_entry(cluster))
-            total_clusters += 1
+            total_stories += 1
+
+    if total_stories == 0:
+        parts.append("## 섹터별 주요 뉴스 없음")
+        parts.append("")
+        parts.append("_금일 Impact 3 이상의 섹터/종목 뉴스가 감지되지 않았습니다._")
+        parts.append("")
 
     # Trend snapshot
     parts.append("---")
@@ -276,7 +367,8 @@ def build_intelligence_micro(
     parts.append("")
     parts.append("---")
     parts.append(
-        f"_Total: {total_clusters} stories | "
+        f"_Total: {total_stories} stories | "
+        f"Filter: sector_specific+company_specific, impact>={MIN_REPORT_IMPACT} | "
         f"Sectors: {len(target_sectors)} | "
         f"Watchlist: {len(watchlist) if watchlist else 'full coverage'}_"
     )
