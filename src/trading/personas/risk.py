@@ -18,6 +18,7 @@ def run(
     decision_id: int,
     cycle_kind: str = "pre_market",
     tools: list[dict[str, Any]] | None = None,
+    model: str | None = None,
 ):
     """Invoke Risk persona.
 
@@ -36,7 +37,7 @@ def run(
     user_msg = "위 시그널을 검증한 결과를 JSON으로 제출하세요. APPROVE/HOLD/REJECT 중 하나로 결정하세요."
     res = call_persona(
         persona_name=PERSONA,
-        model=MODEL,
+        model=model or MODEL,
         cycle_kind=cycle_kind,
         system_prompt=system_prompt,
         user_message=user_msg,

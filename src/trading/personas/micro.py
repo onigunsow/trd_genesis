@@ -18,6 +18,7 @@ def run(
     input_data: dict[str, Any],
     cycle_kind: str = "pre_market",
     tools: list[dict[str, Any]] | None = None,
+    model: str | None = None,
 ):
     """Invoke Micro persona.
 
@@ -40,7 +41,7 @@ def run(
     user_msg = "\n".join(user_parts)
     return call_persona(
         persona_name=PERSONA,
-        model=MODEL,
+        model=model or MODEL,
         cycle_kind=cycle_kind,
         system_prompt=system_prompt,
         user_message=user_msg,

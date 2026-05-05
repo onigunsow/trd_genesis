@@ -31,7 +31,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["series_ids"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_global_assets",
@@ -52,7 +51,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["symbols"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_ticker_technicals",
@@ -72,7 +70,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["ticker"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_ticker_fundamentals",
@@ -87,7 +84,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["ticker"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_ticker_flows",
@@ -107,7 +103,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["ticker"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_recent_disclosures",
@@ -128,7 +123,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["tickers"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_static_context",
@@ -161,7 +155,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["name"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_active_memory",
@@ -187,7 +180,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["table"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_portfolio_status",
@@ -197,7 +189,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {},
             "required": [],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_watchlist",
@@ -207,7 +198,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {},
             "required": [],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     # SPEC-011 REQ-TOOLINT-05-3: New JIT pipeline and prototype tools
     {
@@ -233,7 +223,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["ticker"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_market_prototype_similarity",
@@ -243,7 +232,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {},
             "required": [],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     {
         "name": "get_intraday_price_history",
@@ -258,7 +246,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["ticker"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
     # SPEC-012 REQ-DYNTH-05-1: Dynamic threshold tool
     {
@@ -274,7 +261,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
             "required": ["ticker"],
         },
-        "cache_control": {"type": "ephemeral"},
     },
 ]
 
