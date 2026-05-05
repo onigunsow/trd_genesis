@@ -5,6 +5,10 @@
 - **SPEC**: `.moai/specs/SPEC-TRADING-001/spec.md` (M1~M5 본 SPEC, v0.2.0)
 - **SPEC**: `.moai/specs/SPEC-TRADING-007/spec.md` (페르소나 메모리 시스템 + Static Context)
 - **SPEC**: `.moai/specs/SPEC-TRADING-008/spec.md` (Cost Optimization — Prompt Caching)
+- **SPEC**: `.moai/specs/SPEC-TRADING-009/spec.md` (AI/LLM Architecture — Tool-calling + Reflection Loop)
+- **SPEC**: `.moai/specs/SPEC-TRADING-010/spec.md` (Cost Optimization 2 — Haiku Hybrid + pgvector)
+- **SPEC**: `.moai/specs/SPEC-TRADING-011/spec.md` (JIT State Reconstruction + ProtoHedge Risk)
+- **SPEC**: `.moai/specs/SPEC-TRADING-012/spec.md` (Algorithm — Event-CAR Filter + Dynamic Thresholds)
 - **프로젝트 컨텍스트**: `.moai/project/{product,structure,tech}.md`
 
 ## 마일스톤 진행 상태
@@ -19,6 +23,10 @@
 - [x] **Phase 3** (정밀화) — 시스템 에러 알림 + 누적 손익 + 분할 매매 룰 + gitleaks + 백업 무결성
 - [x] **Phase 4** (정밀화) — SPEC-007: Static Context (.md cron) + Dynamic Memory (페르소나 자가 관리)
 - [x] **Phase A** (비용 절감) — SPEC-008: Anthropic Prompt Caching (`cache_control: ephemeral`) + 메모리 user_msg 분리 + `persona_runs.cache_*` 컬럼 + 일일 리포트 캐시 적중률
+- [x] **SPEC-009** (아키텍처) — Tool-calling 기반 능동적 정보 조회 + Risk REJECT Reflection Loop (최대 2회 재시도)
+- [x] **SPEC-010** (비용 2차) — Haiku 하이브리드 라우팅 (Micro/Report/News→Haiku) + pgvector 시맨틱 검색
+- [x] **SPEC-011** (인프라) — JIT 실시간 파이프라인 (KIS WebSocket + DART polling) + ProtoHedge 프로토타입 리스크
+- [x] **SPEC-012** (전략) — Event-CAR 필터 (예측 |CAR|≥1.5%만 트리거) + ATR 기반 동적 손절/익절
 - [ ] **M6** — 실거래 진입 (SPEC-TRADING-002 별도 작성 예정, 모의 3주 검증 후)
 
 ## 페르소나 시스템
@@ -74,7 +82,8 @@
 | 매도 KOSDAQ (수수료+거래세) | 0.195% |
 | Round-trip KOSPI | ≈ 0.36% |
 | Anthropic 비용 (M5+ 풀 가동, 캐시 전) | 월 ~30~50만원 |
-| Anthropic 비용 (Phase A 캐시 적용 후) | 월 ~18~30만원 (≈40% 절감 검증, 1주 운영 후 재산정) |
+| Anthropic 비용 (Phase A 캐시 적용 후) | 월 ~18~30만원 (≈40% 절감) |
+| Anthropic 비용 (SPEC-010 전체 활성화 후 목표) | 월 ≤10만원 (Haiku + 시맨틱 검색) |
 
 ### SPEC-008 Prompt Caching (Phase A)
 
@@ -85,6 +94,30 @@
 - 일일 리포트에 캐시 적중률 라인 노출 (운영 1주차 검증 게이트: ≥50%)
 - Phase B (Claude Code subprocess 활용) 는 ToS 회색지대 + Max 구독 한도 위험으로 Future Scope 보류
 
+
+## 텔레그램 Feature Flag 활성화 가이드
+
+모든 새 기능은 feature flag로 제어됩니다. **모의 운영 안정 확인 후** 주 단위로 하나씩 활성화하세요.
+
+```
+Week 1: /tool-calling on       → 페르소나가 도구로 필요한 데이터만 능동 조회 (토큰 80% 절감)
+Week 2: /reflection on         → Risk REJECT 시 Decision에 피드백 → 재시도 (매매 품질 향상)
+Week 3: /model-routing on      → Micro/DailyReport/MacroNews → Haiku 4.5 (비용 73% 절감)
+Week 4: /semantic-search on    → pgvector 시맨틱 검색 (컨텍스트 정밀화)
+Week 5: /jit-pipeline on       → 장중 실시간 델타 반영 (KIS WebSocket + DART polling)
+Week 6: /prototype-risk on     → 시장 프로토타입 유사도 기반 동적 익스포저 조절
+Week 7: /car-filter on         → 예측 |CAR|≥1.5% 이벤트만 Decision 트리거 (노이즈 제거)
+Week 8: /dyn-threshold on      → ATR 기반 동적 손절/익절 (종목별 변동성 적응)
+```
+
+**롤백**: 문제 발생 시 같은 명령어에 `off`를 붙이면 즉시 비활성화됩니다.
+예: `/tool-calling off`, `/reflection off`
+
+**현재 상태 확인**: `/status` 텔레그램 명령으로 전체 flag 상태 확인 가능.
+
+**주의**: Decision/Risk 페르소나는 절대 Haiku로 라우팅되지 않습니다 (하드코딩 보호).
+
+---
 
 ## 운영 명령어
 
@@ -156,13 +189,15 @@ BACKUP_KEEP=7 ./backup.sh                            # retention 일시 변경
 ## 외부 의존성
 
 - **한국투자증권 KIS Developers**: paper/live API
-- **Anthropic API**: Claude Opus 4.7 + Sonnet 4.6
+- **Anthropic API**: Claude Opus 4.7 + Sonnet 4.6 + Haiku 4.5 (SPEC-010 활성화 시)
 - **Telegram Bot API**: @sehoon_trd_bot
 - **FRED, ECOS, OpenDART**: 거시·공시 데이터
 - **pykrx 1.2.8+**: KRX 데이터 (KRX_ID/KRX_PW 환경변수 필수)
 - **yfinance**: 글로벌 자산
 - **holidays**: 한국 KRX 휴장 캘린더
 - **feedparser**: SPEC-007 RSS 피드 파싱
+- **pgvector**: SPEC-010/011 벡터 유사도 검색 (postgres 확장)
+- **Voyage AI / OpenAI Embedding API**: SPEC-010 시맨틱 임베딩 (EMBEDDING_API_KEY 필요)
 
 ## 라이선스
 
@@ -170,4 +205,4 @@ Proprietary — 박세훈 개인 자본 운용 시스템. 외부 사용 X.
 
 ---
 
-_마지막 백업: 2026-05-04 23:13:47 KST_
+_마지막 업데이트: 2026-05-05 — SPEC-009~012 반영_
