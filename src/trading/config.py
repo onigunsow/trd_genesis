@@ -45,6 +45,13 @@ EVENT_TRIGGER_SLA_SECONDS: Final[int] = 60
 # REQ-DATA-03-4 — Backfill epoch for OHLCV
 BACKFILL_START_DATE: Final[str] = "2019-01-01"
 
+# ──────────────────────────────────────────────────────────────────────────
+# SPEC-TRADING-012 — Event-CAR + Dynamic Thresholds constants
+# Fixed rules remain as ultimate fallback (REQ-MIGR-07-5).
+# ──────────────────────────────────────────────────────────────────────────
+FIXED_STOP_LOSS_PCT: Final[float] = -7.0
+FIXED_TAKE_PROFIT_RSI: Final[int] = 85
+
 # REQ-KIS-02-2 — Token cache reuse window
 KIS_TOKEN_CACHE_WINDOW_SECONDS: Final[int] = 60
 

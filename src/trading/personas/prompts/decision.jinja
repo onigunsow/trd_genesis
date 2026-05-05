@@ -96,6 +96,21 @@
 {{ event_trigger }}
 {% endif %}
 
+{% if car_context %}
+{{ car_context }}
+{% endif %}
+
+{# SPEC-012 REQ-PROMPT-06-1: Dynamic threshold rules (feature-flagged) #}
+{% if dynamic_thresholds_enabled %}
+## Dynamic Threshold Rules (활성)
+- 손절: 각 종목에 대해 get_dynamic_thresholds 도구를 호출하여 `effective_stop` 값을 사용하세요.
+- 익절: 각 종목에 대해 get_dynamic_thresholds 도구를 호출하여 `effective_take` 값을 사용하세요.
+- 트레일링 스탑: 수익 중인 포지션에 `trailing_stop_pct` 적용.
+- 변동성 인지: 'extreme' 레짐에서는 포지션 축소를 검토하세요.
+- 폴백: source="fixed_fallback" 반환 시 -7% 손절 / RSI>85 익절 사용.
+- 최종 안전장치: 고정 룰 (-7% / RSI>85)은 항상 코드에 유지됩니다.
+{% endif %}
+
 {# SPEC-009 REQ-PTOOL-02-8 — Tool-use instruction (active when tools provided) #}
 {% if tools is defined and tools %}
 필요한 정보가 있으면 제공된 Tool을 호출하여 조회하세요. 불필요한 정보를 미리 요청하지 말고, 분석에 꼭 필요한 데이터만 능동적으로 가져오세요.

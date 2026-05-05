@@ -54,6 +54,11 @@ def handle(text: str, actor: str = "telegram") -> str:
         return _handle_tool_calling(text, actor)
     if cmd == "/reflection":
         return _handle_reflection(text, actor)
+    # SPEC-012 REQ-MIGR-07-3: CAR filter and dynamic thresholds toggle commands
+    if cmd == "/car-filter":
+        return _handle_car_filter(text, actor)
+    if cmd == "/dyn-threshold":
+        return _handle_dyn_threshold(text, actor)
     # SPEC-011 REQ-MIGR-06-3: JIT pipeline and prototype toggle commands
     if cmd == "/jit":
         return _handle_jit(text, actor)
@@ -64,6 +69,32 @@ def handle(text: str, actor: str = "telegram") -> str:
     if cmd in ("/help", "/start"):
         return _help()
     return f"unknown command: {cmd or '(empty)'}\n{_help()}"
+
+
+def _handle_car_filter(text: str, actor: str) -> str:
+    """Toggle CAR filter feature flag (SPEC-012 REQ-MIGR-07-3)."""
+    parts = text.strip().split()
+    if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+        return "사용법: /car-filter on|off"
+    enable = parts[1].lower() == "on"
+    update_system_state(car_filter_enabled=enable, updated_by=actor)
+    event = "CAR_FILTER_ENABLED" if enable else "CAR_FILTER_DISABLED"
+    audit(event, actor=actor, details={"enabled": enable})
+    status = "활성화" if enable else "비활성화"
+    return f"✓ car_filter_enabled={enable}. Event-CAR Filter {status}됨."
+
+
+def _handle_dyn_threshold(text: str, actor: str) -> str:
+    """Toggle dynamic thresholds feature flag (SPEC-012 REQ-MIGR-07-3)."""
+    parts = text.strip().split()
+    if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+        return "사용법: /dyn-threshold on|off"
+    enable = parts[1].lower() == "on"
+    update_system_state(dynamic_thresholds_enabled=enable, updated_by=actor)
+    event = "DYNAMIC_THRESHOLDS_ENABLED" if enable else "DYNAMIC_THRESHOLDS_DISABLED"
+    audit(event, actor=actor, details={"enabled": enable})
+    status = "활성화" if enable else "비활성화"
+    return f"✓ dynamic_thresholds_enabled={enable}. Dynamic Thresholds {status}됨."
 
 
 def _handle_tool_calling(text: str, actor: str) -> str:
@@ -202,6 +233,8 @@ def _help() -> str:
         "/silent        침묵 모드\n"
         "/tool-calling on|off  Tool-calling 전환\n"
         "/reflection on|off    Reflection Loop 전환\n"
+        "/car-filter on|off    Event-CAR Filter 전환\n"
+        "/dyn-threshold on|off Dynamic Thresholds 전환\n"
         "/jit on|off           JIT Pipeline 전환\n"
         "/jit ws|dart|news on|off  개별 소스 전환\n"
         "/prototype on|off     ProtoHedge 전환\n"

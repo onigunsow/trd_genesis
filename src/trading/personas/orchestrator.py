@@ -38,6 +38,8 @@ from trading.personas import context as ctx
 from trading.risk import circuit_breaker
 from trading.risk.limits import check_pre_order, record_breach
 from trading.risk.market_safety import check_pre_order_safety
+from trading.strategy.car.filter import evaluate_event
+from trading.strategy.car.models import FilterDecision
 from trading.tools.registry import get_tools_for_persona
 
 LOG = logging.getLogger(__name__)
@@ -468,6 +470,9 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         "daily_order_count": 0,    # M5: actual count
         "daily_pnl_pct": 0.0,
         "event_trigger": None,     # only set on event-driven cycles
+        # SPEC-012: CAR context and dynamic thresholds flag
+        "car_context": None,
+        "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
     }
     try:
         dec_res, sig_ids = decision_persona.run(
@@ -638,6 +643,145 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
                 )
             except Exception as e:  # noqa: BLE001
                 LOG.warning("post-trade briefing failed: %s", e)
+
+    return res
+
+
+def run_event_trigger_cycle(
+    today: str | None = None,
+    *,
+    ticker: str,
+    event_type: str,
+    event_subtype: str | None = None,
+    event_magnitude: float | None = None,
+    event_context: str = "",
+    is_safety_critical: bool = False,
+) -> CycleResult | None:
+    """Event-trigger cycle with SPEC-012 CAR filter integration.
+
+    REQ-FILTER-03-1: CAR filter sits between event trigger and Decision invocation.
+    REQ-FILTER-03-4: Blocked events skip Decision (token savings).
+    REQ-FILTER-03-5: Passed events inject CAR context into Decision input.
+
+    Returns CycleResult if Decision invoked, None if event was filtered out.
+    """
+    today = today or date.today().isoformat()
+    state = get_system_state()
+
+    # SPEC-012: Apply CAR filter if enabled (REQ-MIGR-07-4)
+    if state.get("car_filter_enabled", False):
+        filter_result = evaluate_event(
+            ticker=ticker,
+            event_type=event_type,
+            event_subtype=event_subtype,
+            event_magnitude=event_magnitude,
+            is_safety_critical=is_safety_critical,
+        )
+
+        if filter_result.decision == FilterDecision.BLOCK:
+            LOG.info(
+                "CAR filter BLOCKED event: %s/%s for %s (predicted_car_5d=%.4f, threshold=%.4f)",
+                event_type, event_subtype, ticker,
+                filter_result.predicted_car_5d or 0.0,
+                filter_result.threshold,
+            )
+            tg.system_briefing(
+                "Event-CAR Filtered",
+                f"{ticker} {event_type}/{event_subtype or ''} blocked. "
+                f"|CAR|={abs(filter_result.predicted_car_5d or 0):.2%} < threshold={filter_result.threshold:.2%}",
+            )
+            return None
+
+        # PASS or PASS_LOW_CONFIDENCE: proceed with CAR context
+        car_context = filter_result.car_context
+    else:
+        car_context = None
+
+    # Build event trigger context
+    trigger_text = event_context or f"{event_type}/{event_subtype or ''} for {ticker} (magnitude: {event_magnitude})"
+
+    # Run pre_market-style cycle with event context injected
+    res = CycleResult(cycle_kind="event")
+    cached_macro = macro_persona.latest_cached(max_age_days=7)
+    macro_summary = (cached_macro["response"] or "")[:500] if cached_macro else None
+
+    decision_model = resolve_model("decision")
+    decision_tools = _get_persona_tools("decision", state)
+    assets = _gather_assets()
+    cash_pct = (assets["cash_d2"] / assets["total_assets"] * 100) if assets["total_assets"] else 100.0
+
+    dec_input = {
+        "today": today,
+        "macro_guide": macro_summary or "(없음)",
+        "micro_candidates": {},
+        "assets": assets,
+        "daily_order_count": 0,
+        "daily_pnl_pct": 0.0,
+        "event_trigger": trigger_text,
+        "car_context": car_context,
+        "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
+    }
+
+    try:
+        dec_res, sig_ids = decision_persona.run(
+            dec_input,
+            cycle_kind="event",
+            macro_run_id=int(cached_macro["id"]) if cached_macro else None,
+            micro_run_id=None,
+            tools=decision_tools,
+            model=decision_model,
+        )
+    except Exception as e:  # noqa: BLE001
+        tg.system_error("Decision persona (event)", e, context=f"ticker={ticker} event={event_type}")
+        raise
+
+    res.decision_run_id = dec_res.persona_run_id
+    res.decisions = sig_ids
+    tg.persona_briefing(
+        persona="Decision · 박세훈 (Event)",
+        model=decision_model,
+        summary=_summarize_persona("decision", dec_res.response_json),
+        input_tokens=dec_res.input_tokens,
+        output_tokens=dec_res.output_tokens,
+        cost_krw=dec_res.cost_krw,
+    )
+
+    # Risk + execute follows same pattern as pre_market
+    if not sig_ids:
+        return res
+
+    if state["halt_state"]:
+        tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
+        return res
+
+    s = get_settings()
+    risk_model = resolve_model("risk")
+    risk_tools = _get_persona_tools("risk", state)
+    client = KisClient(s.trading_mode)
+    signals = (dec_res.response_json or {}).get("signals", [])
+    for sig, decision_id in zip(signals, sig_ids, strict=False):
+        rk_input = {
+            "today": today,
+            "decision_signals": [sig],
+            "assets": assets,
+            "cash_pct": cash_pct,
+            "daily_order_count": 0,
+            "daily_pnl_pct": 0.0,
+            "macro_summary": macro_summary or "(없음)",
+            "micro_summary": "(event trigger)",
+        }
+        rk_res, review_id, verdict = risk_persona.run(
+            rk_input, decision_id=decision_id, cycle_kind="event",
+            tools=risk_tools, model=risk_model,
+        )
+        res.risk_run_ids.append(rk_res.persona_run_id)
+
+        if verdict == "APPROVE":
+            order_id = _execute_signal(client, sig, decision_id)
+            if order_id:
+                res.executed_orders.append(order_id)
+        else:
+            res.rejected.append(decision_id)
 
     return res
 

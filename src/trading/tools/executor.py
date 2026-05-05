@@ -45,6 +45,8 @@ def _get_dispatch_table() -> dict[str, Any]:
             get_intraday_price_history,
             get_market_prototype_similarity,
         )
+        # SPEC-012 REQ-DYNTH-05-1: Dynamic threshold tool
+        from trading.strategy.volatility.thresholds import get_dynamic_thresholds
 
         _TOOL_DISPATCH = {
             "get_macro_indicators": get_macro_indicators,
@@ -61,6 +63,8 @@ def _get_dispatch_table() -> dict[str, Any]:
             "get_delta_events": get_delta_events,
             "get_market_prototype_similarity": get_market_prototype_similarity,
             "get_intraday_price_history": get_intraday_price_history,
+            # SPEC-012 tools
+            "get_dynamic_thresholds": get_dynamic_thresholds,
         }
     return _TOOL_DISPATCH
 

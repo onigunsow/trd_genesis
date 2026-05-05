@@ -260,6 +260,22 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
         "cache_control": {"type": "ephemeral"},
     },
+    # SPEC-012 REQ-DYNTH-05-1: Dynamic threshold tool
+    {
+        "name": "get_dynamic_thresholds",
+        "description": "종목별 ATR 기반 동적 손절/익절 기준 조회",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "KRX stock code (e.g. 005930)",
+                },
+            },
+            "required": ["ticker"],
+        },
+        "cache_control": {"type": "ephemeral"},
+    },
 ]
 
 # Per-persona tool assignments (REQ-PTOOL-02-3 through REQ-PTOOL-02-6)
@@ -289,6 +305,7 @@ PERSONA_TOOLS: dict[str, list[str]] = {
         "get_static_context",
         "get_active_memory",
         "get_delta_events",
+        "get_dynamic_thresholds",
     ],
     "risk": [
         "get_portfolio_status",
@@ -338,9 +355,17 @@ def get_tools_for_persona(persona_name: str) -> list[dict[str, Any]]:
         if not proto_enabled:
             allowed_names = [n for n in allowed_names if n != "get_market_prototype_similarity"]
 
+        # SPEC-012 REQ-DYNTH-05-6: Remove dynamic threshold tool if feature disabled
+        dyn_thresh_enabled = state.get("dynamic_thresholds_enabled", False)
+        if not dyn_thresh_enabled:
+            allowed_names = [n for n in allowed_names if n != "get_dynamic_thresholds"]
+
     except Exception:
-        # If system_state unavailable, exclude all SPEC-011 tools (safe fallback)
-        spec011_tools = {"get_delta_events", "get_intraday_price_history", "get_market_prototype_similarity"}
-        allowed_names = [n for n in allowed_names if n not in spec011_tools]
+        # If system_state unavailable, exclude all SPEC-011/012 feature-flagged tools (safe fallback)
+        feature_flagged_tools = {
+            "get_delta_events", "get_intraday_price_history",
+            "get_market_prototype_similarity", "get_dynamic_thresholds",
+        }
+        allowed_names = [n for n in allowed_names if n not in feature_flagged_tools]
 
     return [t for t in TOOL_DEFINITIONS if t["name"] in allowed_names]
