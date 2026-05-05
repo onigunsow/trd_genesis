@@ -1,6 +1,6 @@
 """Crawler orchestrator — coordinates RSS fetcher, web scraper, normalizer, and storage.
 
-SPEC-TRADING-013: Full crawl cycle entry point. Called by scheduler (05:45) and CLI.
+SPEC-TRADING-013: Full crawl cycle entry point. Called by scheduler (7x/day) and CLI.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from trading.news.sources import (
     get_sources_by_sector,
     get_sources_by_type,
 )
-from trading.news.storage import insert_articles
+from trading.news.storage import cleanup_old_articles, insert_articles
 from trading.news.web_scraper import WebScraper
 
 LOG = logging.getLogger(__name__)
@@ -150,6 +150,7 @@ def crawl_all(*, force: bool = False) -> CrawlResult:
     """Crawl all 42 sources (synchronous entry point for scheduler/CLI).
 
     Checks feature flag before executing.
+    Runs DB retention cleanup (7 days) after each crawl cycle.
     """
     if not is_news_v2_enabled():
         LOG.info("News crawling v2 disabled by feature flag — skipping")
@@ -167,6 +168,15 @@ def crawl_all(*, force: bool = False) -> CrawlResult:
         "sources_succeeded": result.sources_succeeded,
         "duration_seconds": round(result.duration_seconds, 1),
     })
+
+    # Retention cleanup: keep only last 7 days (older articles are stale
+    # since context .md files are rebuilt from last 24h every crawl cycle)
+    try:
+        deleted = cleanup_old_articles(retention_days=7)
+        if deleted:
+            LOG.info("Retention cleanup: removed %d articles older than 7 days", deleted)
+    except Exception:  # noqa: BLE001
+        LOG.exception("Retention cleanup failed (non-fatal)")
 
     LOG.info("Crawl complete: %s", result)
     return result

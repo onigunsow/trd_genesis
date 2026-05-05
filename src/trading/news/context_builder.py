@@ -109,14 +109,17 @@ def _format_sector_section(sector: str, articles: list[dict[str, Any]]) -> str:
 def build_macro_news() -> str:
     """Generate macro_news.md from macro/finance/energy sector articles.
 
-    - Last 7 days
+    - Last 24 hours (crawled 7x/day, so always fresh)
     - English-language prioritized
     - Maximum 50 headlines total
     - Grouped by sector
+    - Each build OVERWRITES previous content (snapshot, not log)
     """
+    updated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
     parts = [
         f"# Macro News (Sector-based) - {datetime.now(KST).date().isoformat()}",
         f"_Generated: {now_kst_str()} | Source: news_articles DB (42 sources)_",
+        f"_Last Updated: {updated_at}_",
         "",
     ]
 
@@ -127,14 +130,14 @@ def build_macro_news() -> str:
     for sector in MACRO_SECTORS:
         if remaining <= 0:
             break
-        # English prioritized for macro
+        # English prioritized for macro (last 24h window)
         articles = get_articles_by_sector(
-            sector, days=7, language="en", limit=remaining,
+            sector, days=1, language="en", limit=remaining,
         )
         # Supplement with Korean if needed
         if len(articles) < min(remaining, 20):
             more = get_articles_by_sector(
-                sector, days=7, language="ko", limit=min(remaining, 20) - len(articles),
+                sector, days=1, language="ko", limit=min(remaining, 20) - len(articles),
             )
             articles.extend(more)
 
@@ -151,16 +154,19 @@ def build_macro_news() -> str:
 def build_micro_news(watchlist: list[str] | None = None) -> str:
     """Generate micro_news.md with sector-specific news for watchlist tickers.
 
-    - Last 3 days
+    - Last 24 hours (crawled 7x/day, so always fresh)
     - Korean-language prioritized for domestic tickers
     - Maximum 30 headlines per sector
     - Empty watchlist -> full coverage mode (REQ-NEWS-06-5)
+    - Each build OVERWRITES previous content (snapshot, not log)
     """
     from trading.news.sources import SECTORS
 
+    updated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
     parts = [
         f"# Micro News (Sector-specific) - {datetime.now(KST).date().isoformat()}",
         f"_Generated: {now_kst_str()} | Source: news_articles DB_",
+        f"_Last Updated: {updated_at}_",
         "",
     ]
 
@@ -171,9 +177,9 @@ def build_micro_news(watchlist: list[str] | None = None) -> str:
         # Full coverage mode when watchlist is empty
         target_sectors = list(SECTORS)
 
-    # Query articles for target sectors
+    # Query articles for target sectors (last 24h window)
     sector_articles = get_articles_multi_sector(
-        target_sectors, days=3, language_priority="ko", limit_per_sector=30,
+        target_sectors, days=1, language_priority="ko", limit_per_sector=30,
     )
 
     total_count = 0

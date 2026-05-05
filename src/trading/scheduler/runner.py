@@ -64,10 +64,20 @@ def _safe_call(name: str, fn, *args, **kwargs):
 def main() -> None:
     sched = BlockingScheduler(timezone=KST)
 
-    # SPEC-013 — News crawl at 05:45 (before all context builders)
-    sched.add_job(lambda: _safe_call("news_crawl_v2", _run_news_crawl),
-                  CronTrigger(hour=5, minute=45, timezone=KST),
-                  id="news_crawl_v2", name="news_crawl_v2 05:45")
+    # SPEC-013 — News crawl 6x/day (always runs; .md is "current snapshot")
+    _NEWS_CRAWL_TIMES = [
+        (8, 0),    # pre-market (1h before KRX open)
+        (11, 0),   # intraday
+        (14, 30),  # intraday (merged 14:00 + 15:00)
+        (22, 0),   # evening
+        (1, 0),    # overnight
+        (4, 0),    # overnight
+    ]
+    for h, m in _NEWS_CRAWL_TIMES:
+        sched.add_job(lambda: _safe_call("news_crawl_v2", _run_news_crawl),
+                      CronTrigger(hour=h, minute=m, timezone=KST),
+                      id=f"news_crawl_{h:02d}{m:02d}",
+                      name=f"news_crawl_v2 {h:02d}:{m:02d}")
 
     # SPEC-007 — Static context builders (run regardless of trading day; cheap)
     # macro_context 06:00 — every day (uses cached data)
