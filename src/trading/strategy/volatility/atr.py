@@ -36,10 +36,10 @@ def compute_atr(ticker: str, period: int = ATR_PERIOD) -> dict[str, Any] | None:
     # Fetch recent OHLCV (need period + some buffer for EMA warm-up)
     lookback = period + 20  # Extra days for EMA initialization
     sql = """
-        SELECT date, open, high, low, close, volume
+        SELECT ts, open, high, low, close, volume
           FROM ohlcv
-         WHERE ticker = %s
-         ORDER BY date DESC
+         WHERE symbol = %s
+         ORDER BY ts DESC
          LIMIT %s
     """
     try:
@@ -60,9 +60,9 @@ def compute_atr(ticker: str, period: int = ATR_PERIOD) -> dict[str, Any] | None:
     # Compute True Range for each day (REQ-VOL-04-2)
     true_ranges: list[float] = []
     for i in range(1, len(rows)):
-        high = rows[i]["high"]
-        low = rows[i]["low"]
-        prev_close = rows[i - 1]["close"]
+        high = float(rows[i]["high"])
+        low = float(rows[i]["low"])
+        prev_close = float(rows[i - 1]["close"])
 
         tr = max(
             high - low,
@@ -78,7 +78,7 @@ def compute_atr(ticker: str, period: int = ATR_PERIOD) -> dict[str, Any] | None:
     ema_period = min(period, len(true_ranges))
     atr = _ema(true_ranges, ema_period)
 
-    latest_close = rows[-1]["close"]
+    latest_close = float(rows[-1]["close"])
     if latest_close <= 0:
         return None
 
@@ -88,7 +88,7 @@ def compute_atr(ticker: str, period: int = ATR_PERIOD) -> dict[str, Any] | None:
         "atr_14": round(atr, 2),
         "atr_pct": round(atr_pct, 4),
         "close_price": latest_close,
-        "date": rows[-1]["date"],
+        "date": rows[-1]["ts"],
     }
 
 
