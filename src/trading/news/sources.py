@@ -1,4 +1,4 @@
-"""Source catalog — 42 verified news sources across 12 sectors (SPEC-TRADING-013).
+"""Source catalog — 40 verified news sources across 12 sectors (SPEC-TRADING-013).
 
 Replaces the legacy src/trading/contexts/rss_feeds.py tier-based system.
 All sources verified accessible via httpx from Docker container on 2026-05-05.
@@ -102,7 +102,7 @@ _RSS_SOURCES: tuple[NewsSource, ...] = (
     ),
     # --- biotech_pharma (3) ---
     NewsSource(
-        "BioSpace", "https://www.biospace.com/rss/news",
+        "BioSpace", "https://www.biospace.com/news.rss",
         "rss", "biotech_pharma", "en", "Biotech/pharma global news",
     ),
     NewsSource(
@@ -110,8 +110,8 @@ _RSS_SOURCES: tuple[NewsSource, ...] = (
         "rss", "biotech_pharma", "en", "Pharmaceutical industry news",
     ),
     NewsSource(
-        "약업신문", "https://www.yakup.com/rss/news.xml",
-        "rss", "biotech_pharma", "ko", "Korea pharmaceutical news",
+        "약업신문", "https://news.google.com/rss/search?q=site:yakup.com&hl=ko&ceid=KR:ko",
+        "rss", "biotech_pharma", "ko", "Google News proxy for yakup.com (pharma)",
     ),
     # --- energy_commodities (3) ---
     NewsSource(
@@ -145,14 +145,14 @@ _RSS_SOURCES: tuple[NewsSource, ...] = (
         "rss", "finance_banking", "ko", "Financial News banking section",
     ),
     NewsSource(
-        "한국금융신문 RSS", "https://www.fntimes.com/rss/allArticle.xml",
-        "rss", "finance_banking", "ko", "Korea Financial Times",
+        "한국은행 통화정책", "https://news.google.com/rss/search?q=%ED%95%9C%EA%B5%AD%EC%9D%80%ED%96%89+OR+%EA%B8%B0%EC%A4%80%EA%B8%88%EB%A6%AC+OR+%ED%86%B5%ED%99%94%EC%A0%95%EC%B1%85&hl=ko&ceid=KR:ko",
+        "rss", "macro_economy", "ko", "Google News proxy for BOK monetary policy",
     ),
     NewsSource(
         "Global Finance", "https://news.google.com/rss/search?q=banking+OR+fintech+global&hl=en&ceid=US:en",
         "rss", "finance_banking", "en", "Google News global finance",
     ),
-    # --- auto_ev_battery (2) ---
+    # --- auto_ev_battery (3) ---
     NewsSource(
         "Electrek", "https://electrek.co/feed/",
         "rss", "auto_ev_battery", "en", "EV and battery news",
@@ -160,6 +160,10 @@ _RSS_SOURCES: tuple[NewsSource, ...] = (
     NewsSource(
         "전자신문 자동차", "https://rss.etnews.com/Section903.xml",
         "rss", "auto_ev_battery", "ko", "ETNews automotive/EV",
+    ),
+    NewsSource(
+        "전기차시대 (EVPOST)", "https://www.evpost.co.kr/wp/feed/",
+        "rss", "auto_ev_battery", "ko", "Korean EV industry WordPress feed",
     ),
     # --- steel_materials (1) ---
     NewsSource(
@@ -184,7 +188,7 @@ _RSS_SOURCES: tuple[NewsSource, ...] = (
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Web Scraping Sources (11 sites)
+# Web Scraping Sources (8 sites)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _WEB_SOURCES: tuple[NewsSource, ...] = (
@@ -200,8 +204,8 @@ _WEB_SOURCES: tuple[NewsSource, ...] = (
     ),
     # --- finance_banking (1) ---
     NewsSource(
-        "한국금융신문 웹", "https://www.fntimes.com/html/list_1.html",
-        "web", "finance_banking", "ko", "Korea Financial Times web headlines",
+        "한국금융신문 웹", "https://www.fntimes.com/html/index.php",
+        "web", "finance_banking", "ko", "Korea Financial Times homepage headlines",
     ),
     # --- energy_commodities (1) ---
     NewsSource(
@@ -229,20 +233,10 @@ _WEB_SOURCES: tuple[NewsSource, ...] = (
         "web", "stock_market", "ko", "Naver Finance main news",
     ),
     # --- macro_economy (1) ---
-    NewsSource(
-        "한국은행 보도자료", "https://www.bok.or.kr/portal/bbs/B0000245/list.do?menuNo=200761",
-        "web", "macro_economy", "ko", "Bank of Korea press releases",
-    ),
-    # --- auto_ev_battery (1) ---
-    NewsSource(
-        "전기차시대", "https://www.evpost.co.kr/wp/articleList.html",
-        "web", "auto_ev_battery", "ko", "Korean EV industry portal",
-    ),
-    # --- defense_aerospace (1) ---
-    NewsSource(
-        "국방일보", "https://kookbang.dema.mil.kr/newsWeb/20240101000000/1/BBSMSTR_000000100001/list.do",
-        "web", "defense_aerospace", "ko", "Korean military/defense news",
-    ),
+    # NOTE: 한국은행 보도자료 removed — site under maintenance ("콘텐츠 준비중"),
+    #       JS-rendered AJAX content, requires Playwright. Replaced by RSS proxy above.
+    # NOTE: 국방일보 removed — SPA with zero static content, requires Playwright.
+    #       Defense sector covered by Defense News RSS source.
 )
 
 # Combined full catalog
@@ -254,7 +248,7 @@ _ALL_SOURCES: tuple[NewsSource, ...] = _RSS_SOURCES + _WEB_SOURCES
 # ──────────────────────────────────────────────────────────────────────────────
 
 def all_sources() -> list[NewsSource]:
-    """Return all 42 sources."""
+    """Return all 40 sources (32 RSS + 8 web)."""
     return list(_ALL_SOURCES)
 
 

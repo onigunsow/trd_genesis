@@ -43,13 +43,13 @@ def test_sector_completeness():
 
 
 def test_source_count_validation():
-    """AC-1-3: Exactly 42 sources — 31 RSS + 11 web."""
+    """AC-1-3: Exactly 40 sources — 32 RSS + 8 web."""
     sources = all_sources()
-    assert len(sources) == 42
+    assert len(sources) == 40
     rss = [s for s in sources if s.source_type == "rss"]
     web = [s for s in sources if s.source_type == "web"]
-    assert len(rss) == 31
-    assert len(web) == 11
+    assert len(rss) == 32
+    assert len(web) == 8
 
 
 def test_sources_by_sector():
@@ -62,11 +62,11 @@ def test_sources_by_sector():
 def test_sources_by_type():
     """AC-1-5: Type filtering returns correct counts."""
     web = get_sources_by_type("web")
-    assert len(web) == 11
+    assert len(web) == 8
     assert all(s.source_type == "web" for s in web)
 
     rss = get_sources_by_type("rss")
-    assert len(rss) == 31
+    assert len(rss) == 32
     assert all(s.source_type == "rss" for s in rss)
 
 
@@ -78,7 +78,7 @@ def test_sources_by_language():
     assert len(en) > 0
     assert all(s.language == "ko" for s in ko)
     assert all(s.language == "en" for s in en)
-    assert len(ko) + len(en) == 42
+    assert len(ko) + len(en) == 40
 
 
 def test_all_sources_have_valid_sectors():

@@ -1,4 +1,4 @@
-"""Web scraper for 11 sites using httpx + BeautifulSoup (SPEC-TRADING-013 Module 3).
+"""Web scraper for 8 sites using httpx + BeautifulSoup (SPEC-TRADING-013 Module 3).
 
 Per-site CSS selector rules. No Playwright/Selenium — httpx + lxml only.
 """
@@ -35,7 +35,7 @@ class ScrapeRule:
     encoding: str = "utf-8"
 
 
-# Registry of 11 scrape rules — one per web source
+# Registry of 8 scrape rules — one per web source
 # Uses href-based selectors as primary strategy for Korean CMS sites
 # (more robust than class-based selectors which change often)
 SCRAPE_RULES: dict[str, ScrapeRule] = {
@@ -53,9 +53,9 @@ SCRAPE_RULES: dict[str, ScrapeRule] = {
     ),
     "한국금융신문 웹": ScrapeRule(
         source_name="한국금융신문 웹",
-        headline_selector="a[href*='article']",
-        link_selector="a[href*='article']",
-        date_selector=".list-date",
+        headline_selector="a[href*='view.php']",
+        link_selector="a[href*='view.php']",
+        date_selector=None,
     ),
     "에너지신문": ScrapeRule(
         source_name="에너지신문",
@@ -71,15 +71,15 @@ SCRAPE_RULES: dict[str, ScrapeRule] = {
     ),
     "철강금속신문": ScrapeRule(
         source_name="철강금속신문",
-        headline_selector="#section-list a[href*='articleView']",
-        link_selector="#section-list a[href*='articleView']",
-        date_selector="#section-list .list-dated",
+        headline_selector="#user-container a[href*='articleView']",
+        link_selector="#user-container a[href*='articleView']",
+        date_selector="#user-container .list-dated",
     ),
     "게임메카 웹": ScrapeRule(
         source_name="게임메카 웹",
-        headline_selector=".news_lst a, .news-list .title a",
-        link_selector=".news_lst a, .news-list .title a",
-        date_selector=".news_lst .date, .news-list .date",
+        headline_selector=".news-list a[href*='view.php']",
+        link_selector=".news-list a[href*='view.php']",
+        date_selector=".news-list .date",
     ),
     "네이버증권 뉴스": ScrapeRule(
         source_name="네이버증권 뉴스",
@@ -88,24 +88,9 @@ SCRAPE_RULES: dict[str, ScrapeRule] = {
         date_selector=".mainNewsList li .wdate, .news_list .date",
         encoding="euc-kr",
     ),
-    "한국은행 보도자료": ScrapeRule(
-        source_name="한국은행 보도자료",
-        headline_selector=".bd-line .title a, .bbs-list a",
-        link_selector=".bd-line .title a, .bbs-list a",
-        date_selector=".bd-line .date, .bbs-list .date",
-    ),
-    "전기차시대": ScrapeRule(
-        source_name="전기차시대",
-        headline_selector="a[href*='articleView'], .article-list a",
-        link_selector="a[href*='articleView'], .article-list a",
-        date_selector=".list-dated",
-    ),
-    "국방일보": ScrapeRule(
-        source_name="국방일보",
-        headline_selector=".board-list .title a, .bbs-list a, a[href*='list.do']",
-        link_selector=".board-list .title a, .bbs-list a",
-        date_selector=".board-list .date, .bbs-list .date",
-    ),
+    # NOTE: 한국은행 보도자료 removed (site under maintenance, JS-rendered)
+    # NOTE: 전기차시대 converted to RSS source (WordPress /wp/feed/)
+    # NOTE: 국방일보 removed (JS SPA, no static content)
 }
 
 
