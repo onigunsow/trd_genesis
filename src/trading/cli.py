@@ -71,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
             from trading.contexts.build_macro_news import main as run
             run()
         return 0
+    if cmd == "crawl-news":
+        return _cmd_crawl_news(rest)
+    if cmd == "news-health":
+        return _cmd_news_health(rest)
     if cmd == "calendar":
         from datetime import date, timedelta
         from trading.scheduler.calendar import is_trading_day, reason_if_closed
@@ -114,6 +118,59 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
+def _cmd_crawl_news(rest: list[str]) -> int:
+    """SPEC-013: Run news crawl cycle."""
+    from trading.news.crawler import crawl_all, crawl_sector, crawl_source
+
+    force = "--force" in rest
+    sector = None
+    source = None
+
+    for i, arg in enumerate(rest):
+        if arg == "--sector" and i + 1 < len(rest):
+            sector = rest[i + 1]
+        elif arg == "--source" and i + 1 < len(rest):
+            source = rest[i + 1]
+
+    if source:
+        result = crawl_source(source, force=force)
+    elif sector:
+        result = crawl_sector(sector, force=force)
+    else:
+        result = crawl_all(force=force)
+
+    print(f"Crawl complete: {result}")
+    return 0
+
+
+def _cmd_news_health(rest: list[str]) -> int:
+    """SPEC-013: Display news source health status."""
+    from trading.news.health import get_all_health_status
+
+    statuses = get_all_health_status()
+    if not statuses:
+        print("No health data yet. Run 'trading crawl-news' first.")
+        return 0
+
+    # Format as table
+    print(f"{'Source':<30} {'Sector':<20} {'Status':<10} {'Rate':<8} {'Fails':<6} {'Last OK':<20} {'Last Fail':<20}")
+    print("-" * 120)
+    for s in statuses:
+        status = "ACTIVE" if s["enabled"] else "DISABLED"
+        last_ok = s["last_success"].strftime("%Y-%m-%d %H:%M") if s["last_success"] else "—"
+        last_fail = s["last_failure"].strftime("%Y-%m-%d %H:%M") if s["last_failure"] else "—"
+        print(
+            f"{s['source_name']:<30} "
+            f"{'—':<20} "
+            f"{status:<10} "
+            f"{s['success_rate_pct']:>5.1f}% "
+            f"{s['consecutive_failures']:<6} "
+            f"{last_ok:<20} "
+            f"{last_fail:<20}"
+        )
+    return 0
+
+
 def _print_help(file=sys.stdout) -> int:
     print(
         "trading <subcommand> [args]\n"
@@ -131,7 +188,9 @@ def _print_help(file=sys.stdout) -> int:
         "  status            print system_state singleton (M5)\n"
         "  bot               run Telegram command listener (M5)\n"
         "  scheduler         start APScheduler cron loop (M5)\n"
-        "  daily-report      generate and send today's report (M5)\n",
+        "  daily-report      generate and send today's report (M5)\n"
+        "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
+        "  news-health       show news source health status table\n",
         file=file,
     )
     return 0

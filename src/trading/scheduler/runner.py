@@ -27,6 +27,12 @@ LOG = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
 
 
+def _run_news_crawl() -> None:
+    """SPEC-013: Run news crawl cycle (feature flag checked internally)."""
+    from trading.news.crawler import crawl_all
+    crawl_all()
+
+
 def _wrap(name: str, fn, *args, **kwargs):
     """Run `fn` only if today is a KRX trading day (Mon-Fri ∩ no public holidays)."""
     if not is_trading_day():
@@ -57,6 +63,11 @@ def _safe_call(name: str, fn, *args, **kwargs):
 
 def main() -> None:
     sched = BlockingScheduler(timezone=KST)
+
+    # SPEC-013 — News crawl at 05:45 (before all context builders)
+    sched.add_job(lambda: _safe_call("news_crawl_v2", _run_news_crawl),
+                  CronTrigger(hour=5, minute=45, timezone=KST),
+                  id="news_crawl_v2", name="news_crawl_v2 05:45")
 
     # SPEC-007 — Static context builders (run regardless of trading day; cheap)
     # macro_context 06:00 — every day (uses cached data)
