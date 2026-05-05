@@ -28,7 +28,7 @@ from trading.personas.base import KRW_PER_USD
 LOG = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5"
-BATCH_SIZE = 10
+BATCH_SIZE = 5  # Reduced from 10: Haiku produces more reliable JSON with smaller batches
 MAX_ARTICLES_PER_RUN = 100
 HAIKU_TIMEOUT = 30.0
 RETRY_DELAY = 5.0
@@ -195,7 +195,7 @@ def _call_haiku(batch: list[dict]) -> tuple[list[dict] | None, int, int]:
 
     response = client.messages.create(
         model=HAIKU_MODEL,
-        max_tokens=2048,
+        max_tokens=4096,  # Increased from 2048: prevent truncation with complex schema
         system=ARTICLE_ANALYSIS_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -217,35 +217,151 @@ def _call_haiku(batch: list[dict]) -> tuple[list[dict] | None, int, int]:
 def _parse_analysis_response(text: str, expected_count: int) -> list[dict] | None:
     """Parse the JSON array response from Haiku.
 
-    Handles the new response format with classification and investment_implication.
+    Handles common Haiku output quirks:
+    - Markdown code fences (```json ... ```) with or without preceding text
+    - Explanatory text before/after JSON
+    - Individual JSON objects instead of array
+    - Truncated/incomplete JSON from token limit
+    - Single object instead of array for single-item batches
     """
     text = text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines).strip()
 
+    # Strategy 1: Strip markdown code fences (handles text before fences too)
+    text = re.sub(r"```(?:json)?\s*\n?", "", text).strip()
+
+    # Strategy 2: Try direct JSON parse
+    data = _try_parse_json(text)
+    if data is not None:
+        LOG.debug("Haiku JSON parsed directly")
+        return _validate_results(data, expected_count)
+
+    # Strategy 3: Find JSON array boundaries [...]
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        data = _try_parse_json(text[start:end + 1])
+        if data is not None:
+            LOG.debug("Haiku JSON parsed via array boundary extraction")
+            return _validate_results(data, expected_count)
+
+        # Strategy 3b: Truncated array — find last complete object and close array
+        truncated = text[start:end + 1]
+        data = _try_recover_truncated_array(truncated)
+        if data is not None:
+            LOG.debug("Haiku JSON recovered from truncated array")
+            return _validate_results(data, expected_count)
+
+    # Strategy 4: Collect individual {...} objects (Haiku sometimes outputs them separately)
+    objects = _extract_individual_objects(text)
+    if objects:
+        LOG.debug("Haiku JSON parsed via individual object extraction (%d objects)", len(objects))
+        return _validate_results(objects, expected_count)
+
+    # Strategy 5: Last resort — try parsing from first { to last }
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        fragment = text[first_brace:last_brace + 1]
+        data = _try_parse_json(fragment)
+        if data is not None:
+            LOG.debug("Haiku JSON parsed via brace boundary extraction")
+            return _validate_results(data if isinstance(data, list) else [data], expected_count)
+
+    LOG.warning(
+        "All JSON parse strategies failed for Haiku response (len=%d, first 200 chars: %s)",
+        len(text), text[:200],
+    )
+    return None
+
+
+def _try_parse_json(text: str) -> list[dict] | dict | None:
+    """Attempt JSON parse, returning parsed data or None."""
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
-        # Try to find JSON array in the text
-        start = text.find("[")
-        end = text.rfind("]")
-        if start == -1 or end == -1:
-            LOG.warning("No JSON array found in Haiku response")
-            return None
-        try:
-            data = json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            LOG.warning("Failed to parse JSON from Haiku response")
-            return None
-
-    if not isinstance(data, list):
-        LOG.warning("Haiku response is not a JSON array")
+        if isinstance(data, (list, dict)):
+            return data
+        return None
+    except (json.JSONDecodeError, ValueError):
         return None
 
-    # Validate and normalize each result
+
+def _try_recover_truncated_array(text: str) -> list[dict] | None:
+    """Recover partial results from a truncated JSON array.
+
+    Haiku may hit token limit mid-JSON, producing something like:
+    [{...}, {...}, {"field": "val   (truncated)
+
+    Strategy: find the last complete }, then close the array with ].
+    """
+    # Find the last position of "}," or "}" followed by potential whitespace before truncation
+    last_complete = -1
+    brace_depth = 0
+    in_string = False
+    escape_next = False
+
+    for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            brace_depth += 1
+        elif ch == "}":
+            brace_depth -= 1
+            if brace_depth == 0:
+                last_complete = i
+
+    if last_complete > 0:
+        candidate = text[:last_complete + 1] + "]"
+        # Ensure it starts with [
+        arr_start = candidate.find("[")
+        if arr_start != -1:
+            try:
+                data = json.loads(candidate[arr_start:])
+                if isinstance(data, list) and data:
+                    return data
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+def _extract_individual_objects(text: str) -> list[dict]:
+    """Extract individual JSON objects from text.
+
+    Handles cases where Haiku outputs objects separated by newlines
+    or with text between them.
+    """
+    objects = []
+    # Match balanced braces — handles one level of nesting (keywords arrays)
+    pattern = re.compile(r"\{[^{}]*(?:\[[^\[\]]*\][^{}]*)?\}")
+    for match in pattern.finditer(text):
+        try:
+            obj = json.loads(match.group())
+            if isinstance(obj, dict) and any(
+                k in obj for k in ("classification", "impact_score", "investment_implication")
+            ):
+                objects.append(obj)
+        except json.JSONDecodeError:
+            continue
+    return objects
+
+
+def _validate_results(data: list | dict, expected_count: int) -> list[dict] | None:
+    """Validate and normalize parsed JSON into analysis results."""
+    # Handle single object instead of array
+    if isinstance(data, dict):
+        data = [data]
+
+    if not isinstance(data, list):
+        return None
+
     validated = []
     for item in data[:expected_count]:
         if not isinstance(item, dict):

@@ -41,14 +41,19 @@ charity events, festivals, internal company events -> set impact_score=0
 
 5. sentiment: "positive", "neutral", or "negative" (from market/investment perspective, not article tone)
 
-IMPORTANT:
-- Respond ONLY with a JSON array.
+CRITICAL OUTPUT RULES:
+- You MUST respond with ONLY a valid JSON array. No other text whatsoever.
+- Do NOT wrap the JSON in markdown code fences (no ```json or ```).
+- Do NOT add any explanatory text, headers, or notes before or after the JSON.
 - Each element corresponds to the article at the same index.
 - Use exact field names: classification, impact_score, investment_implication, keywords, sentiment.
 - investment_implication must be a single string with two sentences separated by a space.
+- keywords must be a JSON array of strings (e.g. ["반도체", "삼성전자", "AI"]).
 - Be STRICT about classification: if a company event has no clear market-wide or sector-wide impact, \
 it is "company_specific". If it has no investment relevance at all, it is "noise".
 - PR/CSR/HR/festival/charity articles are ALWAYS "noise" with impact_score=0.
+
+Your response must start with [ and end with ]. Nothing else.
 """
 
 
