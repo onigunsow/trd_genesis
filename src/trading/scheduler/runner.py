@@ -33,6 +33,12 @@ def _run_news_crawl() -> None:
     crawl_all()
 
 
+def _run_news_intelligence() -> None:
+    """SPEC-014: Run news intelligence analysis pipeline (feature flag checked internally)."""
+    from trading.news.intelligence.scheduler import scheduled_run
+    scheduled_run()
+
+
 def _wrap(name: str, fn, *args, **kwargs):
     """Run `fn` only if today is a KRX trading day (Mon-Fri ∩ no public holidays)."""
     if not is_trading_day():
@@ -78,6 +84,21 @@ def main() -> None:
                       CronTrigger(hour=h, minute=m, timezone=KST),
                       id=f"news_crawl_{h:02d}{m:02d}",
                       name=f"news_crawl_v2 {h:02d}:{m:02d}")
+
+    # SPEC-014 — News intelligence analysis 6x/day (10 min after each crawl)
+    _NEWS_INTEL_TIMES = [
+        (8, 10),    # post crawl 08:00
+        (11, 10),   # post crawl 11:00
+        (14, 40),   # post crawl 14:30
+        (22, 10),   # post crawl 22:00
+        (1, 10),    # post crawl 01:00
+        (4, 10),    # post crawl 04:00
+    ]
+    for h, m in _NEWS_INTEL_TIMES:
+        sched.add_job(lambda: _safe_call("news_intelligence", _run_news_intelligence),
+                      CronTrigger(hour=h, minute=m, timezone=KST),
+                      id=f"news_intel_{h:02d}{m:02d}",
+                      name=f"news_intelligence {h:02d}:{m:02d}")
 
     # SPEC-007 — Static context builders (run regardless of trading day; cheap)
     # macro_context 06:00 — every day (uses cached data)

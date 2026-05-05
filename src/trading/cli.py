@@ -71,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
             from trading.contexts.build_macro_news import main as run
             run()
         return 0
+    if cmd == "analyze-news":
+        return _cmd_analyze_news(rest)
     if cmd == "crawl-news":
         return _cmd_crawl_news(rest)
     if cmd == "news-health":
@@ -116,6 +118,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     _print_help(file=sys.stderr)
     return 2
+
+
+def _cmd_analyze_news(rest: list[str]) -> int:
+    """SPEC-014: Run news intelligence analysis pipeline."""
+    from trading.news.intelligence.scheduler import cli_analyze_news
+
+    force = "--force" in rest
+    sector = None
+    for i, arg in enumerate(rest):
+        if arg == "--sector" and i + 1 < len(rest):
+            sector = rest[i + 1]
+
+    return cli_analyze_news(force=force, sector=sector)
 
 
 def _cmd_crawl_news(rest: list[str]) -> int:
@@ -190,6 +205,7 @@ def _print_help(file=sys.stdout) -> int:
         "  scheduler         start APScheduler cron loop (M5)\n"
         "  daily-report      generate and send today's report (M5)\n"
         "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
+        "  analyze-news      run intelligence analysis [--sector X] [--force]\n"
         "  news-health       show news source health status table\n",
         file=file,
     )

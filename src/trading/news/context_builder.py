@@ -6,12 +6,14 @@ Pure code, NO LLM calls. Generates headline aggregation + formatting from DB.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from trading.contexts.utils import atomic_write, contexts_dir, now_kst_str
 from trading.db.session import audit
+from trading.news.normalizer import strip_html
 from trading.news.storage import get_articles_by_sector, get_articles_multi_sector
 
 LOG = logging.getLogger(__name__)
@@ -92,12 +94,29 @@ def _format_article_line(article: dict[str, Any]) -> str:
     line = f"- **{title}** | {source} | {date_str}"
 
     # Add summary preview (first 200 chars of summary or body_text)
+    # Strip HTML defensively — older DB records may still contain raw HTML
     summary = article.get("summary") or ""
+    if summary:
+        summary = strip_html(summary)
     if not summary:
         body = article.get("body_text") or ""
         if body:
-            summary = body[:200]
-    if summary:
+            summary = strip_html(body)[:200]
+    # Skip summary if:
+    # 1. Too short (< 30 chars) — Google News garbage after stripping
+    # 2. Redundant with title — stripped Google News descriptions are just
+    #    "Article Title SourceName" which duplicates the title line
+    show_summary = bool(summary) and len(summary) >= 30
+    if show_summary and title:
+        # Check if summary is essentially a repeat of the title.
+        # Google News titles look like "Headline - Source Name" and stripped
+        # summaries look like "Headline Source Name", so strip the trailing
+        # " - Source Name" (1-3 words) from the title before comparing.
+        title_core = re.sub(r"\s*[-–—]\s*\S+(?:\s+\S+){0,2}$", "", title).lower().strip()
+        summary_norm = summary.lower().strip()
+        if title_core and summary_norm.startswith(title_core[:50]):
+            show_summary = False
+    if show_summary:
         preview = summary[:200]
         if len(summary) > 200:
             preview = preview.rstrip() + "..."

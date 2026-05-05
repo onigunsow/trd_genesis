@@ -156,8 +156,18 @@ def normalize_articles(
         else:
             body_text = None
 
-        # Truncate summary (REQ-NEWS-04-6)
-        summary = truncate_summary(raw.get("summary"))
+        # Strip HTML from summary and truncate (REQ-NEWS-04-6)
+        raw_summary = raw.get("summary")
+        if raw_summary and isinstance(raw_summary, str):
+            summary = strip_html(raw_summary)
+            # Google News descriptions become just "Source Name" after HTML
+            # stripping — too short to be useful, discard them.
+            if len(summary) < 30:
+                summary = None
+            else:
+                summary = truncate_summary(summary)
+        else:
+            summary = None
 
         # Auto-generate summary from body_text if no explicit summary
         if summary is None and body_text:

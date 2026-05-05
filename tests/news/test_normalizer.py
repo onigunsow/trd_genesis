@@ -10,6 +10,7 @@ from trading.news.normalizer import (
     compute_content_hash,
     normalize_articles,
     normalize_title,
+    strip_html,
     truncate_summary,
 )
 
@@ -119,3 +120,71 @@ def test_normalize_articles_url_truncated():
     ]
     articles = normalize_articles(raw)
     assert len(articles[0].url) <= 500
+
+
+# --- Characterization tests: HTML stripping in summary ---
+
+
+def test_characterize_summary_html_stripped():
+    """Google News HTML descriptions are stripped from summary field."""
+    raw = [
+        {
+            "title": "HSBC Takes $400 Million Hit",
+            "url": "http://news.google.com/rss/articles/CBMi...",
+            "source_name": "WSJ",
+            "sector": "finance_banking",
+            "language": "en",
+            "published_at": None,
+            "summary": '<a href="https://news.google.com/rss/articles/CBMi...">WSJ Markets</a>',
+        },
+    ]
+    articles = normalize_articles(raw)
+    # After stripping HTML, "WSJ Markets" is under 30 chars -> summary = None
+    assert articles[0].summary is None
+
+
+def test_characterize_summary_html_stripped_long_content():
+    """Real summary with HTML tags keeps text content after stripping."""
+    real_body = "This is a real article summary with enough content " * 3
+    raw = [
+        {
+            "title": "Real Article",
+            "url": "http://example.com/article",
+            "source_name": "Reuters",
+            "sector": "macro_economy",
+            "language": "en",
+            "published_at": None,
+            "summary": f"<p>{real_body}</p>",
+        },
+    ]
+    articles = normalize_articles(raw)
+    # Long content survives HTML stripping
+    assert articles[0].summary is not None
+    assert "<p>" not in articles[0].summary
+    assert "<" not in articles[0].summary
+
+
+def test_characterize_summary_short_after_strip_becomes_none():
+    """Summary that becomes under 30 chars after HTML stripping is nullified."""
+    raw = [
+        {
+            "title": "Test Short Summary",
+            "url": "http://example.com",
+            "source_name": "Source",
+            "sector": "it_ai",
+            "language": "en",
+            "published_at": None,
+            "summary": '<a href="http://very-long-url.com/path">Reuters</a>',
+        },
+    ]
+    articles = normalize_articles(raw)
+    # "Reuters" is 7 chars < 30 -> None
+    assert articles[0].summary is None
+
+
+def test_characterize_strip_html_utility():
+    """strip_html removes tags, decodes entities, collapses whitespace."""
+    assert strip_html('<a href="http://x.com">Click</a>') == "Click"
+    assert strip_html("<p>Hello &amp; World</p>") == "Hello & World"
+    assert strip_html("No HTML here") == "No HTML here"
+    assert strip_html("") == ""
