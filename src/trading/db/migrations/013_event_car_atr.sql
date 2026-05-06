@@ -89,3 +89,6 @@ BEGIN
         ALTER TABLE system_state ADD COLUMN dynamic_thresholds_enabled BOOLEAN NOT NULL DEFAULT false;
     END IF;
 END $$;
+
+-- Register migration
+INSERT INTO schema_migrations (version) VALUES ('013_event_car_atr') ON CONFLICT DO NOTHING;

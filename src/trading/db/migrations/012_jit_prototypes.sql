@@ -80,3 +80,6 @@ ALTER TABLE system_state ADD COLUMN IF NOT EXISTS jit_websocket_enabled BOOLEAN 
 ALTER TABLE system_state ADD COLUMN IF NOT EXISTS jit_dart_polling_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE system_state ADD COLUMN IF NOT EXISTS jit_news_polling_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE system_state ADD COLUMN IF NOT EXISTS prototype_risk_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- Register migration
+INSERT INTO schema_migrations (version) VALUES ('012_jit_prototypes') ON CONFLICT DO NOTHING;

@@ -15,3 +15,6 @@ ALTER TABLE news_analysis
 -- Index for classification-based queries
 CREATE INDEX IF NOT EXISTS idx_news_analysis_classification
     ON news_analysis (classification, impact_score DESC);
+
+-- Register migration
+INSERT INTO schema_migrations (version) VALUES ('017_news_analysis_classification') ON CONFLICT DO NOTHING;

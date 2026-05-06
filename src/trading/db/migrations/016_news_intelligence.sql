@@ -60,3 +60,6 @@ CREATE TABLE IF NOT EXISTS news_trends (
 
 CREATE INDEX IF NOT EXISTS idx_news_trends_date_type ON news_trends (trend_date DESC, trend_type);
 CREATE INDEX IF NOT EXISTS idx_news_trends_keyword ON news_trends (keyword, trend_date DESC);
+
+-- Register migration
+INSERT INTO schema_migrations (version) VALUES ('016_news_intelligence') ON CONFLICT DO NOTHING;

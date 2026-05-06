@@ -51,3 +51,6 @@ BEGIN
             ADD COLUMN news_crawling_v2_enabled BOOLEAN NOT NULL DEFAULT TRUE;
     END IF;
 END $$;
+
+-- Register migration
+INSERT INTO schema_migrations (version) VALUES ('014_news_articles') ON CONFLICT DO NOTHING;
