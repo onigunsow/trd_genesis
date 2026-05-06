@@ -6,6 +6,7 @@ Tags high-impact portfolio-relevant clusters with [투자 주목].
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date
 
@@ -176,6 +177,21 @@ def _update_cluster_relevance(
         cur.execute(sql, (portfolio_relevant, relevance_tickers, cluster_id))
 
 
+def _already_alerted_today(title_hash: str) -> bool:
+    """Check if an alert with this content hash was already sent today."""
+    sql = "SELECT 1 FROM news_alerts_sent WHERE content_hash = %s AND alerted_at::date = CURRENT_DATE LIMIT 1"
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (title_hash,))
+        return cur.fetchone() is not None
+
+
+def _record_alert(title_hash: str) -> None:
+    """Record that an alert was sent for deduplication."""
+    sql = "INSERT INTO news_alerts_sent (content_hash) VALUES (%s) ON CONFLICT DO NOTHING"
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (title_hash,))
+
+
 def _send_critical_alert(cluster: dict) -> None:
     """Send Telegram alert for critical portfolio-relevant news.
 
@@ -184,6 +200,10 @@ def _send_critical_alert(cluster: dict) -> None:
     try:
         from trading.alerts.telegram import system_briefing
         title = cluster["representative_title"]
+        title_hash = hashlib.sha256(title.encode()).hexdigest()[:32]
+        if _already_alerted_today(title_hash):
+            return  # Skip duplicate
+        _record_alert(title_hash)
         sector = cluster["sector"]
         msg = (
             f"[NEWS ALERT] {title} "

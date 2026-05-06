@@ -46,6 +46,59 @@ LOG = logging.getLogger(__name__)
 
 CycleKind = Literal["pre_market", "intraday", "event", "weekly", "manual"]
 
+
+def _count_holds_today(ticker: str) -> int:
+    """Count HOLD verdicts for a ticker today."""
+    sql = """
+        SELECT COUNT(*) FROM persona_runs pr
+        JOIN persona_decisions pd ON pd.decision_run_id = pr.id
+        WHERE pr.persona_name = 'risk'
+          AND pr.ts::date = CURRENT_DATE
+          AND pr.response_json->>'verdict' = 'HOLD'
+          AND pd.ticker = %s
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (ticker,))
+            return cur.fetchone()[0]
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _get_hold_feedback_today(tickers: list[str]) -> list[dict]:
+    """Get Risk HOLD rationale for tickers from today."""
+    if not tickers:
+        return []
+    sql = """
+        SELECT pd.ticker, pr.response_json->>'rationale' as rationale,
+               COUNT(*) OVER (PARTITION BY pd.ticker) as hold_count
+        FROM persona_runs pr
+        JOIN persona_decisions pd ON pd.decision_run_id = pr.id
+        WHERE pr.persona_name = 'risk'
+          AND pr.ts::date = CURRENT_DATE
+          AND pr.response_json->>'verdict' = 'HOLD'
+          AND pd.ticker = ANY(%s)
+        ORDER BY pr.ts DESC
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (tickers,))
+            rows = cur.fetchall()
+            # Deduplicate by ticker, keep latest
+            seen: set[str] = set()
+            result: list[dict] = []
+            for row in rows:
+                if row["ticker"] not in seen:
+                    seen.add(row["ticker"])
+                    result.append({
+                        "ticker": row["ticker"],
+                        "rationale": (row["rationale"] or "")[:300],
+                        "count": row["hold_count"],
+                    })
+            return result
+    except Exception:  # noqa: BLE001
+        return []
+
 # SPEC-009 REQ-REFL-03-2: Maximum reflection rounds (Decision re-invoke + Risk re-evaluate).
 MAX_REFLECTION_ROUNDS: int = 2
 # SPEC-009 REQ-REFL-03-10: Combined timeout per reflection round (seconds).
@@ -474,6 +527,15 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         "car_context": None,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
     }
+    # Inject HOLD feedback from today
+    candidate_tickers = [
+        c.get("ticker") for c in
+        (dec_input.get("micro_candidates") or {}).get("buy", [])
+        if c.get("ticker")
+    ]
+    hold_warnings = _get_hold_feedback_today(candidate_tickers)
+    if hold_warnings:
+        dec_input["hold_warnings"] = hold_warnings
     try:
         dec_res, sig_ids = decision_persona.run(
             dec_input,
@@ -512,6 +574,16 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     signals = (dec_res.response_json or {}).get("signals", [])
     micro_summary_text = _summarize_persona("micro", micro_res.response_json)
     for sig, decision_id in zip(signals, sig_ids, strict=False):
+        # Auto-block tickers with 3+ HOLDs today
+        ticker = sig.get("ticker")
+        if ticker and _count_holds_today(ticker) >= 3:
+            LOG.info("Ticker %s blocked — 3+ HOLDs today", ticker)
+            audit("TICKER_BLOCKED_BY_HOLDS", actor="orchestrator", details={
+                "ticker": ticker, "hold_count": _count_holds_today(ticker),
+            })
+            res.rejected.append(decision_id)
+            continue
+
         rk_input = {
             "today": today,
             "decision_signals": [sig],

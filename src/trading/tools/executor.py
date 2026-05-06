@@ -20,6 +20,10 @@ LOG = logging.getLogger(__name__)
 
 # Tool execution timeout in seconds (REQ-TOOL-01-4)
 TOOL_TIMEOUT_SECONDS: int = 5
+TOOL_TIMEOUT_OVERRIDES: dict[str, int] = {
+    "get_portfolio_status": 15,
+    "get_watchlist": 15,
+}
 
 # Import tool functions lazily to avoid circular imports
 _TOOL_DISPATCH: dict[str, Any] | None = None
@@ -135,7 +139,8 @@ def execute_tool(
         # Execute with timeout (REQ-TOOL-01-4)
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(fn, **params)
-            result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
+            timeout = TOOL_TIMEOUT_OVERRIDES.get(name, TOOL_TIMEOUT_SECONDS)
+            result = future.result(timeout=timeout)
 
         execution_ms = int((time.time() - start) * 1000)
         result_bytes = len(json.dumps(result, default=str).encode()) if result else 0

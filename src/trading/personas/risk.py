@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from typing import Any
 
-from trading.db.session import connection
+from trading.db.session import audit, connection
 from trading.personas.base import call_persona, render_prompt
+
+LOG = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
 PERSONA = "risk"
@@ -49,6 +52,8 @@ def run(
 
     verdict = (res.response_json or {}).get("verdict", "HOLD")
     if verdict not in ("APPROVE", "HOLD", "REJECT"):
+        LOG.warning("Invalid Risk verdict '%s' for decision_id=%s — defaulting to HOLD", verdict, decision_id)
+        audit("INVALID_RISK_VERDICT", actor="risk", details={"verdict": verdict, "decision_id": decision_id})
         verdict = "HOLD"
     rationale = (res.response_json or {}).get("rationale", "")
 
