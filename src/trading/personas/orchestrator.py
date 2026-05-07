@@ -534,8 +534,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         if c.get("ticker")
     ]
     hold_warnings = _get_hold_feedback_today(candidate_tickers)
-    if hold_warnings:
-        dec_input["hold_warnings"] = hold_warnings
+    dec_input["hold_warnings"] = hold_warnings if hold_warnings else []
     try:
         dec_res, sig_ids = decision_persona.run(
             dec_input,
@@ -792,6 +791,7 @@ def run_event_trigger_cycle(
         "event_trigger": trigger_text,
         "car_context": car_context,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
+        "hold_warnings": [],
     }
 
     try:

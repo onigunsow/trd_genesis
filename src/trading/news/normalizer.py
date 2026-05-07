@@ -40,9 +40,11 @@ AUTO_SUMMARY_LENGTH = 300
 
 
 def normalize_title(raw_title: str) -> str:
-    """Normalize a title: strip, collapse whitespace, decode HTML entities."""
+    """Normalize a title: strip HTML tags, collapse whitespace, decode entities."""
+    # Remove HTML tags (e.g., <a href="...">text</a> -> text)
+    title = re.sub(r"<[^>]+>", " ", raw_title)
     # Decode HTML entities (e.g., &amp; -> &)
-    title = html.unescape(raw_title)
+    title = html.unescape(title)
     # Strip leading/trailing whitespace
     title = title.strip()
     # Collapse multiple whitespace

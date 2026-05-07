@@ -74,7 +74,7 @@
 - 불리한 데이터를 누락하는 편향적 정보 선별 허용하지 않음
 - 위 규칙 위반 시 Risk 페르소나가 HOLD/REJECT 처리함
 
-{% if hold_warnings %}
+{% if hold_warnings is defined and hold_warnings %}
 ## 금일 Risk HOLD 이력 (주의)
 {% for warn in hold_warnings %}
 - {{ warn.ticker }}: {{ warn.rationale }} ({{ warn.count }}회 HOLD)
