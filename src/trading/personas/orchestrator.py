@@ -36,8 +36,10 @@ from trading.personas import micro as micro_persona
 from trading.personas import risk as risk_persona
 from trading.personas import context as ctx
 from trading.risk import circuit_breaker
+from trading.risk.blocked_cache import get_blocked_tickers, record_blocked_by_safety
 from trading.risk.limits import check_pre_order, record_breach
 from trading.risk.market_safety import check_pre_order_safety
+from trading.screener.daily_screen import load_screened_tickers
 from trading.strategy.car.filter import evaluate_event
 from trading.strategy.car.models import FilterDecision
 from trading.tools.registry import get_tools_for_persona
@@ -150,8 +152,18 @@ def _gather_assets() -> dict[str, Any]:
 
 
 def _build_micro_input(today: str, macro_summary: str | None) -> dict[str, Any]:
-    """Build micro persona context from cached data (M5 정밀화)."""
-    return ctx.assemble_micro_input(macro_summary=macro_summary)
+    """Build micro persona context from cached data (M5 정밀화).
+
+    Merges base watchlist with screened tickers for broader universe.
+    """
+    screened = load_screened_tickers()
+    expanded_watchlist = list(ctx.DEFAULT_WATCHLIST) + [
+        t for t in screened[:15] if t not in ctx.DEFAULT_WATCHLIST
+    ]
+    return ctx.assemble_micro_input(
+        macro_summary=macro_summary,
+        watchlist=expanded_watchlist,
+    )
 
 
 @dataclass
@@ -515,6 +527,10 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     decision_tools = _get_persona_tools("decision", state)
     assets = _gather_assets()
     cash_pct = (assets["cash_d2"] / assets["total_assets"] * 100) if assets["total_assets"] else 100.0
+    # Inject blocked tickers for Decision awareness
+    blocked_cache = get_blocked_tickers()
+    blocked_tickers = blocked_cache.get("blocked", {})
+
     dec_input = {
         "today": today,
         "macro_guide": macro_summary or "(없음)",
@@ -526,6 +542,8 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         # SPEC-012: CAR context and dynamic thresholds flag
         "car_context": None,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
+        # Blocked tickers (단기과열/거래정지) for Decision filtering
+        "blocked_tickers": blocked_tickers,
     }
     # Inject HOLD feedback from today
     candidate_tickers = [
@@ -573,6 +591,13 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     signals = (dec_res.response_json or {}).get("signals", [])
     micro_summary_text = _summarize_persona("micro", micro_res.response_json)
     for sig, decision_id in zip(signals, sig_ids, strict=False):
+        # Issue 3: Skip Risk for qty=0 signals (save API cost)
+        qty_raw = int(sig.get("qty", 0) or 0)
+        if qty_raw == 0:
+            LOG.info("Skipping Risk for qty=0 signal: %s %s",
+                     sig.get("ticker"), sig.get("side"))
+            continue
+
         # Auto-block tickers with 3+ HOLDs today
         ticker = sig.get("ticker")
         if ticker and _count_holds_today(ticker) >= 3:
@@ -666,6 +691,11 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
                 "decision_id": decision_id, "ticker": ticker, "side": side_str,
                 "blockers": safety.blockers,
             })
+            # Issue 4: Record blocked ticker so Decision avoids it in future cycles
+            for blocker in safety.blockers:
+                if "stat_cls" in blocker:
+                    record_blocked_by_safety(ticker, blocker)
+                    break
             res.rejected.append(decision_id)
             continue
 
@@ -781,6 +811,8 @@ def run_event_trigger_cycle(
     assets = _gather_assets()
     cash_pct = (assets["cash_d2"] / assets["total_assets"] * 100) if assets["total_assets"] else 100.0
 
+    # Blocked tickers for event-trigger Decision
+    blocked_cache_ev = get_blocked_tickers()
     dec_input = {
         "today": today,
         "macro_guide": macro_summary or "(없음)",
@@ -792,6 +824,7 @@ def run_event_trigger_cycle(
         "car_context": car_context,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
         "hold_warnings": [],
+        "blocked_tickers": blocked_cache_ev.get("blocked", {}),
     }
 
     try:

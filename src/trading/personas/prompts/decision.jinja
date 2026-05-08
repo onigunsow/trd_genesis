@@ -74,6 +74,14 @@
 - 불리한 데이터를 누락하는 편향적 정보 선별 허용하지 않음
 - 위 규칙 위반 시 Risk 페르소나가 HOLD/REJECT 처리함
 
+{% if blocked_tickers is defined and blocked_tickers %}
+## 거래소 지정 매매 제한 종목 (제안 금지)
+{% for ticker, info in blocked_tickers.items() %}
+- {{ ticker }}: {{ info.reason }} -- 매수/매도 불가
+{% endfor %}
+위 종목은 거래소에서 매매를 제한하고 있습니다. 절대 매수/매도 시그널을 생성하지 마세요.
+{% endif %}
+
 {% if hold_warnings is defined and hold_warnings %}
 ## 금일 Risk HOLD 이력 (주의)
 {% for warn in hold_warnings %}

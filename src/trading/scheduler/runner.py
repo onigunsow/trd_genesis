@@ -21,7 +21,9 @@ from trading.contexts import (
 )
 from trading.personas import orchestrator, retrospective
 from trading.reports import daily_report
+from trading.risk.blocked_cache import refresh_blocked_tickers
 from trading.scheduler.calendar import is_trading_day, reason_if_closed
+from trading.screener import daily_screen
 
 LOG = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
@@ -149,6 +151,16 @@ def main() -> None:
     sched.add_job(lambda: _safe_call("build_macro_news", build_macro_news.main),
                   CronTrigger(day_of_week="fri", hour=16, minute=30, timezone=KST),
                   id="ctx_macro_news", name="build_macro_news Fri 16:30")
+
+    # SPEC-FIX: Daily screener 06:35 (after micro_context at 06:30)
+    sched.add_job(lambda: _safe_call("daily_screen", daily_screen.run),
+                  CronTrigger(day_of_week="mon-fri", hour=6, minute=35, timezone=KST),
+                  id="daily_screen", name="daily_screen 06:35")
+
+    # SPEC-FIX: Blocked tickers cache 08:50 (before 09:00 market open)
+    sched.add_job(lambda: _wrap("blocked_tickers_cache", refresh_blocked_tickers),
+                  CronTrigger(day_of_week="mon-fri", hour=8, minute=50, timezone=KST),
+                  id="blocked_cache", name="blocked_tickers 08:50")
 
     # Pre-market 07:30
     sched.add_job(lambda: _wrap("pre_market", orchestrator.run_pre_market_cycle),
