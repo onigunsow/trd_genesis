@@ -1,6 +1,7 @@
 """Micro persona — Sonnet 4.6, pre-market 07:30 KST + intraday cache reuse.
 
 SPEC-009 REQ-PTOOL-02-4: Supports tool-calling mode for active information retrieval.
+SPEC-015 REQ-ORCH-04-1: CLI routing via cli_personas_enabled feature flag.
 """
 
 from __future__ import annotations
@@ -8,7 +9,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from trading.personas.base import call_persona, render_prompt
+from trading.personas.base import call_persona, call_persona_via_cli, is_cli_mode_active, render_prompt
 
 MODEL = "claude-sonnet-4-6"
 PERSONA = "micro"
@@ -39,6 +40,23 @@ def run(
         "위 입력 데이터를 바탕으로 오늘의 매수/매도/관망 후보를 JSON으로 제출하세요."
     )
     user_msg = "\n".join(user_parts)
+
+    # SPEC-015 REQ-ORCH-04-1: CLI routing when enabled
+    if is_cli_mode_active():
+        # REQ-PRECOMP-05-6: Pre-compute for expanded watchlist tickers
+        tickers = input_data.get("watchlist", [])
+        return call_persona_via_cli(
+            persona_name=PERSONA,
+            model=model or MODEL,
+            cycle_kind=cycle_kind,
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            trigger_context={"input_keys": list(input_data.keys())},
+            expect_json=True,
+            tickers=tickers,
+            input_data=input_data,
+        )
+
     return call_persona(
         persona_name=PERSONA,
         model=model or MODEL,

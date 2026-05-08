@@ -2,6 +2,8 @@
 
 Synthesizes Macro guide + Micro candidates + current portfolio + risk limits
 into trade signals. Persists signals to persona_decisions.
+
+SPEC-015 REQ-ORCH-04-1: CLI routing via cli_personas_enabled feature flag.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from datetime import date
 from typing import Any
 
 from trading.db.session import connection
-from trading.personas.base import call_persona, render_prompt
+from trading.personas.base import call_persona, call_persona_via_cli, is_cli_mode_active, render_prompt
 
 MODEL = "claude-sonnet-4-6"
 PERSONA = "decision"
@@ -42,21 +44,53 @@ def run(input_data: dict[str, Any],
         "위 입력을 바탕으로 박세훈 페르소나의 매매 시그널을 JSON으로 제출하세요. "
         "시그널이 없으면 빈 리스트를 반환하세요."
     )
-    res = call_persona(
-        persona_name=PERSONA,
-        model=model or MODEL,
-        cycle_kind=cycle_kind,
-        system_prompt=system_prompt,
-        user_message=user_msg,
-        trigger_context={
-            "macro_run_id": macro_run_id,
-            "micro_run_id": micro_run_id,
-            "cycle_kind": cycle_kind,
-        },
-        max_tokens=3000,
-        expect_json=True,
-        tools=tools,
-    )
+
+    # SPEC-015 REQ-ORCH-04-1: CLI routing when enabled
+    if is_cli_mode_active():
+        # REQ-PRECOMP-05-7: Pre-compute for candidate tickers from Micro result
+        candidates = input_data.get("micro_candidates", {})
+        tickers = []
+        for side in ("buy", "sell"):
+            for c in (candidates.get(side) or []):
+                t = c.get("ticker")
+                if t and t not in tickers:
+                    tickers.append(t)
+
+        res = call_persona_via_cli(
+            persona_name=PERSONA,
+            model=model or MODEL,
+            cycle_kind=cycle_kind,
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            trigger_context={
+                "macro_run_id": macro_run_id,
+                "micro_run_id": micro_run_id,
+                "cycle_kind": cycle_kind,
+            },
+            expect_json=True,
+            tickers=tickers,
+            input_data=input_data,
+            run_context={
+                "macro_run_id": macro_run_id,
+                "micro_run_id": micro_run_id,
+            },
+        )
+    else:
+        res = call_persona(
+            persona_name=PERSONA,
+            model=model or MODEL,
+            cycle_kind=cycle_kind,
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            trigger_context={
+                "macro_run_id": macro_run_id,
+                "micro_run_id": micro_run_id,
+                "cycle_kind": cycle_kind,
+            },
+            max_tokens=3000,
+            expect_json=True,
+            tools=tools,
+        )
 
     # Persist each signal as a row in persona_decisions.
     sig_ids: list[int] = []

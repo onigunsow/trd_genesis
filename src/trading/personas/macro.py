@@ -1,6 +1,8 @@
 """Macro persona — Opus 4.7, weekly Friday 17:00 KST.
 
 Output is cached for 7 days; downstream personas reference the latest valid run.
+
+SPEC-015 REQ-ORCH-04-1: CLI routing via cli_personas_enabled feature flag.
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from trading.db.session import connection
-from trading.personas.base import call_persona, render_prompt
+from trading.personas.base import call_persona, call_persona_via_cli, is_cli_mode_active, render_prompt
 
 MODEL = "claude-opus-4-7"
 PERSONA = "macro"
@@ -58,6 +60,21 @@ def run(
         "위 입력 데이터를 바탕으로 향후 1주 한국 주식시장에 대한 매크로 분석을 JSON으로 제출하세요."
     )
     user_msg = "\n".join(user_parts)
+
+    # SPEC-015 REQ-ORCH-04-1: CLI routing when enabled
+    if is_cli_mode_active():
+        return call_persona_via_cli(
+            persona_name=PERSONA,
+            model=model or MODEL,
+            cycle_kind=cycle_kind,
+            system_prompt=system_prompt,
+            user_message=user_msg,
+            trigger_context={"input_keys": list(input_data.keys())},
+            expect_json=True,
+            tickers=None,  # Macro has no ticker-specific tools
+            input_data=input_data,
+        )
+
     return call_persona(
         persona_name=PERSONA,
         model=model or MODEL,

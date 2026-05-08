@@ -13,6 +13,7 @@ Commands honoured (REQ-RISK-05-4):
 - /jit on|off|ws|dart|news  toggle JIT pipeline (SPEC-011 REQ-MIGR-06-3)
 - /prototype on|off     toggle prototype risk (SPEC-011 REQ-MIGR-06-3)
 - /prototype-status     show ProtoHedge status (SPEC-011 REQ-DYNRISK-04-10)
+- /cli on|off           toggle CLI persona mode (SPEC-015 REQ-FALLBACK-06-5)
 - /help    list commands
 """
 
@@ -37,7 +38,8 @@ def handle(text: str, actor: str = "telegram") -> str:
         return (
             f"trading_mode={state['trading_mode']} | "
             f"halt={state['halt_state']} | silent={state['silent_mode']} | "
-            f"live_unlocked={state['live_unlocked']}"
+            f"live_unlocked={state['live_unlocked']} | "
+            f"cli={state.get('cli_personas_enabled', False)}"
         )
     if cmd == "/pnl":
         return _pnl_summary()
@@ -66,6 +68,9 @@ def handle(text: str, actor: str = "telegram") -> str:
         return _handle_prototype(text, actor)
     if cmd == "/prototype-status":
         return _handle_prototype_status()
+    # SPEC-015 REQ-FALLBACK-06-5: CLI persona mode toggle
+    if cmd == "/cli":
+        return _handle_cli_toggle(text, actor)
     if cmd in ("/help", "/start"):
         return _help()
     return f"unknown command: {cmd or '(empty)'}\n{_help()}"
@@ -222,6 +227,21 @@ def _handle_prototype_status() -> str:
         return f"[ProtoHedge] 상태 조회 실패: {e}"
 
 
+def _handle_cli_toggle(text: str, actor: str) -> str:
+    """Toggle CLI persona mode (SPEC-015 REQ-FALLBACK-06-5)."""
+    parts = text.strip().split()
+    if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+        state = get_system_state()
+        current = state.get("cli_personas_enabled", False)
+        return f"현재 CLI 모드: {'ON' if current else 'OFF'}\n사용법: /cli on|off"
+    enable = parts[1].lower() == "on"
+    update_system_state(cli_personas_enabled=enable, updated_by=actor)
+    event = "CLI_PERSONAS_ENABLED" if enable else "CLI_PERSONAS_DISABLED"
+    audit(event, actor=actor, details={"enabled": enable})
+    status = "활성화" if enable else "비활성화"
+    return f"CLI Persona Mode {status}됨. (cli_personas_enabled={enable})"
+
+
 def _help() -> str:
     return (
         "사용 가능한 명령어:\n"
@@ -239,6 +259,7 @@ def _help() -> str:
         "/jit ws|dart|news on|off  개별 소스 전환\n"
         "/prototype on|off     ProtoHedge 전환\n"
         "/prototype-status     ProtoHedge 현황\n"
+        "/cli on|off           CLI Persona 전환\n"
         "/help          이 메시지"
     )
 

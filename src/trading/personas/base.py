@@ -6,6 +6,7 @@ Pricing as of 2026-05 (USD/M tokens):
 KRW conversion uses approx 1380 KRW/USD (override via ANTHROPIC_KRW_PER_USD env).
 
 SPEC-009 REQ-PTOOL-02-1: Tool-use multi-turn loop support.
+SPEC-015 REQ-ORCH-04-1/2: CLI routing via cli_personas_enabled feature flag.
 """
 
 from __future__ import annotations
@@ -398,3 +399,273 @@ def _extract_json(text: str) -> dict[str, Any]:
             if depth == 0:
                 return json.loads(text[start : i + 1])
     raise ValueError("unbalanced JSON braces")
+
+
+# ---------------------------------------------------------------------------
+# SPEC-015: CLI persona invocation
+# ---------------------------------------------------------------------------
+
+# REQ-FALLBACK-06-4: Consecutive CLI failure counter for auto-disable
+_cli_failure_count: int = 0
+_CLI_AUTO_DISABLE_THRESHOLD: int = 3
+
+
+def _reset_cli_failures() -> None:
+    """Reset consecutive failure counter on CLI success."""
+    global _cli_failure_count
+    _cli_failure_count = 0
+
+
+def _record_cli_failure(persona_name: str, reason: str) -> None:
+    """Record a CLI failure and auto-disable if threshold reached.
+
+    REQ-FALLBACK-06-3: Sends Telegram alert on each failure.
+    REQ-FALLBACK-06-4: Auto-disables cli_personas_enabled after 3 consecutive failures.
+    """
+    global _cli_failure_count
+    _cli_failure_count += 1
+
+    try:
+        from trading.alerts import telegram as tg
+        tg.system_briefing(
+            "CLI fallback",
+            f"{persona_name} -> Haiku API ({reason})",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _cli_failure_count >= _CLI_AUTO_DISABLE_THRESHOLD:
+        try:
+            from trading.db.session import update_system_state
+            update_system_state(cli_personas_enabled=False, updated_by="auto_disable")
+            audit(
+                "CLI_AUTO_DISABLED",
+                actor="call_persona",
+                details={"consecutive_failures": _cli_failure_count},
+            )
+            from trading.alerts import telegram as tg
+            tg.system_briefing(
+                "CLI auto-disabled",
+                f"CLI mode auto-disabled after {_cli_failure_count} consecutive failures",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        _cli_failure_count = 0
+
+
+def call_persona_via_cli(
+    *,
+    persona_name: str,
+    model: str,
+    cycle_kind: str,
+    system_prompt: str,
+    user_message: str,
+    trigger_context: dict[str, Any] | None = None,
+    expect_json: bool = False,
+    apply_memory_ops: bool = True,
+    tickers: list[str] | None = None,
+    input_data: dict[str, Any] | None = None,
+    run_context: dict[str, Any] | None = None,
+) -> PersonaResult:
+    """Invoke a persona via CLI bridge with pre-computed tool data.
+
+    SPEC-015 REQ-ORCH-04-1: Routes persona calls through CLI bridge when enabled.
+    REQ-BRIDGE-02-4: Records tokens=0, cost=0 for CLI calls.
+    REQ-BRIDGE-02-6: Persists with model='cli-claude-max'.
+    REQ-FALLBACK-06-2: Falls back to Haiku API on CLI failure.
+    REQ-FALLBACK-06-6: Fallback uses Haiku only (cheapest available).
+
+    Args:
+        persona_name: The persona being invoked.
+        model: Model name (recorded for audit, not used by CLI).
+        cycle_kind: Cycle type.
+        system_prompt: Rendered Jinja2 system prompt.
+        user_message: User message portion.
+        trigger_context: Trigger context for audit trail.
+        expect_json: Whether to parse response as JSON.
+        apply_memory_ops: Whether to execute SPEC-007 memory_ops.
+        tickers: Tickers for tool pre-computation.
+        input_data: Raw input data for prompt builder context.
+        run_context: Additional metadata (macro_run_id, micro_run_id, etc.).
+
+    Returns:
+        PersonaResult with CLI execution results.
+    """
+    from trading.personas.cli_bridge import (
+        CLICallError,
+        CLITimeoutError,
+        call_persona_cli,
+        parse_cli_response,
+    )
+    from trading.personas.cli_prompt_builder import build_cli_prompt
+
+    start = time.time()
+
+    try:
+        # Build single-turn prompt with pre-computed tool data
+        full_prompt = build_cli_prompt(
+            persona_name=persona_name,
+            input_data=input_data or {},
+            system_prompt=system_prompt,
+            user_message=user_message,
+            tickers=tickers,
+        )
+
+        # Call CLI bridge (export file, wait for result)
+        cli_result = call_persona_cli(
+            persona_name=persona_name,
+            prompt=full_prompt,
+            cycle_kind=cycle_kind,
+            model_for_audit=model,
+            metadata={
+                "trigger_context": trigger_context or {},
+                "run_context": run_context or {},
+            },
+        )
+
+        if cli_result is None:
+            raise CLICallError("CLI returned None result")
+
+        response_text = cli_result.get("response_text", "")
+        _reset_cli_failures()
+
+    except (CLITimeoutError, CLICallError) as e:
+        # REQ-FALLBACK-06-2: Fall back to Haiku API
+        reason = str(e)[:100]
+        _record_cli_failure(persona_name, reason)
+
+        LOG.warning(
+            "CLI failed for %s (%s), falling back to Haiku API",
+            persona_name, reason,
+        )
+
+        # REQ-FALLBACK-06-6: Haiku only fallback
+        try:
+            return call_persona(
+                persona_name=persona_name,
+                model="claude-haiku-4-5",
+                cycle_kind=cycle_kind,
+                system_prompt=system_prompt,
+                user_message=user_message,
+                trigger_context=trigger_context,
+                expect_json=expect_json,
+                apply_memory_ops=apply_memory_ops,
+                tools=None,  # No tools in fallback (simpler call)
+            )
+        except Exception as fallback_err:  # noqa: BLE001
+            # REQ-FALLBACK-06-7: Double failure — skip persona
+            LOG.exception(
+                "Haiku fallback also failed for %s: %s",
+                persona_name, fallback_err,
+            )
+            try:
+                from trading.alerts import telegram as tg
+                tg.system_briefing(
+                    "Double failure",
+                    f"{persona_name}: CLI + Haiku both failed. Skipping.",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"Double failure for {persona_name}: CLI ({reason}) + Haiku ({fallback_err})"
+            ) from fallback_err
+
+    latency_ms = int((time.time() - start) * 1000)
+
+    # Parse response JSON
+    response_json = None
+    if expect_json and response_text:
+        response_json = parse_cli_response(response_text)
+
+    # REQ-BRIDGE-02-4/6: Persist to persona_runs with zero cost
+    sql = """
+        INSERT INTO persona_runs
+            (persona_name, model, cycle_kind, trigger_context,
+             prompt, response, response_json,
+             input_tokens, output_tokens, cost_krw, latency_ms, error,
+             cache_read_tokens, cache_creation_tokens,
+             tool_calls_count, tool_input_tokens, tool_output_tokens)
+        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (
+            persona_name,
+            "cli-claude-max",  # REQ-BRIDGE-02-6: Audit model name
+            cycle_kind,
+            json.dumps(trigger_context or {}),
+            system_prompt + "\n\n[USER]\n" + user_message,
+            response_text,
+            json.dumps(response_json) if response_json is not None else None,
+            0,   # input_tokens = 0 (CLI)
+            0,   # output_tokens = 0 (CLI)
+            0.0, # cost_krw = 0 (CLI)
+            latency_ms,
+            None,  # no error
+            0,   # cache_read_tokens = 0
+            0,   # cache_creation_tokens = 0
+            0,   # tool_calls_count = 0 (pre-computed)
+            0,   # tool_input_tokens = 0
+            0,   # tool_output_tokens = 0
+        ))
+        row = cur.fetchone()
+        run_id = row["id"]
+
+    # SPEC-007: Execute memory_ops if response contains them
+    if apply_memory_ops and response_json:
+        try:
+            from trading.personas.memory import execute_memory_ops
+            execute_memory_ops(
+                persona=persona_name,
+                persona_run_id=run_id,
+                response_json=response_json,
+            )
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(
+                "memory_ops execution failed for CLI persona %s run %s: %s",
+                persona_name, run_id, e,
+            )
+
+    return PersonaResult(
+        persona_run_id=run_id,
+        response_text=response_text,
+        response_json=response_json,
+        input_tokens=0,
+        output_tokens=0,
+        cost_krw=0.0,
+        latency_ms=latency_ms,
+        tool_calls_count=0,
+        tool_input_tokens=0,
+        tool_output_tokens=0,
+    )
+
+
+def is_cli_mode_active() -> bool:
+    """Check if CLI persona mode is enabled and watcher is alive.
+
+    REQ-ORCH-04-1/2: Reads cli_personas_enabled from system_state.
+    REQ-SCHED-07-3: Checks watcher heartbeat before choosing CLI path.
+    """
+    try:
+        from trading.db.session import get_system_state
+        state = get_system_state()
+        if not state.get("cli_personas_enabled", False):
+            return False
+
+        # REQ-SCHED-07-5: Check watcher heartbeat staleness
+        from trading.personas.cli_bridge import is_watcher_alive
+        if not is_watcher_alive():
+            LOG.warning("CLI mode enabled but watcher heartbeat stale — using API fallback")
+            try:
+                from trading.alerts import telegram as tg
+                tg.system_briefing(
+                    "Watcher stale",
+                    "cli_personas_enabled=true but watcher heartbeat stale. Using API.",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+
+        return True
+    except Exception:  # noqa: BLE001
+        return False
