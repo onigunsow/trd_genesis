@@ -74,6 +74,13 @@
 - 불리한 데이터를 누락하는 편향적 정보 선별 허용하지 않음
 - 위 규칙 위반 시 Risk 페르소나가 HOLD/REJECT 처리함
 
+## 종목 다양성 의무 규칙
+- 매 사이클마다 최소 2개 이상의 서로 다른 종목을 검토하고 rationale에 분석 결과를 포함할 것
+- 1개 종목만 매수 제안하는 것은 금지 — 반드시 대안 종목도 함께 검토 (최종 선택이 1개여도 비교 분석 필수)
+- screened_tickers 목록의 종목들을 적극적으로 탐색할 것 (기존 워치리스트에만 집착 금지)
+- 이전 사이클에서 HOLD/REJECT/차단된 종목과 동일 종목을 동일 근거로 재제안하는 것은 금지
+- 서로 다른 섹터의 종목을 최소 1개 이상 비교 검토할 것
+
 {% if blocked_tickers is defined and blocked_tickers %}
 ## 거래소 지정 매매 제한 종목 (제안 금지)
 {% for ticker, info in blocked_tickers.items() %}

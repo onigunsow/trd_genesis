@@ -159,10 +159,10 @@ def main() -> None:
                   CronTrigger(day_of_week="mon-fri", hour=6, minute=30, timezone=KST),
                   id="daily_screen", name="daily_screen 06:30")
 
-    # SPEC-FIX: Blocked tickers cache 08:50 (before 09:00 market open)
+    # SPEC-FIX: Blocked tickers cache 07:25 (before 07:30 pre_market cycle)
     sched.add_job(lambda: _wrap("blocked_tickers_cache", refresh_blocked_tickers),
-                  CronTrigger(day_of_week="mon-fri", hour=8, minute=50, timezone=KST),
-                  id="blocked_cache", name="blocked_tickers 08:50")
+                  CronTrigger(day_of_week="mon-fri", hour=7, minute=25, timezone=KST),
+                  id="blocked_cache", name="blocked_tickers 07:25")
 
     # Pre-market 07:30
     sched.add_job(lambda: _wrap("pre_market", orchestrator.run_pre_market_cycle),

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -78,11 +78,20 @@ def refresh_blocked_tickers() -> dict[str, Any]:
 
 
 def get_blocked_tickers() -> dict[str, Any]:
-    """Read cached blocked tickers. Returns empty if stale or missing."""
+    """Read cached blocked tickers. Returns empty if stale or missing.
+
+    Accepts today's or yesterday's cache because blocked status (management
+    designation, trading halt, etc.) persists across trading days.  The cache
+    is refreshed at 07:25 KST, but before that time we still want the
+    previous day's blocked list to prevent trades on restricted stocks.
+    """
     try:
         if CACHE_FILE.exists():
             cache = json.loads(CACHE_FILE.read_text())
-            if cache.get("date") == date.today().isoformat():
+            cache_date = cache.get("date", "")
+            today = date.today().isoformat()
+            yesterday = (date.today() - timedelta(days=1)).isoformat()
+            if cache_date in (today, yesterday):
                 return cache
     except Exception:  # noqa: BLE001
         pass
