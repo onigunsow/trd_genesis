@@ -135,7 +135,13 @@
 - 최종 안전장치: 고정 룰 (-7% / RSI>85)은 항상 코드에 유지됩니다.
 {% endif %}
 
+## 컨텍스트 우선순위
+1. intelligence_macro + intelligence_micro (투자 분석) — 판단의 근거
+2. 종목별 기술적/펀더멘털 도구 조회 — 숫자 검증
+3. macro_news, micro_news (원본 뉴스) — 필요시 추가 참조
+
 {# SPEC-009 REQ-PTOOL-02-8 — Tool-use instruction (active when tools provided) #}
 {% if tools is defined and tools %}
 필요한 정보가 있으면 제공된 Tool을 호출하여 조회하세요. 불필요한 정보를 미리 요청하지 말고, 분석에 꼭 필요한 데이터만 능동적으로 가져오세요.
+get_static_context 도구 사용 시 intelligence_macro, intelligence_micro를 먼저 조회하고, 원본 뉴스(macro_news, micro_news)는 필요시에만 참조하세요.
 {% endif %}

@@ -152,10 +152,12 @@ def main() -> None:
                   CronTrigger(day_of_week="fri", hour=16, minute=30, timezone=KST),
                   id="ctx_macro_news", name="build_macro_news Fri 16:30")
 
-    # SPEC-FIX: Daily screener 06:35 (after micro_context at 06:30)
+    # Phase 1: Mechanical filter + export pending_screen.json (06:30)
+    # Phase 2: Host cron runs Claude CLI at 06:35 (scripts/daily_screen.sh)
+    # Orchestrator reads screened_tickers.json at 07:30 (pre_market cycle)
     sched.add_job(lambda: _safe_call("daily_screen", daily_screen.run),
-                  CronTrigger(day_of_week="mon-fri", hour=6, minute=35, timezone=KST),
-                  id="daily_screen", name="daily_screen 06:35")
+                  CronTrigger(day_of_week="mon-fri", hour=6, minute=30, timezone=KST),
+                  id="daily_screen", name="daily_screen 06:30")
 
     # SPEC-FIX: Blocked tickers cache 08:50 (before 09:00 market open)
     sched.add_job(lambda: _wrap("blocked_tickers_cache", refresh_blocked_tickers),

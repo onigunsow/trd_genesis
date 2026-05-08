@@ -28,7 +28,8 @@ def get_static_context(
 
     Args:
         name: Context file identifier. One of:
-            macro_context, micro_context, macro_news, micro_news
+            macro_context, micro_context, macro_news, micro_news,
+            intelligence_macro, intelligence_micro
         mode: Retrieval mode - "full" (entire file) or "semantic" (top-K chunks).
         query: Search query for semantic mode (required when mode=semantic).
         top_k: Number of chunks to return in semantic mode (default 7, max 20).
@@ -42,6 +43,8 @@ def get_static_context(
         "micro_context": "micro_context.md",
         "macro_news": "macro_news.md",
         "micro_news": "micro_news.md",
+        "intelligence_macro": "intelligence_macro.md",
+        "intelligence_micro": "intelligence_micro.md",
     }
     filename = filename_map.get(name)
     if not filename:
@@ -105,6 +108,8 @@ def _semantic_search(name: str, query: str, top_k: int) -> dict[str, Any]:
             "micro_context": "micro_context.md",
             "macro_news": "macro_news.md",
             "micro_news": "micro_news.md",
+            "intelligence_macro": "intelligence_macro.md",
+            "intelligence_micro": "intelligence_micro.md",
         }
         content = _read_md(filename_map[name])
         return {"name": name, "content": content, "fallback": "no_embeddings"}
@@ -163,6 +168,8 @@ def _semantic_search(name: str, query: str, top_k: int) -> dict[str, Any]:
             "micro_context": "micro_context.md",
             "macro_news": "macro_news.md",
             "micro_news": "micro_news.md",
+            "intelligence_macro": "intelligence_macro.md",
+            "intelligence_micro": "intelligence_micro.md",
         }
         content = _read_md(filename_map[name])
         return {"name": name, "content": content, "fallback": "search_error"}

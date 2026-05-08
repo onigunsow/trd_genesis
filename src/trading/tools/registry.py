@@ -132,8 +132,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Context file name (macro_context, micro_context, macro_news, micro_news)",
-                    "enum": ["macro_context", "micro_context", "macro_news", "micro_news"],
+                    "description": "Context file name (intelligence_macro/micro 우선, macro/micro_context, macro/micro_news)",
+                    "enum": [
+                        "macro_context", "micro_context",
+                        "macro_news", "micro_news",
+                        "intelligence_macro", "intelligence_micro",
+                    ],
                 },
                 "mode": {
                     "type": "string",

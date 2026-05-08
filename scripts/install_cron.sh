@@ -13,21 +13,26 @@
 #   04:05                           04:10
 set -euo pipefail
 
-SCRIPT="/home/onigunsow/trading/scripts/analyze_news.sh"
+NEWS_SCRIPT="/home/onigunsow/trading/scripts/analyze_news.sh"
+SCREEN_SCRIPT="/home/onigunsow/trading/scripts/daily_screen.sh"
 MARKER="# MoAI: Claude news analysis"
 
-# Ensure the script is executable
-chmod +x "$SCRIPT"
+# Ensure the scripts are executable
+chmod +x "$NEWS_SCRIPT"
+chmod +x "$SCREEN_SCRIPT"
 
 # Build the cron entries
 CRON_ENTRIES="
 # --- $MARKER ---
-10 8 * * * $SCRIPT
-10 11 * * * $SCRIPT
-40 14 * * * $SCRIPT
-10 22 * * * $SCRIPT
-10 1 * * * $SCRIPT
-10 4 * * * $SCRIPT
+# News analysis (6x/day, 5 min after container export)
+10 8 * * * $NEWS_SCRIPT
+10 11 * * * $NEWS_SCRIPT
+40 14 * * * $NEWS_SCRIPT
+10 22 * * * $NEWS_SCRIPT
+10 1 * * * $NEWS_SCRIPT
+10 4 * * * $NEWS_SCRIPT
+# Daily screener LLM (Mon-Fri 06:35, after container mechanical filter at 06:30)
+35 6 * * 1-5 $SCREEN_SCRIPT
 # --- END $MARKER ---
 "
 
