@@ -43,6 +43,8 @@ services:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # SPEC-TRADING-016 REQ-016-1-2: build commit verification (set by `make redeploy`).
+      HOST_BUILD_COMMIT: ${HOST_BUILD_COMMIT:-unknown}
     env_file:
       - .env
     volumes:
@@ -81,6 +83,8 @@ services:
       TZ: Asia/Seoul
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # SPEC-TRADING-016 REQ-016-1-2: build commit verification (set by `make redeploy`).
+      HOST_BUILD_COMMIT: ${HOST_BUILD_COMMIT:-unknown}
     env_file:
       - .env
     volumes:
@@ -113,6 +117,8 @@ services:
       TZ: Asia/Seoul
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # SPEC-TRADING-016 REQ-016-1-2: build commit verification (set by `make redeploy`).
+      HOST_BUILD_COMMIT: ${HOST_BUILD_COMMIT:-unknown}
     env_file:
       - .env
     volumes:

@@ -7,23 +7,122 @@ KRW conversion uses approx 1380 KRW/USD (override via ANTHROPIC_KRW_PER_USD env)
 
 SPEC-009 REQ-PTOOL-02-1: Tool-use multi-turn loop support.
 SPEC-015 REQ-ORCH-04-1/2: CLI routing via cli_personas_enabled feature flag.
+SPEC-TRADING-016 REQ-016-1-3: block_if_cli_only_mode decorator + fallback
+model guard to prevent direct Sonnet API calls when cli_only_mode is active.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from anthropic import Anthropic
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from trading.config import get_settings, project_root
-from trading.db.session import audit, connection
+from trading.db.session import audit, connection, get_system_state
+
+# SPEC-TRADING-016 REQ-016-1-4: Single source of truth for the Haiku fallback
+# model. The log message and the API call must both use this constant so
+# they cannot drift apart.
+_HAIKU_FALLBACK_MODEL = "claude-haiku-4-5"
+
+# SPEC-TRADING-016 REQ-016-1-3/4: Module-level placeholders for symbols that
+# live in ``trading.personas.cli_bridge``. cli_bridge imports from this module
+# (PersonaResult, _extract_json) so we cannot import its symbols at the top
+# level — that would create a circular import. Instead we re-bind these names
+# lazily on first use of ``call_persona_via_cli`` so tests can ``patch.object``
+# them on ``trading.personas.base`` directly.
+call_persona_cli = None  # type: ignore[assignment]
+parse_cli_response = None  # type: ignore[assignment]
+build_cli_prompt = None  # type: ignore[assignment]
+CLICallError = None  # type: ignore[assignment]
+CLITimeoutError = None  # type: ignore[assignment]
+assert_fallback_model = None  # type: ignore[assignment]
+
+
+def _ensure_cli_imports() -> None:
+    """Bind cli_bridge / cli_prompt_builder symbols on this module.
+
+    Deferred to avoid a circular import (cli_bridge imports from base).
+    Called by ``call_persona_via_cli``. Idempotent for callable symbols, but
+    exception classes and ``assert_fallback_model`` are always rebound so
+    that tests can patch the callables on this module without losing the
+    real exception types used in the ``except`` clause.
+    """
+    global call_persona_cli, parse_cli_response, build_cli_prompt
+    global CLICallError, CLITimeoutError, assert_fallback_model
+    from trading.personas import cli_bridge as _cb
+    from trading.personas import cli_prompt_builder as _cpb
+    # Always rebind exception classes + the fallback guard so the
+    # ``except (CLITimeoutError, CLICallError)`` clause has real classes,
+    # even if a test has monkey-patched the callables on this module.
+    CLICallError = _cb.CLICallError
+    CLITimeoutError = _cb.CLITimeoutError
+    assert_fallback_model = _cb.assert_fallback_model
+    # Only fill these in if a test has not already patched them.
+    if call_persona_cli is None:
+        call_persona_cli = _cb.call_persona_cli
+    if parse_cli_response is None:
+        parse_cli_response = _cb.parse_cli_response
+    if build_cli_prompt is None:
+        build_cli_prompt = _cpb.build_cli_prompt
+
+
+def block_if_cli_only_mode(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator: raise RuntimeError if ``cli_only_mode`` is active.
+
+    SPEC-TRADING-016 REQ-016-1-3: Apply this decorator to any function that
+    calls the Anthropic API directly *outside* the persona pipeline (e.g.
+    one-off summarisers in news/intelligence or reports). It does NOT belong
+    on the intentional Haiku fallback in ``call_persona_via_cli`` — that path
+    is the single sanctioned exception.
+
+    The decorator reads ``system_state`` and treats both the SPEC-016 column
+    name (``cli_only_mode``) and the legacy SPEC-015 column name
+    (``cli_personas_enabled``) as equivalent — see SPEC-TRADING-016
+    REQ-016-1-3(d). If ``get_system_state`` itself fails (e.g. DB outage) the
+    decorator falls open: the wrapped function executes normally so that a
+    DB problem cannot wedge the only working code path.
+
+    Raises:
+        RuntimeError: When the system is in cli-only mode and the wrapped
+            function attempts a direct API call.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            state = get_system_state()
+        except Exception as exc:  # noqa: BLE001
+            # Fail open — never let a DB outage block direct API calls.
+            LOG.warning(
+                "block_if_cli_only_mode: get_system_state failed (%s) — "
+                "allowing %s to proceed",
+                exc, fn.__qualname__,
+            )
+            return fn(*args, **kwargs)
+
+        cli_only = bool(
+            state.get("cli_only_mode")
+            or state.get("cli_personas_enabled")
+        )
+        if cli_only:
+            raise RuntimeError(
+                f"cli_only_mode=True but {fn.__qualname__} attempted a "
+                "direct Anthropic API call. Use the CLI bridge "
+                "(trading.personas.base.call_persona_via_cli) instead. "
+                "See SPEC-TRADING-016 REQ-016-1-3."
+            )
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 LOG = logging.getLogger(__name__)
 
@@ -491,13 +590,10 @@ def call_persona_via_cli(
     Returns:
         PersonaResult with CLI execution results.
     """
-    from trading.personas.cli_bridge import (
-        CLICallError,
-        CLITimeoutError,
-        call_persona_cli,
-        parse_cli_response,
-    )
-    from trading.personas.cli_prompt_builder import build_cli_prompt
+    # SPEC-TRADING-016 REQ-016-1-3/4: Bind cli_bridge symbols on this module
+    # so tests can patch them and so the fallback path uses the centralised
+    # model whitelist.
+    _ensure_cli_imports()
 
     start = time.time()
 
@@ -534,16 +630,24 @@ def call_persona_via_cli(
         reason = str(e)[:100]
         _record_cli_failure(persona_name, reason)
 
+        # SPEC-TRADING-016 REQ-016-1-4: Single source of truth for the
+        # fallback model. The whitelist guard below ensures the log line
+        # below and the actual API call cannot drift apart.
+        fallback_model = _HAIKU_FALLBACK_MODEL
+        assert_fallback_model(fallback_model)
+
+        # SPEC-TRADING-016 REQ-016-1-4(c): Log message must reference the
+        # actual model being used, not a hardcoded literal.
         LOG.warning(
-            "CLI failed for %s (%s), falling back to Haiku API",
-            persona_name, reason,
+            "CLI failed for %s (%s), falling back to %s API",
+            persona_name, reason, fallback_model,
         )
 
         # REQ-FALLBACK-06-6: Haiku only fallback
         try:
             return call_persona(
                 persona_name=persona_name,
-                model="claude-haiku-4-5",
+                model=fallback_model,
                 cycle_kind=cycle_kind,
                 system_prompt=system_prompt,
                 user_message=user_message,

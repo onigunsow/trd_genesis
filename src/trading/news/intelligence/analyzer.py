@@ -29,7 +29,7 @@ from trading.news.intelligence.prompts import (
     ARTICLE_ANALYSIS_SYSTEM,
     build_analysis_prompt,
 )
-from trading.personas.base import KRW_PER_USD
+from trading.personas.base import KRW_PER_USD, block_if_cli_only_mode
 
 LOG = logging.getLogger(__name__)
 
@@ -192,10 +192,20 @@ def _store_prefiltered_noise(articles: list[dict]) -> int:
     return stored
 
 
+@block_if_cli_only_mode
 def _call_haiku(batch: list[dict]) -> tuple[list[dict] | None, int, int]:
     """Call Haiku API with a batch of articles.
 
     Returns: (parsed_results, input_tokens, output_tokens) or (None, 0, 0) on failure.
+
+    SPEC-TRADING-016 REQ-016-1-3: This is the *fallback* path for the news
+    analyzer; the primary path is the host-side Claude CLI driven by
+    ``scripts/analyze_news.sh``. The ``@block_if_cli_only_mode`` decorator
+    ensures we never quietly burn the Anthropic budget while the system
+    operator believes the CLI-only flag is in effect. Decorator chosen over
+    a CLI bridge migration because this path has a bespoke token-accounting
+    and DB schema (news_articles, not persona_runs) that does not fit the
+    persona pipeline.
     """
     s = get_settings()
     if s.anthropic.api_key is None:

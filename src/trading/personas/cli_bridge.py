@@ -35,6 +35,41 @@ HEARTBEAT_FILE = Path(project_root()) / "data" / "persona_watcher.heartbeat"
 # REQ-SCHED-07-5: Heartbeat staleness threshold (seconds)
 HEARTBEAT_STALE_SECONDS: float = 60.0
 
+# SPEC-TRADING-016 REQ-016-1-4: Whitelist of models permitted on the fallback
+# path. The fallback log message and the actual API call must reference the
+# same model — see assert_fallback_model() below.
+#
+# @MX:ANCHOR: Fallback model contract — only Haiku variants permitted here.
+# @MX:REASON: Past incident saw "falling back to Haiku" logged while the API
+# was actually called with Sonnet. Centralising the whitelist prevents that
+# divergence from re-occurring.
+ALLOWED_FALLBACK_MODELS: frozenset[str] = frozenset({
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+})
+
+
+def assert_fallback_model(model: str) -> None:
+    """Raise ValueError if `model` is not a permitted fallback model.
+
+    SPEC-TRADING-016 REQ-016-1-4: Guards the Haiku fallback path against being
+    invoked with a non-Haiku model. Callers (e.g. ``call_persona_via_cli`` in
+    ``personas/base.py``) MUST call this immediately before invoking the
+    Anthropic API in the fallback branch so that any drift between the log
+    message and the actual call is caught at runtime.
+
+    Args:
+        model: The model identifier the caller intends to pass to the API.
+
+    Raises:
+        ValueError: If ``model`` is not in :data:`ALLOWED_FALLBACK_MODELS`.
+    """
+    if model not in ALLOWED_FALLBACK_MODELS:
+        raise ValueError(
+            f"fallback_to_haiku invoked with non-Haiku model: {model!r}. "
+            f"Allowed: {sorted(ALLOWED_FALLBACK_MODELS)}"
+        )
+
 
 class CLITimeoutError(Exception):
     """Raised when CLI result is not received within timeout (REQ-BRIDGE-02-5)."""

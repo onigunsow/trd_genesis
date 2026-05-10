@@ -9,10 +9,43 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from trading.db.session import connection
 from trading.personas.base import call_persona, call_persona_via_cli, is_cli_mode_active, render_prompt
 
 MODEL = "claude-sonnet-4-6"
 PERSONA = "micro"
+
+
+# @MX:ANCHOR: Micro cache reuse boundary for intraday cycles
+# @MX:REASON: SPEC-TRADING-016 REQ-016-1-1 — intraday must reuse morning's Micro
+# without re-running the persona; this function is the sole read path for that cache.
+# @MX:SPEC: SPEC-TRADING-016/REQ-016-1-1
+def latest_cached(max_age_days: int = 1) -> dict[str, Any] | None:
+    """Return the most recent micro run within max_age_days, or None.
+
+    Mirrors macro_persona.latest_cached. Intended for intraday cycles that must
+    reuse the morning pre-market Micro analysis instead of re-invoking the LLM.
+
+    Args:
+        max_age_days: Maximum age of cached row in days. Defaults to 1 (today only).
+
+    Returns:
+        Dict with id, ts, response, response_json columns, or None if no fresh row.
+    """
+    sql = """
+        SELECT id, ts, response, response_json
+          FROM persona_runs
+         WHERE persona_name = 'micro'
+           AND error IS NULL
+           AND ts >= NOW() - %s::interval
+         ORDER BY ts DESC
+         LIMIT 1
+    """
+    interval = f"{max_age_days} days"
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (interval,))
+        row = cur.fetchone()
+    return dict(row) if row else None
 
 
 def run(

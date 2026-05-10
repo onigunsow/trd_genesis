@@ -24,6 +24,13 @@ COPY src/ /app/src/
 # Install the project itself so [project.scripts] (e.g. `trading`) is on PATH.
 RUN uv sync
 
+# @MX:NOTE: SPEC-TRADING-016 REQ-016-1-2 — bake the git commit hash into the image.
+# Healthcheck (`check_build_commit`) compares /app/.build_commit against the
+# HOST_BUILD_COMMIT env var injected by compose at runtime; mismatch => fail + Telegram alert.
+ARG BUILD_COMMIT=unknown
+ENV BUILD_COMMIT=${BUILD_COMMIT}
+RUN echo "${BUILD_COMMIT}" > /app/.build_commit
+
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONPATH=/app/src
 

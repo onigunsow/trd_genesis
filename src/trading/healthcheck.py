@@ -89,12 +89,72 @@ def check_db_reachable() -> CheckResult:
         return ("fail", f"postgres error: {e!r}")
 
 
+# @MX:ANCHOR: SPEC-TRADING-016 REQ-016-1-2 — boot-time build commit verification.
+# @MX:REASON: Past zero-trade incidents (adeadeb, 2172cdf) traced to containers running
+# stale code because `__pycache__` and Jinja2 caches survived without `--no-cache` rebuild.
+# This check guarantees the running image was built from the host's current git HEAD.
+def check_build_commit() -> CheckResult:
+    """Verify the container's baked-in commit matches the host's HEAD passed via env.
+
+    On `fail`, the main loop calls `system_error("BOOT", BuildCommitMismatch(...))`
+    so the user gets an immediate Telegram alert instead of silent zero-trade days.
+    """
+    try:
+        with open("/app/.build_commit", encoding="utf-8") as f:
+            container_sha = f.read().strip()
+    except FileNotFoundError:
+        return ("warn", "no .build_commit file (likely dev/legacy image)")
+    except Exception as e:  # noqa: BLE001
+        return ("warn", f"could not read /app/.build_commit: {e!r}")
+
+    if not container_sha or container_sha == "unknown":
+        return ("warn", "container BUILD_COMMIT=unknown (not built via `make redeploy`?)")
+
+    host_sha = os.environ.get("HOST_BUILD_COMMIT", "").strip()
+    if not host_sha or host_sha == "unknown":
+        # Compose did not inject HOST_BUILD_COMMIT — likely raw `docker compose up`,
+        # not a `make redeploy`. Warn but do not crash the container.
+        return ("warn", f"HOST_BUILD_COMMIT not set; container commit={container_sha[:8]}")
+
+    if container_sha != host_sha:
+        return (
+            "fail",
+            f"BUILD MISMATCH: container={container_sha[:8]} host={host_sha[:8]} "
+            f"(re-run `make redeploy`)",
+        )
+
+    return ("ok", f"build commit verified: {container_sha[:8]}")
+
+
 CHECKS = (
     ("env", check_env),
     ("kis", check_kis_reachable),
     ("telegram", check_telegram_reachable),
     ("db", check_db_reachable),
+    ("build", check_build_commit),
 )
+
+
+def _alert_boot_failure(check_name: str, message: str) -> None:
+    """SPEC-TRADING-016 REQ-016-1-2: send Telegram alert on critical boot failure.
+
+    Best-effort — never raise. Used for build_commit mismatches so the user
+    is notified even when the container is exiting.
+    """
+    try:
+        # Lazy import: telegram module pulls in config/httpx; we want healthcheck
+        # to remain importable even if telegram setup is broken.
+        from trading.alerts.telegram import system_error  # noqa: WPS433
+
+        system_error(
+            "BOOT",
+            RuntimeError(f"healthcheck:{check_name} failed"),
+            context=message,
+        )
+    except Exception:  # noqa: BLE001
+        # Last resort: if we cannot send Telegram, we still want exit-code 1
+        # so docker shows the container as unhealthy.
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{marker}] {name:<10} {msg}")
         if level == "fail":
             fail = True
+            # Build-commit mismatch is the most likely silent killer (see SPEC-016).
+            # Surface it via Telegram so the user sees it even if `--quiet`.
+            if name == "build":
+                _alert_boot_failure(name, msg)
     return 1 if fail else 0
 
 

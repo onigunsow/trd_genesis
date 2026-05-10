@@ -891,13 +891,252 @@ def run_event_trigger_cycle(
     return res
 
 
+# @MX:ANCHOR: Intraday cycle entry point — implements SPEC-TRADING-016 REQ-016-1-1.
+# @MX:REASON: Replaces deferred-to-M5 stub that incorrectly delegated to pre_market
+# and overwrote cycle_kind AFTER DB writes. This function now sets cycle_kind=
+# "intraday" BEFORE persona records are persisted, reuses the morning Micro cache,
+# and runs Decision/Risk fresh.
+# @MX:SPEC: SPEC-TRADING-016/REQ-016-1-1
 def run_intraday_cycle(today: str | None = None) -> CycleResult:
-    """Intraday cycle: skip Micro full analysis; Decision uses Micro cache."""
+    """Intraday cycle (매시 정각 09~15): reuse cached Micro; fresh Decision/Risk.
+
+    SPEC-TRADING-016 REQ-016-1-1:
+    - cycle_kind="intraday" is set BEFORE any persona DB inserts (correctness).
+    - Micro is NOT re-executed; the morning's cached result is reused.
+    - Decision and Risk run fresh against current market data with cycle_kind="intraday".
+    - On no Micro cache: log warning and proceed with empty candidates.
+    """
     today = today or date.today().isoformat()
-    # Reuse most recent micro for today (or last cached). For brevity, full impl deferred to M5.
-    # Here we treat intraday similarly to pre_market but mark cycle_kind appropriately.
-    res = run_pre_market_cycle(today=today)
-    res.cycle_kind = "intraday"
+    res = CycleResult(cycle_kind="intraday")
+    state = get_system_state()
+
+    # 1. Macro from cache (same 7-day window as pre_market)
+    cached_macro = macro_persona.latest_cached(max_age_days=7)
+    macro_summary: str | None = None
+    if cached_macro:
+        res.macro_run_id = int(cached_macro["id"])
+        macro_summary = (cached_macro["response"] or "")[:500]
+
+    # 2. Reuse today's cached Micro (skip Micro re-execution)
+    cached_micro = micro_persona.latest_cached(max_age_days=1)
+    micro_candidates: dict[str, Any] = {}
+    micro_summary_text = "(no micro cache)"
+    if cached_micro and cached_micro.get("response_json"):
+        res.micro_run_id = int(cached_micro["id"])
+        micro_response_json = cached_micro["response_json"] or {}
+        micro_candidates = micro_response_json.get("candidates", {}) or {}
+        micro_summary_text = _summarize_persona("micro", micro_response_json)
+    else:
+        LOG.warning(
+            "intraday: no cached micro found within 1 day; proceeding with empty candidates"
+        )
+
+    # 3. Decision — fresh call with cycle_kind="intraday"
+    decision_model = resolve_model("decision")
+    decision_tools = _get_persona_tools("decision", state)
+    assets = _gather_assets()
+    cash_pct = (
+        assets["cash_d2"] / assets["total_assets"] * 100
+        if assets["total_assets"] else 100.0
+    )
+    blocked_cache = get_blocked_tickers()
+    blocked_tickers = blocked_cache.get("blocked", {})
+
+    dec_input: dict[str, Any] = {
+        "today": today,
+        "macro_guide": macro_summary or "(없음)",
+        "micro_candidates": micro_candidates,
+        "assets": assets,
+        "daily_order_count": 0,
+        "daily_pnl_pct": 0.0,
+        "event_trigger": None,
+        "car_context": None,
+        "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
+        "blocked_tickers": blocked_tickers,
+    }
+    candidate_tickers = [
+        c.get("ticker")
+        for c in (micro_candidates.get("buy") or [])
+        if c.get("ticker")
+    ]
+    hold_warnings = _get_hold_feedback_today(candidate_tickers)
+    dec_input["hold_warnings"] = hold_warnings if hold_warnings else []
+
+    try:
+        dec_res, sig_ids = decision_persona.run(
+            dec_input,
+            cycle_kind="intraday",
+            macro_run_id=res.macro_run_id,
+            micro_run_id=res.micro_run_id,
+            tools=decision_tools,
+            model=decision_model,
+        )
+    except Exception as e:  # noqa: BLE001
+        tg.system_error("Decision persona", e, context=f"cycle=intraday today={today}")
+        raise
+    res.decision_run_id = dec_res.persona_run_id
+    res.decisions = sig_ids
+    tg.persona_briefing(
+        persona="Decision · 박세훈 (intraday)",
+        model=decision_model,
+        summary=_summarize_persona("decision", dec_res.response_json),
+        input_tokens=dec_res.input_tokens,
+        output_tokens=dec_res.output_tokens,
+        cost_krw=dec_res.cost_krw,
+    )
+
+    # 4. Risk + execute per signal — same gate pattern as pre_market
+    if not sig_ids:
+        return res
+    if state["halt_state"]:
+        tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
+        return res
+
+    s = get_settings()
+    risk_model = resolve_model("risk")
+    risk_tools = _get_persona_tools("risk", state)
+    client = KisClient(s.trading_mode)
+    signals = (dec_res.response_json or {}).get("signals", [])
+
+    for sig, decision_id in zip(signals, sig_ids, strict=False):
+        qty_raw = int(sig.get("qty", 0) or 0)
+        if qty_raw == 0:
+            LOG.info(
+                "Skipping Risk for qty=0 signal: %s %s",
+                sig.get("ticker"), sig.get("side"),
+            )
+            continue
+
+        ticker = sig.get("ticker")
+        if ticker and _count_holds_today(ticker) >= 3:
+            LOG.info("Ticker %s blocked — 3+ HOLDs today", ticker)
+            audit("TICKER_BLOCKED_BY_HOLDS", actor="orchestrator", details={
+                "ticker": ticker, "hold_count": _count_holds_today(ticker),
+            })
+            res.rejected.append(decision_id)
+            continue
+
+        rk_input = {
+            "today": today,
+            "decision_signals": [sig],
+            "assets": assets,
+            "cash_pct": cash_pct,
+            "daily_order_count": 0,
+            "daily_pnl_pct": 0.0,
+            "macro_summary": macro_summary or "(없음)",
+            "micro_summary": micro_summary_text,
+        }
+        rk_res, review_id, verdict = risk_persona.run(
+            rk_input,
+            decision_id=decision_id,
+            cycle_kind="intraday",
+            tools=risk_tools,
+            model=risk_model,
+        )
+        res.risk_run_ids.append(rk_res.persona_run_id)
+        tg.persona_briefing(
+            persona=f"Risk -> {verdict}",
+            model=risk_model,
+            summary=_summarize_persona("risk", rk_res.response_json),
+            input_tokens=rk_res.input_tokens,
+            output_tokens=rk_res.output_tokens,
+            cost_krw=rk_res.cost_krw,
+        )
+
+        if verdict != "APPROVE":
+            res.rejected.append(decision_id)
+            continue
+
+        side_str = sig.get("side", "hold")
+        if side_str not in ("buy", "sell"):
+            res.rejected.append(decision_id)
+            continue
+        qty = int(sig.get("qty", 0) or 0)
+
+        try:
+            safety = check_pre_order_safety(
+                client,
+                ticker=ticker or "",
+                side=side_str,
+                qty=qty,
+                notional=qty * (assets["total_assets"] // 100),
+            )
+        except Exception as e:  # noqa: BLE001
+            tg.system_briefing(
+                "safety_check_error",
+                f"{ticker} 매매 안전성 검증 중 예외: {e}",
+            )
+            res.rejected.append(decision_id)
+            continue
+        if not safety.passed:
+            tg.system_briefing(
+                "거래 안전성 차단",
+                f"{ticker} {side_str} 차단\n사유: {', '.join(safety.blockers)}",
+            )
+            audit("ORDER_BLOCKED_SAFETY", actor="orchestrator", details={
+                "decision_id": decision_id, "ticker": ticker, "side": side_str,
+                "blockers": safety.blockers,
+            })
+            for blocker in safety.blockers:
+                if "stat_cls" in blocker:
+                    record_blocked_by_safety(ticker or "", blocker)
+                    break
+            res.rejected.append(decision_id)
+            continue
+
+        ref_price = safety.quote["price"] if safety.quote else 100_000
+        chk = check_pre_order(
+            side=side_str,
+            ticker=ticker or "",
+            qty=qty,
+            ref_price=ref_price,
+            total_assets=int(assets["total_assets"]),
+            holdings=assets["holdings"],
+            mode=client.mode.value,
+            market="KOSPI",
+        )
+        if not chk.passed:
+            record_breach(chk, {"signal": sig, "decision_id": decision_id})
+            tg.system_briefing(
+                "한도 위반 차단",
+                f"종목 {ticker} 매매 차단\n위반: {', '.join(chk.breaches)}",
+            )
+            circuit_breaker.trip(
+                reason="pre-order limit breach",
+                details={"breaches": chk.breaches},
+            )
+            res.rejected.append(decision_id)
+            continue
+
+        order_id = _execute_signal(client, sig, decision_id)
+        if order_id:
+            res.executed_orders.append(order_id)
+            try:
+                bal_after = balance(client)
+                ca_pct = (
+                    bal_after["cash_d2"] / bal_after["total_assets"] * 100
+                    if bal_after["total_assets"] else 0.0
+                )
+                eq_pct = (
+                    bal_after["stock_eval"] / bal_after["total_assets"] * 100
+                    if bal_after["total_assets"] else 0.0
+                )
+                tg.trade_briefing(
+                    side=sig["side"],
+                    ticker=sig["ticker"],
+                    name=None,
+                    qty=int(sig.get("qty", 0)),
+                    fill_price=None,
+                    fee=0,
+                    mode=client.mode.value,
+                    total_assets=bal_after["total_assets"],
+                    cash_pct=ca_pct,
+                    equity_pct=eq_pct,
+                    note=f"Decision {decision_id} → orders {order_id} (intraday)",
+                )
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("post-trade briefing failed: %s", e)
+
     return res
 
 

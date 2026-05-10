@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from trading.alerts.telegram import system_briefing
 from trading.config import get_settings
 from trading.db.session import connection
+from trading.personas.base import block_if_cli_only_mode
 
 LOG = logging.getLogger(__name__)
 
@@ -200,7 +201,23 @@ def _fallback_text(data: dict[str, Any]) -> str:
     )
 
 
+@block_if_cli_only_mode
 def _llm_text(data: dict[str, Any]) -> str:
+    """Generate the daily-report Korean summary via Sonnet.
+
+    SPEC-TRADING-016 REQ-016-1-3: This is one of two remaining direct API
+    callers identified during the SPEC-015 audit. The
+    ``@block_if_cli_only_mode`` decorator ensures the call fails loudly under
+    cli_only_mode rather than silently burning the Anthropic budget. We chose
+    the decorator over a CLI bridge migration because this function returns
+    free-form Korean prose (not structured JSON) and writes nothing to
+    ``persona_runs`` — it does not fit the persona-pipeline contract that
+    ``call_persona_via_cli`` enforces.
+
+    When ``cli_only_mode`` is active, the existing ``_fallback_text`` plain
+    template (used in ``generate_and_send`` when this function raises) keeps
+    the daily report flowing without LLM input.
+    """
     s = get_settings()
     if s.anthropic.api_key is None:
         raise RuntimeError("ANTHROPIC_API_KEY missing")
