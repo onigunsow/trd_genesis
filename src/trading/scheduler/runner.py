@@ -195,6 +195,13 @@ def main() -> None:
     sched.start()
 
 
+# @MX:NOTE: SPEC-TRADING-017 -- fallback basicConfig for direct module
+# execution (`python -m trading.scheduler.runner`). When the container
+# entrypoint `trading scheduler` routes through cli.main(), the CLI-level
+# bootstrap has already configured the root logger and this call is a
+# stdlib no-op. Retained intentionally; safe to remove only if direct
+# module execution is dropped from the operator workflow.
+# @MX:SPEC: SPEC-TRADING-017
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     main()

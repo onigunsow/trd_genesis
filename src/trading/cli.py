@@ -19,11 +19,70 @@ Subcommands (future):
 
 from __future__ import annotations
 
+import logging
+import os
 import sys
+
+# @MX:NOTE: SPEC-TRADING-017 root-logger bootstrap helper. Reads
+# TRADING_LOG_LEVEL (case-insensitive); falls back to INFO with a single
+# WARNING line on unrecognised values. Idempotent via stdlib
+# logging.basicConfig() semantics -- do NOT add force=True (it would
+# silently displace caller-supplied handlers, e.g. pytest's caplog).
+# @MX:SPEC: SPEC-TRADING-017
+_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
+
+
+def _bootstrap_logging() -> None:
+    """Install a stdout root-logger handler if one is not already present.
+
+    Resolves the log level from ``TRADING_LOG_LEVEL`` (case-insensitive),
+    defaulting to INFO. An unrecognised value also yields INFO and emits a
+    single WARNING line so the typo is visible in the logs.
+    """
+    raw = os.environ.get("TRADING_LOG_LEVEL", "").strip()
+    invalid_value: str | None = None
+    if not raw:
+        level_name = "INFO"
+    else:
+        upper = raw.upper()
+        if upper in _VALID_LOG_LEVELS:
+            level_name = upper
+        else:
+            level_name = "INFO"
+            invalid_value = raw
+
+    level = getattr(logging, level_name)
+
+    # basicConfig is a no-op when the root logger already has a handler,
+    # which is exactly the idempotency contract we want (REQ-017-1-5).
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
+    )
+    # Even when basicConfig was a no-op (handlers pre-existed), honour the
+    # requested level on the root logger. This is acceptable per SPEC and
+    # is required so `TRADING_LOG_LEVEL` takes effect under pytest, which
+    # attaches its own LogCaptureHandler before our bootstrap runs.
+    logging.getLogger().setLevel(level)
+
+    if invalid_value is not None:
+        logging.warning(
+            "TRADING_LOG_LEVEL=%r is not one of %s; falling back to INFO",
+            invalid_value,
+            sorted(_VALID_LOG_LEVELS),
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
+    # @MX:NOTE: SPEC-TRADING-017 -- bootstrap the root logger before any
+    # subcommand dispatch so all long-running services (scheduler, bot)
+    # emit their LOG.* output to stdout. MUST remain the first non-trivial
+    # statement of main() after argv normalisation; do not move it into
+    # individual subcommand branches.
+    # @MX:SPEC: SPEC-TRADING-017
+    _bootstrap_logging()
     if not args:
         return _print_help()
     cmd, rest = args[0], args[1:]

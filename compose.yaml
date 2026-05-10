@@ -85,6 +85,8 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # SPEC-TRADING-016 REQ-016-1-2: build commit verification (set by `make redeploy`).
       HOST_BUILD_COMMIT: ${HOST_BUILD_COMMIT:-unknown}
+      # SPEC-TRADING-017 REQ-017-1-3: root logger level for CLI bootstrap.
+      TRADING_LOG_LEVEL: ${TRADING_LOG_LEVEL:-INFO}
     env_file:
       - .env
     volumes:
@@ -119,6 +121,8 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # SPEC-TRADING-016 REQ-016-1-2: build commit verification (set by `make redeploy`).
       HOST_BUILD_COMMIT: ${HOST_BUILD_COMMIT:-unknown}
+      # SPEC-TRADING-017 REQ-017-1-3: root logger level for CLI bootstrap.
+      TRADING_LOG_LEVEL: ${TRADING_LOG_LEVEL:-INFO}
     env_file:
       - .env
     volumes:
