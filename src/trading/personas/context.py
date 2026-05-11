@@ -269,12 +269,23 @@ def _flows_5d(ticker: str) -> dict[str, int] | None:
             "individual_5d": int(row["p5"])}
 
 
+# @MX:NOTE: SPEC-TRADING-018 — blocked_tickers wired through to prompt layer.
+# Always present in return dict (empty dict default) so Jinja can guard with
+# {% if blocked_tickers %} without needing {% if is defined %} checks.
 def assemble_micro_input(
     macro_summary: str | None,
     today: date | None = None,
     watchlist: list[str] | None = None,
+    blocked_tickers: dict[str, Any] | list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build micro persona input — watchlist tickers' technicals + recent disclosures."""
+    """Build micro persona input — watchlist tickers' technicals + recent disclosures.
+
+    SPEC-TRADING-018: ``blocked_tickers`` is forwarded into the return dict so
+    ``micro.jinja`` can render the [매매제한 종목] exclusion block. Accepts either
+    the cache's inner dict (ticker -> {reason, stat_cls, ...}) or a list of
+    ticker codes; both shapes are passed through verbatim. Default ``None`` is
+    normalized to an empty dict so the key is *always* present (REQ-018-2 (c)).
+    """
     today = today or date.today()
     universe = watchlist or DEFAULT_WATCHLIST
 
@@ -329,4 +340,6 @@ def assemble_micro_input(
         "static_context": static_micro,
         "static_news": micro_news_md,
         "memory": _format_memory(memory_rows),
+        # SPEC-TRADING-018 REQ-018-2: always-present blocked_tickers key.
+        "blocked_tickers": blocked_tickers if blocked_tickers is not None else {},
     }

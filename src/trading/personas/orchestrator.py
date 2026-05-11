@@ -151,18 +151,50 @@ def _gather_assets() -> dict[str, Any]:
     return balance(client)
 
 
+# @MX:ANCHOR: Cycle-wide entry for micro persona context — fan_in >= 3
+# (run_pre_market_cycle, run_intraday_cycle, run_event_trigger_cycle reuse the
+# resulting watchlist semantics indirectly via Decision input).
+# @MX:SPEC: SPEC-TRADING-018/REQ-018-1
+# @MX:REASON: Universe construction is the single chokepoint that decides
+# whether the trading day produces signals. Bug on 2026-05-11 was here.
 def _build_micro_input(today: str, macro_summary: str | None) -> dict[str, Any]:
     """Build micro persona context from cached data (M5 정밀화).
 
-    Merges base watchlist with screened tickers for broader universe.
+    Merges base watchlist with screened tickers for broader universe and
+    filters out exchange-blocked tickers (SPEC-TRADING-018):
+
+    1. Compose ``DEFAULT_WATCHLIST + screened[:15]`` (legacy behaviour).
+    2. Filter blocked tickers out (REQ-018-1).
+    3. If the filtered universe is empty *and* screened tickers are
+       available, fall back to ``screened[:10]`` non-blocked (REQ-018-4).
+    4. Forward the blocked-ticker dict to ``assemble_micro_input`` so the
+       prompt layer can render the exclusion block (REQ-018-2/3).
     """
     screened = load_screened_tickers()
-    expanded_watchlist = list(ctx.DEFAULT_WATCHLIST) + [
+    blocked_cache = get_blocked_tickers()
+    blocked_tickers = blocked_cache.get("blocked", {}) or {}
+    blocked_set = set(blocked_tickers.keys())
+
+    base_universe = list(ctx.DEFAULT_WATCHLIST) + [
         t for t in screened[:15] if t not in ctx.DEFAULT_WATCHLIST
     ]
+    expanded_watchlist = [t for t in base_universe if t not in blocked_set]
+
+    # REQ-018-4: screened fallback when DEFAULT_WATCHLIST is fully blocked.
+    if not expanded_watchlist and screened:
+        fallback_tickers = [t for t in screened[:10] if t not in blocked_set]
+        if fallback_tickers:
+            LOG.warning(
+                "[micro_fallback] DEFAULT_WATCHLIST fully blocked, "
+                "falling back to screened_tickers[:N=%d]",
+                len(fallback_tickers),
+            )
+            expanded_watchlist = fallback_tickers
+
     return ctx.assemble_micro_input(
         macro_summary=macro_summary,
         watchlist=expanded_watchlist,
+        blocked_tickers=blocked_tickers,
     )
 
 

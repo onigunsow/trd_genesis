@@ -51,6 +51,13 @@
 [유니버스 + 최신 시세]
 {{ universe_snapshot }}
 
+{% if blocked_tickers %}
+## [매매제한 종목]
+다음 종목은 거래소 단기과열/매매제한 대상이므로 후보에서 반드시 제외할 것:
+{% for ticker, info in blocked_tickers.items() %}- {{ ticker }}: {{ info.reason if info is mapping and info.reason is defined else info }}
+{% endfor %}
+{% endif %}
+
 {% if recent_disclosures %}
 [최근 24h DART 공시]
 {% for d in recent_disclosures %}- [{{ d.rcept_dt }}] {{ d.corp_name }} ({{ d.stock_code }}): {{ d.report_nm }}
