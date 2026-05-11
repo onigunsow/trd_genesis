@@ -126,8 +126,13 @@ class TestBuildMicroInputFiltersBlockedTickers:
         ), f"blocked_tickers not forwarded to assemble_micro_input: {passed!r}"
 
     def test_build_micro_input_no_regression_when_no_blocked(self):
-        """REQ-018-1(c): When blocked is empty, the universe is the legacy
-        ``DEFAULT_WATCHLIST + screened[:15]`` merge."""
+        """SPEC-020 REQ-020-3 (a): When screened is non-empty and blocked is
+        empty, the universe is ``screened`` only — DEFAULT is NOT merged in.
+
+        (Previously SPEC-018 expected DEFAULT + screened[:15] merge; SPEC-020
+        removed the merge because daily_screen output is the authoritative
+        autonomous-discovery source.)
+        """
         from trading.personas import context as ctx
         from trading.personas.orchestrator import _build_micro_input
 
@@ -144,7 +149,7 @@ class TestBuildMicroInputFiltersBlockedTickers:
             patch(
                 "trading.personas.orchestrator.get_blocked_tickers",
                 return_value={
-                    "date": "2026-05-11",
+                    "date": "2026-05-12",
                     "blocked": {},
                     "blocked_today_by_safety": [],
                 },
@@ -155,19 +160,94 @@ class TestBuildMicroInputFiltersBlockedTickers:
             ),
             patch.object(ctx, "assemble_micro_input", side_effect=fake_assemble),
         ):
-            _build_micro_input(today="2026-05-11", macro_summary=None)
+            _build_micro_input(today="2026-05-12", macro_summary=None)
 
         watchlist = captured["watchlist"]
-        # All 5 DEFAULT_WATCHLIST tickers must be present (legacy behavior).
+        # SPEC-020: DEFAULT_WATCHLIST must NOT be merged when screened is non-empty.
         for tk in ctx.DEFAULT_WATCHLIST:
-            assert tk in watchlist, (
-                f"backward compatibility broken: {tk} missing from "
-                f"watchlist={watchlist!r}"
+            assert tk not in watchlist, (
+                f"SPEC-020 REQ-020-3 (a): DEFAULT ticker {tk} leaked into "
+                f"watchlist despite non-empty screened={screened!r}"
             )
+        # screened tickers must be present.
+        for tk in screened:
+            assert tk in watchlist, f"screened ticker {tk} missing"
         # blocked_tickers should be empty dict/list (key present, value falsy).
         passed = captured["blocked_tickers"]
         assert passed is not None
         assert not passed, f"expected empty blocked_tickers, got {passed!r}"
+
+    def test_build_micro_input_excludes_default_when_screened_available(self):
+        """SPEC-020 REQ-020-3 (a) + Scenario 5: user_watchlist contains
+        exactly the screened candidates (no DEFAULT contamination)."""
+        from trading.personas import context as ctx
+        from trading.personas.orchestrator import _build_micro_input
+
+        screened = [
+            "000270",
+            "005380",
+            "012330",
+            "017670",
+            "028260",
+            "032830",
+            "051910",
+            "055550",
+            "066570",
+            "086790",
+            "096770",
+            "105560",
+            "207940",
+            "247540",
+            "251270",
+            "316140",
+            "323410",
+            "352820",
+            "377300",
+            "393890",
+        ]
+        # 5 blocked tickers, none overlap with screened or DEFAULT.
+        blocked_cache_payload = {
+            "date": "2026-05-12",
+            "blocked": {
+                "111111": {"reason": "관리 (stat_cls=51)"},
+                "222222": {"reason": "관리 (stat_cls=51)"},
+                "333333": {"reason": "관리 (stat_cls=51)"},
+                "444444": {"reason": "관리 (stat_cls=51)"},
+                "555555": {"reason": "관리 (stat_cls=51)"},
+            },
+            "blocked_today_by_safety": [],
+        }
+
+        captured: dict[str, object] = {}
+
+        def fake_assemble(*, macro_summary, watchlist, blocked_tickers=None, **kwargs):
+            captured["watchlist"] = watchlist
+            return {}
+
+        with (
+            patch(
+                "trading.personas.orchestrator.get_blocked_tickers",
+                return_value=blocked_cache_payload,
+            ),
+            patch(
+                "trading.personas.orchestrator.load_screened_tickers",
+                return_value=screened,
+            ),
+            patch.object(ctx, "assemble_micro_input", side_effect=fake_assemble),
+        ):
+            _build_micro_input(today="2026-05-12", macro_summary=None)
+
+        watchlist = captured["watchlist"]
+        # Exactly the 20 screened tickers (none of them blocked).
+        assert set(watchlist) == set(screened), (
+            f"REQ-020-3 (a): user_watchlist must be exactly screened, "
+            f"got {watchlist!r}"
+        )
+        # No DEFAULT contamination.
+        for tk in ctx.DEFAULT_WATCHLIST:
+            assert (
+                tk not in watchlist
+            ), f"REQ-020-3 (a): DEFAULT {tk} leaked into watchlist"
 
 
 # ---------------------------------------------------------------------------

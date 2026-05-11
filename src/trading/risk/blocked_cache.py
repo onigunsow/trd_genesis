@@ -16,38 +16,35 @@ from pathlib import Path
 from typing import Any
 
 from trading.config import get_settings, project_root
+from trading.data.universe import get_data_universe
 from trading.kis.client import KisClient
 from trading.kis.market import current_price, stat_cls_label
-from trading.personas.context import DEFAULT_WATCHLIST
 
 LOG = logging.getLogger(__name__)
 CACHE_FILE = project_root() / "data" / "blocked_tickers.json"
 
 
+# @MX:NOTE: SPEC-020 REQ-020-2 — universe source switched from DEFAULT_WATCHLIST
+# to get_data_universe() so the 07:25 cron pre-flight check covers screened
+# tickers too. Prevents 055550-style late-blocks (2026-05-12 07:33 incident).
+# @MX:SPEC: SPEC-TRADING-020
 def refresh_blocked_tickers() -> dict[str, Any]:
-    """Query KIS API for watchlist tickers' stat_cls status.
+    """Query KIS API for universe tickers' stat_cls status.
 
     Cache results to JSON file for intraday use by Decision persona.
-    Called at 08:50 KST cron (before 09:00 market open).
+    Called at 07:25 KST cron (before 09:00 market open).
+
+    SPEC-020 REQ-020-2: universe = get_data_universe() (screened U holdings U
+    KOSPI200; falls back to DEFAULT on cold-start). Previously hardcoded to
+    DEFAULT_WATCHLIST, which allowed screened-only tickers like 055550 to
+    bypass the pre-flight check.
     """
     s = get_settings()
     client = KisClient(s.trading_mode)
 
-    # Gather tickers to check: base watchlist + any screened tickers
-    tickers_to_check: list[str] = list(DEFAULT_WATCHLIST)
-
-    # Also include screened tickers if available
-    screened_file = project_root() / "data" / "screened_tickers.json"
-    if screened_file.exists():
-        try:
-            screened = json.loads(screened_file.read_text())
-            if isinstance(screened, dict) and "tickers" in screened:
-                tickers_to_check.extend(screened["tickers"])
-        except Exception:  # noqa: BLE001
-            pass
-
-    # Deduplicate
-    tickers_to_check = list(dict.fromkeys(tickers_to_check))
+    # SPEC-020 REQ-020-2: source universe from get_data_universe() instead of
+    # hardcoded DEFAULT_WATCHLIST.
+    tickers_to_check: list[str] = list(get_data_universe())
 
     blocked: dict[str, dict[str, str]] = {}
     for ticker in tickers_to_check[:50]:  # Limit to avoid API rate limits

@@ -20,10 +20,14 @@ from unittest.mock import patch
 
 
 class TestGetDataUniverseHappyPath:
-    """REQ-019-6 (a, b): union of 4 sources, sorted + deduplicated."""
+    """REQ-019-6 (a, b): union of sources, sorted + deduplicated.
 
-    def test_union_of_all_four_sources_sorted_dedup(self):
-        """Universe is sorted, deduplicated union of 4 sources."""
+    SPEC-020 REQ-020-1 updates the semantics: DEFAULT_WATCHLIST is now only
+    included on cold-start (empty screened), not unconditionally.
+    """
+
+    def test_union_of_sources_sorted_dedup_with_screened(self):
+        """Universe is sorted, deduplicated union — DEFAULT excluded when screened non-empty."""
         from trading.data.universe import get_data_universe
 
         with (
@@ -33,7 +37,8 @@ class TestGetDataUniverseHappyPath:
             ),
             patch(
                 "trading.data.universe._read_active_holdings",
-                return_value=["035720", "005380"],  # overlaps screened + default
+                # 035720 overlaps DEFAULT but is included via holdings.
+                return_value=["035720", "005380"],
             ),
             patch(
                 "trading.data.universe._read_kospi200_top50",
@@ -46,19 +51,102 @@ class TestGetDataUniverseHappyPath:
         assert result == sorted(set(result))
         # All ticker codes are 6-digit strings
         assert all(isinstance(t, str) and len(t) == 6 and t.isdigit() for t in result)
-        # Contains all DEFAULT_WATCHLIST entries
-        for t in ["005930", "000660", "035420", "035720", "373220"]:
-            assert t in result
         # Contains screened + holdings + KOSPI200 entries
         for t in ["005380", "009540", "161890", "207940", "005935"]:
             assert t in result
+        # 035720 is in holdings (so included via holdings, not via DEFAULT)
+        assert "035720" in result
+        # 005930, 000660, 035420 are in KOSPI200 mock (included via KOSPI200, not via DEFAULT)
+        assert "005930" in result
+        # 373220 is ONLY in DEFAULT_WATCHLIST -- must NOT appear when screened is non-empty
+        assert "373220" not in result, (
+            "SPEC-020 REQ-020-1 (a): DEFAULT_WATCHLIST must NOT contribute "
+            "when screened is non-empty"
+        )
+
+
+class TestGetDataUniverseSpec020Semantics:
+    """SPEC-020 REQ-020-1: screened-first, DEFAULT-as-cold-start-fallback."""
+
+    def test_screened_priority_excludes_default_when_screened_nonempty(self):
+        """REQ-020-1 (a): When screened is non-empty, DEFAULT must be excluded.
+
+        Validates Scenario 1 in acceptance.md.
+        """
+        from trading.data.universe import get_data_universe
+        from trading.personas.context import DEFAULT_WATCHLIST
+
+        # 20 screened tickers — none overlap with DEFAULT
+        screened = [
+            "000270",
+            "005380",
+            "012330",
+            "017670",
+            "028260",
+            "032830",
+            "051910",
+            "055550",
+            "066570",
+            "086790",
+            "096770",
+            "105560",
+            "207940",
+            "247540",
+            "251270",
+            "316140",
+            "323410",
+            "352820",
+            "377300",
+            "393890",
+        ]
+
+        with (
+            patch(
+                "trading.data.universe._read_screened_tickers", return_value=screened
+            ),
+            patch("trading.data.universe._read_active_holdings", return_value=[]),
+            patch("trading.data.universe._read_kospi200_top50", return_value=[]),
+        ):
+            result = get_data_universe()
+
+        # All 20 screened present
+        for t in screened:
+            assert t in result, f"screened ticker {t} missing"
+        # DEFAULT 5종 must NOT be in result (screened doesn't overlap)
+        for t in DEFAULT_WATCHLIST:
+            assert t not in result, (
+                f"SPEC-020: DEFAULT ticker {t} leaked into universe "
+                f"despite non-empty screened"
+            )
+
+    def test_default_fallback_when_screened_empty(self):
+        """REQ-020-1 (b): When screened is empty/missing, DEFAULT is the fallback.
+
+        Validates Scenario 2 in acceptance.md.
+        """
+        from trading.data.universe import get_data_universe
+        from trading.personas.context import DEFAULT_WATCHLIST
+
+        with (
+            patch("trading.data.universe._read_screened_tickers", return_value=[]),
+            patch("trading.data.universe._read_active_holdings", return_value=[]),
+            patch("trading.data.universe._read_kospi200_top50", return_value=[]),
+        ):
+            result = get_data_universe()
+
+        # Cold-start: result must be exactly DEFAULT_WATCHLIST (sorted, deduped)
+        assert result == sorted(set(DEFAULT_WATCHLIST))
 
 
 class TestGetDataUniverseFallback:
     """REQ-019-6 (c, d): graceful degradation."""
 
     def test_screened_missing_returns_other_sources(self):
-        """When screened_tickers.json absent, other sources still included."""
+        """When screened_tickers.json absent, other sources still included.
+
+        SPEC-020 REQ-020-1 (b): When screened is empty (cold-start fallback),
+        DEFAULT_WATCHLIST is included along with holdings + KOSPI200.
+        """
         from trading.data.universe import get_data_universe
 
         with (
@@ -80,7 +168,11 @@ class TestGetDataUniverseFallback:
         assert len(result) == 7
 
     def test_holdings_query_failure_skips_source_with_warning(self, caplog):
-        """When holdings query raises, log warning and skip that source."""
+        """When holdings query raises, log warning and skip that source.
+
+        SPEC-020 update: screened is non-empty, so DEFAULT is excluded.
+        Verifies graceful degradation of holdings source independently.
+        """
         from trading.data.universe import get_data_universe
 
         def _raise(*_a, **_kw):
@@ -96,9 +188,9 @@ class TestGetDataUniverseFallback:
             with caplog.at_level("WARNING"):
                 result = get_data_universe()
 
-        # Default + screened included; holdings skipped silently with warning
+        # Screened included; holdings skipped silently with warning.
+        # SPEC-020: DEFAULT not present because screened is non-empty.
         assert "005380" in result
-        assert "005930" in result
         # Some warning was logged for the holdings failure
         assert any(
             "holding" in r.message.lower() or "db" in r.message.lower()

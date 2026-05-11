@@ -1,23 +1,31 @@
-"""SPEC-TRADING-019 REQ-019-6: Data universe registry.
+"""SPEC-TRADING-019 REQ-019-6 + SPEC-TRADING-020 REQ-020-1: Data universe registry.
 
 Single source of truth for which tickers the data refresh layer should keep
-hot in the cache. Returns the union of:
+hot in the cache.
 
-    DEFAULT_WATCHLIST  U  screened_tickers.json  U  active holdings (positions)
-                       U  KOSPI200 top-50 (pykrx dynamic)
+SPEC-020 semantics (revised, 2026-05-12):
+
+    if screened_tickers non-empty (autonomous discovery active):
+        universe = screened U holdings U KOSPI200_top50  (DEFAULT excluded)
+    else (cold-start fallback):
+        universe = DEFAULT_WATCHLIST U holdings U KOSPI200_top50
+
+The previous behaviour (DEFAULT always merged) caused incidents where DEFAULT
+tickers acted as a hardcoded bias even when daily_screen had produced an
+authoritative screened list. See SPEC-020 for the 2026-05-12 055550 incident.
 
 Per-source failures degrade gracefully — a failing source emits a warning and
 is skipped, but the function never returns an empty list (catastrophic case
 guard, REQ-019-6 (c)). The function is shared by refresh_ohlcv/flows/
-fundamentals (REQ-019-1/2/3).
+fundamentals (REQ-019-1/2/3) and blocked_cache (SPEC-020 REQ-020-2).
 
 KOSPI200 source decision (Q-1, 2026-05-11): pykrx dynamic via
 ``pykrx.stock.get_index_portfolio_deposit_file('1028')``. Cached per call.
 """
 
-# @MX:ANCHOR: SPEC-019 REQ-019-6 single source of truth for refresh universe
-# @MX:REASON: fan_in >= 3 (refresh_ohlcv, refresh_flows, refresh_fundamentals)
-# @MX:SPEC: SPEC-TRADING-019
+# @MX:ANCHOR: SPEC-019 REQ-019-6 + SPEC-020 REQ-020-1 single source of truth for universe
+# @MX:REASON: fan_in >= 4 (refresh_ohlcv, refresh_flows, refresh_fundamentals, blocked_cache)
+# @MX:SPEC: SPEC-TRADING-019, SPEC-TRADING-020
 
 from __future__ import annotations
 
@@ -84,20 +92,24 @@ def _safe_collect(label: str, fn) -> list[str]:
 
 
 def get_data_universe() -> list[str]:
-    """REQ-019-6: union of 4 sources, sorted and deduplicated.
+    """REQ-019-6 + SPEC-020 REQ-020-1: screened-first, DEFAULT-as-fallback.
 
     Returns:
         Sorted list of 6-digit ticker codes (e.g. ['000660', '005380', ...]).
-        Falls back to DEFAULT_WATCHLIST if every other source fails — never
-        returns an empty list when DEFAULT_WATCHLIST is non-empty.
+        When ``screened_tickers.json`` is non-empty, DEFAULT_WATCHLIST is
+        excluded (autonomous discovery is authoritative). Otherwise DEFAULT
+        is used as cold-start fallback. Falls back to DEFAULT_WATCHLIST if
+        every other source fails — never returns an empty list when
+        DEFAULT_WATCHLIST is non-empty.
     """
-    default = list(DEFAULT_WATCHLIST)
     screened = _safe_collect("screened_tickers", _read_screened_tickers)
     holdings = _safe_collect("active_holdings", _read_active_holdings)
     kospi200 = _safe_collect("kospi200_top50", _read_kospi200_top50)
 
     universe: set[str] = set()
-    for src in (default, screened, holdings, kospi200):
+    # SPEC-020 REQ-020-1: DEFAULT is included only on cold-start (empty screened).
+    primary = screened if screened else list(DEFAULT_WATCHLIST)
+    for src in (primary, holdings, kospi200):
         for t in src:
             if isinstance(t, str) and t:
                 universe.add(t)

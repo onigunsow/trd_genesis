@@ -180,7 +180,13 @@ def run() -> dict[str, Any]:
     universe = _get_universe_tickers()
     LOG.info("daily_screen: scanning %d tickers from pykrx universe", len(universe))
 
-    # Exclude base watchlist (they're always included)
+    # SPEC-020 Q-1 decision (2026-05-12): KEEP exclusion of DEFAULT_WATCHLIST
+    # from the screening candidate pool. Rationale: DEFAULT 5종 are already
+    # known/well-covered large-caps; excluding them from screening reserves the
+    # ~20 output slots for genuinely new discovery candidates. The downstream
+    # universe (get_data_universe) still includes DEFAULT on cold-start, so no
+    # liquidity guarantee is lost. If a follow-up SPEC moves DEFAULT into a
+    # yaml-based watchlist, revisit this exclusion accordingly.
     base_set = set(DEFAULT_WATCHLIST)
     candidates = [t for t in universe if t not in base_set]
 

@@ -16,7 +16,11 @@ from trading.db.session import connection
 
 LOG = logging.getLogger(__name__)
 
-# Default watchlist (M5 — to be refined with the user)
+# SPEC-020: Cold-start fallback ticker list only.
+# NOT used when daily_screen produces screened_tickers.json with >= 1 entry.
+# Do NOT add user-preferred tickers here -- use yaml-based watchlist (future SPEC) instead.
+# Current 5 tickers (005930, 000660, 035420, 035720, 373220) were seeded
+# 2026-05-04 as bootstrap defaults.
 DEFAULT_WATCHLIST = ["005930", "000660", "035420", "035720", "373220"]
 TICKER_NAMES = {
     "005930": "삼성전자",
