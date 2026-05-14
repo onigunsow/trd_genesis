@@ -58,6 +58,24 @@ def _get_latest_ohlcv_ts(ticker: str) -> date | None:
     return rng[1] if rng else None
 
 
+# @MX:NOTE: SPEC-022 fixes silent-skip regression — flows tracks its own
+# latest_ts independent of ohlcv (was using _get_latest_ohlcv_ts, which
+# caused refresh_flows to short-circuit after refresh_ohlcv ran).
+def _get_latest_flows_ts(ticker: str) -> date | None:
+    """SPEC-022 REQ-022-1: MAX(ts) for given ticker in the flows table.
+
+    Independent of ohlcv. Returns None when no rows exist for the ticker.
+    """
+    sql = "SELECT MAX(ts) AS hi FROM flows WHERE ticker = %s"
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (ticker,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    hi = row.get("hi") if isinstance(row, dict) else row[0]
+    return hi  # date | None
+
+
 def _get_latest_disclosure_ts() -> date | None:
     """Return MAX(rcept_dt) from disclosures or None when empty."""
     sql = "SELECT MAX(rcept_dt) AS hi FROM disclosures"
@@ -126,8 +144,10 @@ def _fetch_ohlcv_for_ticker(ticker: str, today_override: date | None = None) -> 
 
 def _fetch_flows_for_ticker(ticker: str, today_override: date | None = None) -> int:
     today = today_override or date.today()
-    # Flows don't have a separate cache range helper; mirror OHLCV window.
-    last_ts = _get_latest_ohlcv_ts(ticker)
+    # SPEC-022: flows table tracks its own latest_ts independent of ohlcv.
+    # Previously used _get_latest_ohlcv_ts, which caused silent-skip when
+    # ohlcv was refreshed first (start = ohlcv_today + 1 > today -> return 0).
+    last_ts = _get_latest_flows_ts(ticker)
     if last_ts is None:
         start = today - timedelta(days=BACKFILL_WINDOW_DAYS)
     else:

@@ -274,7 +274,7 @@ class TestActiveHoldingsHelper:
     """REQ-019-6 (a): active holdings via positions table."""
 
     def test_read_active_holdings_queries_positions(self, monkeypatch):
-        """_read_active_holdings queries `positions WHERE shares > 0`."""
+        """SPEC-022 REQ-022-2 (b): _read_active_holdings uses actual schema (qty)."""
         from contextlib import contextmanager
 
         from tests.conftest import FakeConnection, FakeCursor
@@ -291,6 +291,61 @@ class TestActiveHoldingsHelper:
         result = universe._read_active_holdings()
 
         assert sorted(result) == ["005380", "035720"]
-        # Query must filter for shares > 0
+        # Query must filter for the actual positions column (qty, not shares).
         assert "positions" in cursor.last_sql.lower()
-        assert "shares" in cursor.last_sql.lower()
+        assert "qty" in cursor.last_sql.lower()
+        assert (
+            "shares" not in cursor.last_sql.lower()
+        ), "SPEC-022 REQ-022-2: legacy 'shares' column reference must be gone"
+
+    def test_active_holdings_query_failure_returns_empty(self, monkeypatch, caplog):
+        """SPEC-022 REQ-022-2 (c): query crash (schema mismatch etc.) returns []
+        with warning — never raises to caller."""
+        from contextlib import contextmanager
+
+        from trading.data import universe
+
+        class _RaisingCursor:
+            last_sql = ""
+
+            def execute(self, sql, params=None):
+                raise RuntimeError('column "shares" does not exist')
+
+            def fetchall(self):
+                return []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        class _RaisingConn:
+            def cursor(self):
+                return _RaisingCursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        @contextmanager
+        def _fake_conn(*_a, **_kw):
+            yield _RaisingConn()
+
+        monkeypatch.setattr("trading.data.universe.connection", _fake_conn)
+
+        with caplog.at_level("WARNING"):
+            result = universe._read_active_holdings()
+
+        # Defensive guard returns empty list — does NOT raise.
+        assert result == []
+        # Warning was logged.
+        assert any(
+            "active_holdings" in r.message.lower()
+            or "holding" in r.message.lower()
+            or "schema" in r.message.lower()
+            or "column" in r.message.lower()
+            for r in caplog.records
+        ), f"Expected warning, got: {[r.message for r in caplog.records]}"

@@ -148,6 +148,107 @@ class TestRefreshFlows:
         assert metrics["error_count"] == 1
 
 
+class TestFlowsLatestTsHelper:
+    """SPEC-022 REQ-022-1 (a): _get_latest_flows_ts helper queries flows table."""
+
+    def test_get_latest_flows_ts_returns_max_ts_when_rows_present(self):
+        """_get_latest_flows_ts queries SELECT MAX(ts) FROM flows for given ticker."""
+        from contextlib import contextmanager
+
+        from tests.conftest import FakeConnection, FakeCursor
+        from trading.scripts import refresh_market_data as mod
+
+        sentinel_ts = date(2026, 5, 13)
+        cursor = FakeCursor(rows=[{"hi": sentinel_ts}])
+
+        @contextmanager
+        def _fake_conn(*_a, **_kw):
+            yield FakeConnection(cursor)
+
+        with patch.object(mod, "connection", _fake_conn):
+            result = mod._get_latest_flows_ts("005930")
+
+        assert result == sentinel_ts
+        assert "flows" in cursor.last_sql.lower()
+        assert "max(ts)" in cursor.last_sql.lower().replace(" ", "")
+        assert cursor.last_params == ("005930",)
+
+    def test_get_latest_flows_ts_returns_none_when_empty(self):
+        """_get_latest_flows_ts returns None when no rows for the ticker."""
+        from contextlib import contextmanager
+
+        from tests.conftest import FakeConnection, FakeCursor
+        from trading.scripts import refresh_market_data as mod
+
+        cursor = FakeCursor(rows=[{"hi": None}])
+
+        @contextmanager
+        def _fake_conn(*_a, **_kw):
+            yield FakeConnection(cursor)
+
+        with patch.object(mod, "connection", _fake_conn):
+            result = mod._get_latest_flows_ts("999999")
+
+        assert result is None
+
+
+class TestFlowsSilentSkipRegression:
+    """SPEC-022 REQ-022-1 (b, d): flows refresh uses flows table ts, not ohlcv."""
+
+    def test_flows_refresh_uses_flows_table_ts_not_ohlcv(self):
+        """REQ-022-1 (b): _fetch_flows_for_ticker calls _get_latest_flows_ts.
+
+        With OHLCV ts=today and flows ts=today-5 (5d stale), the silent-skip
+        bug WAS that flows refresh saw today's ohlcv ts and short-circuited.
+        After fix, flows refresh must use its own latest_ts (today-5) and
+        fetch (today-4, today) — NOT return 0.
+        """
+        from trading.scripts import refresh_market_data as mod
+
+        today = date.today()
+        flows_last_ts = today - timedelta(days=5)
+
+        with (
+            # OHLCV is fresh (today). If _fetch_flows_for_ticker still depended
+            # on this helper, it would short-circuit -> 0 (the bug).
+            patch.object(mod, "_get_latest_ohlcv_ts", return_value=today),
+            # Flows latest_ts is 5 days stale -> fix must use this.
+            patch.object(
+                mod, "_get_latest_flows_ts", return_value=flows_last_ts
+            ) as flows_ts_mock,
+            patch.object(mod, "_pykrx_fetch_flows", return_value=5) as fetcher,
+        ):
+            rows = mod._fetch_flows_for_ticker("005930", today_override=today)
+
+        # Must use _get_latest_flows_ts (NOT _get_latest_ohlcv_ts).
+        flows_ts_mock.assert_called_once_with("005930")
+        # Fetch must NOT be skipped — flows is stale, so we pull (last+1d, today).
+        assert rows == 5
+        ticker_arg, start_arg, end_arg = fetcher.call_args.args
+        assert ticker_arg == "005930"
+        assert start_arg == flows_last_ts + timedelta(days=1)
+        assert end_arg == today
+
+    def test_flows_refresh_full_backfill_when_flows_empty(self):
+        """REQ-022-1 (c) + Scenario 5: new ticker with no flows rows triggers
+        full BACKFILL_WINDOW_DAYS backfill."""
+        from trading.scripts import refresh_market_data as mod
+
+        today = date.today()
+
+        with (
+            # New ticker — flows has no rows.
+            patch.object(mod, "_get_latest_flows_ts", return_value=None),
+            patch.object(mod, "_pykrx_fetch_flows", return_value=90) as fetcher,
+        ):
+            rows = mod._fetch_flows_for_ticker("281820", today_override=today)
+
+        assert rows == 90
+        _, start_arg, end_arg = fetcher.call_args.args
+        assert start_arg == today - timedelta(days=mod.BACKFILL_WINDOW_DAYS)
+        assert end_arg == today
+
+
 class TestRefreshFundamentals:
     """REQ-019-3: Weekly fundamentals refresh."""
 

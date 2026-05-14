@@ -47,18 +47,26 @@ def _read_screened_tickers() -> list[str]:
 
 
 def _read_active_holdings() -> list[str]:
-    """SPEC-019: Query positions table for tickers with shares > 0.
+    """SPEC-022 REQ-022-2: Query positions for tickers with qty > 0.
 
-    Pattern lifted from `trading.jit.pipeline._resolve_tickers` (line 212).
+    The positions table column is `qty` (verified 2026-05-14 via `\\d positions`).
+    SPEC-019 originally assumed `shares`, which raised UndefinedColumn every
+    cycle. Wrapped in a defensive try/except so any future schema drift or
+    transient DB error degrades to an empty list (with WARNING) instead of
+    propagating out of universe assembly.
     """
-    out: list[str] = []
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT ticker FROM positions WHERE shares > 0")
-        for row in cur.fetchall():
-            t = row.get("ticker") if isinstance(row, dict) else row[0]
-            if t:
-                out.append(str(t))
-    return out
+    try:
+        out: list[str] = []
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT ticker FROM positions WHERE qty > 0")
+            for row in cur.fetchall():
+                t = row.get("ticker") if isinstance(row, dict) else row[0]
+                if t:
+                    out.append(str(t))
+        return out
+    except Exception as exc:
+        LOG.warning("active_holdings query failed (schema mismatch?): %s", exc)
+        return []
 
 
 def _fetch_kospi200_from_pykrx() -> list[str]:
