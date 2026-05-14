@@ -270,6 +270,100 @@ class TestKospi200Helper:
         assert result == []
 
 
+class TestSpec023DynamicUniverseIntegration:
+    """SPEC-023 REQ-023-5: get_data_universe() includes dynamic_tickers.
+
+    Priority order: screened > dynamic > holdings > KOSPI200 > DEFAULT.
+    The result is a sorted+deduplicated union (sorted globally for stability
+    with existing SPEC-019/020 invariants), but every dynamic ticker MUST
+    appear in the result whenever dynamic_universe.list_active() is non-empty.
+    """
+
+    def test_dynamic_tickers_included_in_universe(self):
+        """REQ-023-5 (a): dynamic_universe.list_active() contribution merged in."""
+        from trading.data.universe import get_data_universe
+
+        with (
+            patch(
+                "trading.data.universe._read_screened_tickers",
+                return_value=["005380"],
+            ),
+            patch(
+                "trading.data.universe._read_active_holdings", return_value=[]
+            ),
+            patch(
+                "trading.data.universe._read_kospi200_top50", return_value=[]
+            ),
+            patch(
+                "trading.data.universe._read_dynamic_tickers",
+                return_value=["281820", "068270"],
+            ),
+        ):
+            result = get_data_universe()
+
+        # Dynamic tickers must surface in the universe.
+        assert "281820" in result
+        assert "068270" in result
+        # Screened tickers preserved too.
+        assert "005380" in result
+
+    def test_dynamic_tickers_empty_falls_back_silently(self):
+        """REQ-023-5 (a): when no dynamic tickers exist, behaviour is unchanged."""
+        from trading.data.universe import get_data_universe
+
+        with (
+            patch(
+                "trading.data.universe._read_screened_tickers",
+                return_value=["005380"],
+            ),
+            patch(
+                "trading.data.universe._read_active_holdings", return_value=[]
+            ),
+            patch(
+                "trading.data.universe._read_kospi200_top50", return_value=[]
+            ),
+            patch(
+                "trading.data.universe._read_dynamic_tickers", return_value=[]
+            ),
+        ):
+            result = get_data_universe()
+
+        assert "005380" in result
+
+    def test_dynamic_source_failure_skipped_with_warning(self, caplog):
+        """REQ-023-5 + REQ-019-6 (c) graceful degradation: dynamic source
+        failure must NOT take down universe assembly."""
+        from trading.data.universe import get_data_universe
+
+        def _raise(*_a, **_kw):
+            raise RuntimeError("dynamic_tickers table missing")
+
+        with (
+            patch(
+                "trading.data.universe._read_screened_tickers",
+                return_value=["005380"],
+            ),
+            patch(
+                "trading.data.universe._read_active_holdings", return_value=[]
+            ),
+            patch(
+                "trading.data.universe._read_kospi200_top50", return_value=[]
+            ),
+            patch(
+                "trading.data.universe._read_dynamic_tickers", side_effect=_raise
+            ),
+        ):
+            with caplog.at_level("WARNING"):
+                result = get_data_universe()
+
+        # Universe still usable.
+        assert "005380" in result
+        # Warning logged.
+        assert any(
+            "dynamic" in r.message.lower() for r in caplog.records
+        ), f"Expected dynamic warning, got: {[r.message for r in caplog.records]}"
+
+
 class TestActiveHoldingsHelper:
     """REQ-019-6 (a): active holdings via positions table."""
 

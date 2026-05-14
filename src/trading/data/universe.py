@@ -90,6 +90,18 @@ def _read_kospi200_top50() -> list[str]:
     return list(all_tickers[:KOSPI200_TOP_N])
 
 
+def _read_dynamic_tickers() -> list[str]:
+    """SPEC-023 REQ-023-5 (a): contribution from the dynamic_universe registry.
+
+    Wrapped in its own helper so universe assembly stays decoupled from the
+    table's import surface and so tests can monkeypatch a stub without going
+    through the DB layer.
+    """
+    from trading.data.dynamic_universe import list_active
+
+    return list(list_active())
+
+
 def _safe_collect(label: str, fn) -> list[str]:
     """Call a source loader and swallow failures with a WARNING."""
     try:
@@ -111,13 +123,17 @@ def get_data_universe() -> list[str]:
         DEFAULT_WATCHLIST is non-empty.
     """
     screened = _safe_collect("screened_tickers", _read_screened_tickers)
+    dynamic = _safe_collect("dynamic_tickers", _read_dynamic_tickers)
     holdings = _safe_collect("active_holdings", _read_active_holdings)
     kospi200 = _safe_collect("kospi200_top50", _read_kospi200_top50)
 
     universe: set[str] = set()
     # SPEC-020 REQ-020-1: DEFAULT is included only on cold-start (empty screened).
+    # SPEC-023 REQ-023-5: dynamic_tickers always contribute (priority just below
+    # screened, above holdings/KOSPI200/DEFAULT). They survive a cold-start
+    # screened-empty event so previously auto-expanded tickers stay monitored.
     primary = screened if screened else list(DEFAULT_WATCHLIST)
-    for src in (primary, holdings, kospi200):
+    for src in (primary, dynamic, holdings, kospi200):
         for t in src:
             if isinstance(t, str) and t:
                 universe.add(t)

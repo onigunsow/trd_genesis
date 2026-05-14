@@ -11,7 +11,6 @@ import logging
 from datetime import date
 from typing import Any
 
-import httpx
 from anthropic import Anthropic
 
 from trading.alerts.telegram import system_briefing
@@ -79,6 +78,12 @@ def _gather_today() -> dict[str, Any]:
             COUNT(*) FILTER (WHERE final_verdict = 'WITHDRAWN') AS withdrawn
           FROM reflection_rounds WHERE created_at::date = CURRENT_DATE
     """
+    # SPEC-023 REQ-023-6 (c, d): today's auto-expansion events.
+    sql_auto_expansion = """
+        SELECT ticker FROM dynamic_tickers
+         WHERE first_seen_at::date = CURRENT_DATE
+         ORDER BY ticker
+    """
     with connection() as conn, conn.cursor() as cur:
         cur.execute(sql_orders)
         orders = [dict(r) for r in cur.fetchall()]
@@ -94,20 +99,29 @@ def _gather_today() -> dict[str, Any]:
         try:
             cur.execute(sql_tools)
             tool_stats = dict(cur.fetchone() or {})
-        except Exception:  # noqa: BLE001
+        except Exception:
             tool_stats = {"total_calls": 0, "failures": 0, "persona_invocations": 0}
         # Reflection stats (graceful if table does not exist yet)
         try:
             cur.execute(sql_reflection)
             reflection_stats = dict(cur.fetchone() or {})
-        except Exception:  # noqa: BLE001
+        except Exception:
             reflection_stats = {"total_rounds": 0, "approved": 0, "rejected": 0, "withdrawn": 0}
         # SPEC-010: Per-model breakdown (graceful if column does not exist yet)
         try:
             cur.execute(sql_model_breakdown)
             model_breakdown = [dict(r) for r in cur.fetchall()]
-        except Exception:  # noqa: BLE001
+        except Exception:
             model_breakdown = []
+        # SPEC-023: today's auto-expansion events (graceful if table missing).
+        try:
+            cur.execute(sql_auto_expansion)
+            auto_expansion_tickers = [
+                row["ticker"] if isinstance(row, dict) else row[0]
+                for row in cur.fetchall()
+            ]
+        except Exception:
+            auto_expansion_tickers = []
     return {
         "today": today.isoformat(),
         "orders": orders,
@@ -118,6 +132,7 @@ def _gather_today() -> dict[str, Any]:
         "tool_stats": tool_stats,
         "reflection_stats": reflection_stats,
         "model_breakdown": model_breakdown,
+        "auto_expansion_tickers": auto_expansion_tickers,
     }
 
 
@@ -184,6 +199,13 @@ def _fallback_text(data: dict[str, Any]) -> str:
     if not model_section:
         model_section = "  (모델별 내역 없음)"
 
+    # SPEC-023 REQ-023-6 (c): auto-expansion line — emit only when non-empty.
+    auto_expansion = sorted(data.get("auto_expansion_tickers") or [])
+    auto_exp_line = ""
+    if auto_expansion:
+        joined = ", ".join(auto_expansion)
+        auto_exp_line = f"오늘 auto-expansion: {len(auto_expansion)}건 (티커: {joined})\n"
+
     return (
         f"[일일 리포트 · {data['today']}]\n"
         f"매매: 매수 {n_buys} / 매도 {n_sells} (총 {len(orders)}건, 체결 {cost.get('executed_count', 0)}건)\n"
@@ -196,6 +218,7 @@ def _fallback_text(data: dict[str, Any]) -> str:
         f"{refl_line}\n"
         f"Observability: tool_calls_total={tool_total}, tool_failures={tool_failures}, "
         f"reflection_rounds={refl_total}, reflection_success_rate={refl_success_rate:.1f}%\n"
+        f"{auto_exp_line}"
         f"누적 (7D/30D): 매매 {week_orders}/{month_orders}건, 수수료 {week_fee:,}/{month_fee:,}원\n"
         "(Anthropic API 미구성 또는 호출 실패로 LLM 요약 생략)"
     )
@@ -244,7 +267,7 @@ def generate_and_send() -> str:
     data = _gather_today()
     try:
         text = _llm_text(data)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         LOG.warning("daily report LLM failed (using fallback): %s", e)
         text = _fallback_text(data)
 
@@ -259,6 +282,6 @@ def generate_and_send() -> str:
 
     try:
         system_briefing("일일 리포트", text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.exception("daily report telegram send failed")
     return text

@@ -23,23 +23,27 @@ from datetime import date
 from typing import Any, Literal
 
 from trading.alerts import telegram as tg
-from trading.config import TradingMode, get_settings
+from trading.config import get_settings
 from trading.db.session import audit, connection, get_system_state, update_system_state
 from trading.kis.account import balance
 from trading.kis.client import KisClient
 from trading.kis.order import buy as kis_buy
 from trading.kis.order import sell as kis_sell
 from trading.models.router import resolve_model
+from trading.personas import context as ctx
 from trading.personas import decision as decision_persona
 from trading.personas import macro as macro_persona
 from trading.personas import micro as micro_persona
 from trading.personas import risk as risk_persona
-from trading.personas import context as ctx
 from trading.risk import circuit_breaker
 from trading.risk.blocked_cache import get_blocked_tickers, record_blocked_by_safety
 from trading.risk.limits import check_pre_order, record_breach
 from trading.risk.market_safety import check_pre_order_safety
 from trading.screener.daily_screen import load_screened_tickers
+from trading.scripts.refresh_market_data import (
+    RECENT_OHLCV_DAYS,
+    expand_universe_for_tickers,
+)
 from trading.strategy.car.filter import evaluate_event
 from trading.strategy.car.models import FilterDecision
 from trading.tools.registry import get_tools_for_persona
@@ -47,6 +51,84 @@ from trading.tools.registry import get_tools_for_persona
 LOG = logging.getLogger(__name__)
 
 CycleKind = Literal["pre_market", "intraday", "event", "weekly", "manual"]
+
+
+# ---------------------------------------------------------------------------
+# SPEC-023: universe auto-expansion hook (micro -> decision)
+# ---------------------------------------------------------------------------
+
+
+def _has_recent_ohlcv(ticker: str) -> bool:
+    """REQ-023-1 (b): True when the cache has OHLCV within the recency window.
+
+    Wraps the cache-layer helper so it can be monkeypatched in unit tests
+    without dragging the real Postgres connection into orchestrator tests.
+    Defensive: when the DB lookup itself fails (test envs without Postgres,
+    DB outage, etc.), returns True so we do NOT spuriously trigger an
+    expansion call that would also fail. The real cycles call this from a
+    process where the DB is reachable; tests that exercise the auto-expansion
+    semantics monkeypatch this function directly.
+    """
+    from datetime import date as _date
+    from datetime import timedelta as _td
+
+    from trading.scripts.refresh_market_data import _get_latest_ohlcv_ts
+
+    try:
+        last_ts = _get_latest_ohlcv_ts(ticker)
+    except Exception as exc:
+        LOG.debug("_has_recent_ohlcv cache lookup failed for %s: %s", ticker, exc)
+        return True  # fail closed — skip expansion rather than risk a crash
+    if last_ts is None:
+        return False
+    return last_ts >= _date.today() - _td(days=RECENT_OHLCV_DAYS)
+
+
+def _filter_and_expand_candidates(
+    candidate_tickers: list[str],
+    *,
+    cycle_kind: str,
+    blocked_tickers: dict[str, Any] | None = None,
+) -> tuple[list[str], dict[str, Any] | None]:
+    """SPEC-023 orchestrator hook — runs between micro and decision.
+
+    1. REQ-023-1: identify candidates whose OHLCV is stale or missing.
+    2. REQ-023-1 (f) + R-1: auto-expansion runs BEFORE the blocked filter so
+       that blocked tickers still get their data fetched (their block status
+       may clear in a future cycle).
+    3. REQ-023-3: drop candidates whose expansion fetch failed.
+    4. SPEC-018 blocked filter: drop blocked tickers AFTER expansion.
+
+    Returns (filtered_candidates, expansion_metrics_or_None).
+    """
+    blocked_tickers = blocked_tickers or {}
+    to_expand = [t for t in candidate_tickers if not _has_recent_ohlcv(t)]
+
+    expansion_metrics: dict[str, Any] | None = None
+    if to_expand:
+        try:
+            expansion_metrics = expand_universe_for_tickers(
+                to_expand, cycle_kind=cycle_kind,
+            )
+        except Exception as exc:
+            LOG.warning(
+                "auto-expansion hook crashed (proceeding without fetch): %s", exc
+            )
+            expansion_metrics = None
+
+    successful: set[str] = set()
+    if expansion_metrics is not None:
+        successful = set(expansion_metrics.get("successful_tickers") or [])
+
+    # Drop tickers that needed expansion but failed.
+    filtered = [
+        t
+        for t in candidate_tickers
+        if (t not in to_expand) or (t in successful)
+    ]
+    # SPEC-018 blocked filter (applied AFTER expansion — R-1).
+    filtered = [t for t in filtered if t not in blocked_tickers]
+    return filtered, expansion_metrics
 
 
 def _count_holds_today(ticker: str) -> int:
@@ -63,7 +145,7 @@ def _count_holds_today(ticker: str) -> int:
         with connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (ticker,))
             return cur.fetchone()[0]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0
 
 
@@ -98,7 +180,7 @@ def _get_hold_feedback_today(tickers: list[str]) -> list[dict]:
                         "count": row["hold_count"],
                     })
             return result
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 # SPEC-009 REQ-REFL-03-2: Maximum reflection rounds (Decision re-invoke + Risk re-evaluate).
@@ -297,7 +379,7 @@ def _run_reflection_loop(
                 micro_run_id=micro_run_id,
                 tools=decision_tools,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             LOG.exception("Reflection round %d Decision re-invoke failed: %s", round_num, e)
             _persist_reflection_round(
                 cycle_kind=cycle_kind,
@@ -377,7 +459,7 @@ def _run_reflection_loop(
                 cycle_kind=cycle_kind,
                 tools=risk_tools,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             LOG.exception("Reflection round %d Risk re-invoke failed: %s", round_num, e)
             _persist_reflection_round(
                 cycle_kind=cycle_kind,
@@ -479,7 +561,7 @@ def _persist_reflection_round(
                 revised_risk_run_id,
                 final_verdict,
             ))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         LOG.warning("Failed to persist reflection_round: %s", e)
 
 
@@ -498,7 +580,7 @@ def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) ->
                     order_type="market",
                     persona_decision_id=decision_id)
         return int(result["order_id"])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         LOG.exception("execute signal failed: %s", sig)
         audit("EXEC_FAILED", actor="orchestrator",
               details={"signal": sig, "error": str(e), "decision_id": decision_id})
@@ -531,7 +613,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         micro_res = micro_persona.run(
             micro_input, cycle_kind="pre_market", tools=micro_tools, model=micro_model,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         tg.system_error("Micro persona", e, context=f"cycle=pre_market today={today}")
         raise
     res.micro_run_id = micro_res.persona_run_id
@@ -573,6 +655,21 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         (dec_input.get("micro_candidates") or {}).get("buy", [])
         if c.get("ticker")
     ]
+    # SPEC-023 REQ-023-1: auto-expand universe-out candidates before decision.
+    # The helper applies blocked filter AFTER expansion (R-1) so data is still
+    # fetched for blocked tickers (they may be unblocked later).
+    candidate_tickers, _expansion_metrics = _filter_and_expand_candidates(
+        candidate_tickers,
+        cycle_kind="pre_market",
+        blocked_tickers=blocked_tickers,
+    )
+    # Reflect filtered candidates back into the Decision input.
+    if _expansion_metrics is not None:
+        kept = set(candidate_tickers)
+        buy_list = (dec_input.get("micro_candidates") or {}).get("buy", []) or []
+        dec_input["micro_candidates"]["buy"] = [
+            c for c in buy_list if c.get("ticker") in kept
+        ]
     hold_warnings = _get_hold_feedback_today(candidate_tickers)
     dec_input["hold_warnings"] = hold_warnings if hold_warnings else []
     try:
@@ -584,7 +681,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             tools=decision_tools,
             model=decision_model,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         tg.system_error("Decision persona", e, context=f"cycle=pre_market today={today}")
         raise
     res.decision_run_id = dec_res.persona_run_id
@@ -699,7 +796,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         try:
             safety = check_pre_order_safety(client, ticker=ticker, side=side_str,
                                             qty=qty, notional=qty * (assets["total_assets"] // 100))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             tg.system_briefing("safety_check_error",
                                f"{ticker} 매매 안전성 검증 중 예외: {e}")
             res.rejected.append(decision_id)
@@ -764,7 +861,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
                     equity_pct=eq_pct,
                     note=f"Decision {decision_id} → orders {order_id}",
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 LOG.warning("post-trade briefing failed: %s", e)
 
     return res
@@ -858,7 +955,7 @@ def run_event_trigger_cycle(
             tools=decision_tools,
             model=decision_model,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         tg.system_error("Decision persona (event)", e, context=f"ticker={ticker} event={event_type}")
         raise
 
@@ -981,6 +1078,19 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
         for c in (micro_candidates.get("buy") or [])
         if c.get("ticker")
     ]
+    # SPEC-023 REQ-023-1: same hook as pre_market — auto-expansion runs
+    # before blocked filter so universe-out candidates fetch data.
+    candidate_tickers, _expansion_metrics = _filter_and_expand_candidates(
+        candidate_tickers,
+        cycle_kind="intraday",
+        blocked_tickers=blocked_tickers,
+    )
+    if _expansion_metrics is not None:
+        kept = set(candidate_tickers)
+        buy_list = (micro_candidates.get("buy") or []) or []
+        dec_input["micro_candidates"]["buy"] = [
+            c for c in buy_list if c.get("ticker") in kept
+        ]
     hold_warnings = _get_hold_feedback_today(candidate_tickers)
     dec_input["hold_warnings"] = hold_warnings if hold_warnings else []
 
@@ -993,7 +1103,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             tools=decision_tools,
             model=decision_model,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         tg.system_error("Decision persona", e, context=f"cycle=intraday today={today}")
         raise
     res.decision_run_id = dec_res.persona_run_id
@@ -1083,7 +1193,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
                 qty=qty,
                 notional=qty * (assets["total_assets"] // 100),
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             tg.system_briefing(
                 "safety_check_error",
                 f"{ticker} 매매 안전성 검증 중 예외: {e}",
@@ -1156,7 +1266,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
                     equity_pct=eq_pct,
                     note=f"Decision {decision_id} → orders {order_id} (intraday)",
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 LOG.warning("post-trade briefing failed: %s", e)
 
     return res

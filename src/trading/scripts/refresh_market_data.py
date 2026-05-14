@@ -22,7 +22,9 @@ has zero rows.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import os
 import time
 from collections.abc import Callable
 from datetime import date, timedelta
@@ -42,6 +44,13 @@ DART_GAP_THRESHOLD_DAYS = 2
 DART_BACKFILL_DAYS = 12
 # REQ-019-8 (a): default per-ticker timeout budget (seconds).
 DEFAULT_TICKER_TIMEOUT_SECONDS = 10.0
+
+# REQ-023-1 (b): recency window — tickers with OHLCV in the last N days do not
+# need to be expanded.
+RECENT_OHLCV_DAYS = 7
+# REQ-023-4: per-ticker and total batch timeout budgets for auto-expansion.
+DEFAULT_AUTO_EXPANSION_PER_TICKER_S = 30.0
+DEFAULT_AUTO_EXPANSION_TOTAL_S = 120.0
 
 
 class TickerTimeout(Exception):
@@ -122,6 +131,20 @@ def _pykrx_fetch_fundamentals(ticker: str, start: date, end: date) -> int:
 
 def _dart_list_recent(start: date, end: date) -> list[dict[str, Any]]:
     return dart_adapter.list_recent(start, end)
+
+
+def _register_dynamic_ticker(ticker: str, source: str) -> bool:
+    """Thin wrapper around dynamic_universe.register for monkeypatching."""
+    from trading.data import dynamic_universe
+
+    return dynamic_universe.register(ticker, source=source)
+
+
+def _list_dynamic_universe() -> list[str]:
+    """Thin wrapper for monkeypatching."""
+    from trading.data import dynamic_universe
+
+    return dynamic_universe.list_active()
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +290,170 @@ def refresh_disclosures(today_override: date | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Bootstrap (REQ-019-7, P0 escalated)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SPEC-023: on-demand universe expansion for micro-recommended out-of-universe
+# tickers.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_timeouts(
+    per_ticker_timeout_s: float | None,
+    total_timeout_s: float | None,
+) -> tuple[float, float]:
+    """REQ-023-4 (c): env-overridable timeout budgets."""
+    if per_ticker_timeout_s is None:
+        env = os.environ.get("AUTO_EXPANSION_PER_TICKER_TIMEOUT")
+        per_ticker_timeout_s = (
+            float(env) if env else DEFAULT_AUTO_EXPANSION_PER_TICKER_S
+        )
+    if total_timeout_s is None:
+        env = os.environ.get("AUTO_EXPANSION_TOTAL_TIMEOUT")
+        total_timeout_s = (
+            float(env) if env else DEFAULT_AUTO_EXPANSION_TOTAL_S
+        )
+    return per_ticker_timeout_s, total_timeout_s
+
+
+def _expand_single(
+    ticker: str,
+    start: date,
+    end: date,
+    per_ticker_timeout_s: float,
+) -> int:
+    """REQ-023-1 (c) + REQ-023-4 (a): fetch OHLCV + flows for one ticker
+    under a per-ticker timeout. Returns rows upserted across both feeds.
+
+    Wraps the pykrx call in a thread executor so that a blocking pykrx hang
+    can be aborted via ``Future.result(timeout=...)`` — pykrx is a synchronous
+    library, signal.alarm is unsafe in scheduler threads, so the executor
+    pattern is the safest option.
+    """
+
+    def _do_fetch() -> int:
+        rows = 0
+        rows += int(_pykrx_fetch_ohlcv(ticker, start, end) or 0)
+        rows += int(_pykrx_fetch_flows(ticker, start, end) or 0)
+        return rows
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(_do_fetch)
+        return fut.result(timeout=per_ticker_timeout_s)
+
+
+# @MX:ANCHOR: SPEC-023 REQ-023-1 on-demand universe expansion
+# @MX:REASON: fan_in >= 3 — pre_market hook, intraday hook, manual CLI invocations
+# @MX:SPEC: SPEC-TRADING-023
+def expand_universe_for_tickers(
+    tickers: list[str],
+    *,
+    cycle_kind: str,
+    per_ticker_timeout_s: float | None = None,
+    total_timeout_s: float | None = None,
+    today_override: date | None = None,
+) -> dict[str, Any]:
+    """REQ-023-1: on-demand OHLCV/flows backfill for universe-out candidates.
+
+    For each ``ticker``:
+      1. If OHLCV exists within the last ``RECENT_OHLCV_DAYS`` days, skip the
+         fetch (it counts as a no-op success).
+      2. Otherwise fetch ``BACKFILL_WINDOW_DAYS`` of OHLCV + flows from pykrx
+         under a per-ticker timeout (REQ-023-4 (a)).
+      3. On success, register the ticker in dynamic_tickers (REQ-023-1 (d)).
+      4. On failure or timeout, drop the ticker — never register, never retry
+         (REQ-023-3 (b, f)).
+
+    Total batch is bounded by ``total_timeout_s`` (REQ-023-4 (b)); when the
+    budget is exhausted, unprocessed tickers are dropped and the function
+    returns early.
+
+    Returns a metric dict suitable for INFO logging and orchestrator-side
+    candidate filtering (REQ-023-6 (a)).
+    """
+    per_t, total_t = _resolve_timeouts(per_ticker_timeout_s, total_timeout_s)
+    today = today_override or date.today()
+    start = today - timedelta(days=BACKFILL_WINDOW_DAYS)
+    deadline = time.monotonic() + total_t
+
+    metrics: dict[str, Any] = {
+        "cycle_kind": cycle_kind,
+        "requested_tickers": list(tickers),
+        "success_count": 0,
+        "error_count": 0,
+        "timeout_count": 0,
+        "total_rows_upserted": 0,
+        "successful_tickers": [],
+    }
+
+    started = time.monotonic()
+    for ticker in tickers:
+        # REQ-023-4 (b): total batch timeout — drop remaining and break.
+        if time.monotonic() >= deadline:
+            LOG.warning(
+                "auto_expansion total budget exhausted; dropping remaining %s",
+                ticker,
+            )
+            metrics["timeout_count"] += 1
+            metrics["error_count"] += 1
+            continue
+
+        # REQ-023-1 (b): skip when OHLCV is already recent.
+        last_ts = _get_latest_ohlcv_ts(ticker)
+        if last_ts is not None and last_ts >= today - timedelta(
+            days=RECENT_OHLCV_DAYS
+        ):
+            metrics["success_count"] += 1
+            metrics["successful_tickers"].append(ticker)
+            continue
+
+        # Honour per-ticker budget AND respect remaining total budget.
+        remaining = max(0.0, deadline - time.monotonic())
+        budget = min(per_t, remaining) if remaining > 0 else 0
+        if budget <= 0:
+            LOG.warning(
+                "auto_expansion total budget exhausted before %s", ticker
+            )
+            metrics["timeout_count"] += 1
+            metrics["error_count"] += 1
+            continue
+
+        try:
+            rows = _expand_single(ticker, start, today, budget)
+        except concurrent.futures.TimeoutError:
+            LOG.warning(
+                "auto_expansion timeout for %s after %.1fs", ticker, budget
+            )
+            metrics["timeout_count"] += 1
+            metrics["error_count"] += 1
+            continue
+        except Exception as exc:
+            LOG.warning("auto_expansion failed for %s: %s", ticker, exc)
+            metrics["error_count"] += 1
+            continue
+
+        # REQ-023-1 (d): success path -> register in dynamic_tickers.
+        try:
+            _register_dynamic_ticker(ticker, source="micro_recommendation")
+        except Exception as exc:
+            LOG.warning(
+                "auto_expansion register failed for %s: %s (proceeding)",
+                ticker,
+                exc,
+            )
+
+        metrics["success_count"] += 1
+        metrics["total_rows_upserted"] += rows
+        metrics["successful_tickers"].append(ticker)
+
+    metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
+    try:
+        metrics["dynamic_universe_size"] = len(_list_dynamic_universe())
+    except Exception:
+        metrics["dynamic_universe_size"] = -1
+
+    LOG.info("expand_universe_for_tickers: %s", metrics)
+    return metrics
 
 
 def bootstrap_backfill_if_empty() -> dict[str, Any]:
