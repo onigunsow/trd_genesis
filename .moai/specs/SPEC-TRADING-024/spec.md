@@ -26,6 +26,7 @@ related_specs:
 | Date | Version | Changes | Author |
 |---|---|---|---|
 | 2026-05-15 | 0.1.0 | Initial planning draft — 9 EARS requirements, 3-phase rollout (Stage 1: adaptive cron + threshold triggers, Stage 2: WebSocket stream + position watchdog, Stage 3: 1주 validation). 구현은 SPEC-022/023 의 4일 (5/15~5/19 KST) 연속 paper-trading 무사고 운영 게이트 통과 후 착수 | onigunsow |
+| 2026-05-15 | 0.2.0 | Stage 1 (REQ-024-1~4) 배포 완료 (main `31b0c83`, redeploy 16:07 KST). REQ-024-8 (Multi-tier persona) 에 **Hybrid Execution Mode** 결정 추가: Tier-1 Haiku watcher 는 직접 Anthropic API 호출 (subprocess overhead 회피 + 분단위 폴링 가능), Tier-2/Tier-3 Sonnet 페르소나는 기존 cli_only_mode 유지 (SPEC-015/016 호환). 사용자 의사결정 — 2026-05-15 16:12 KST | onigunsow |
 
 ---
 
@@ -140,6 +141,22 @@ related_specs:
 - **Tier 3 (on Tier-2 signal)**: Sonnet decision + risk persona 가 full 평가 (~50K tokens)
 
 Throttle 규칙: ticker 당 Tier-3 = 5 분에 1회 max, 일일 Tier-2 = 50회 max. 모든 tier 의 직전에 SPEC-018 단기과열 차단 등 safety check 를 우회 없이 통과해야 한다.
+
+##### REQ-024-8.1 — Hybrid Execution Mode (사용자 결정 2026-05-15)
+
+**Tier 1 (Haiku watcher) 은 직접 Anthropic API 호출**, Tier 2/3 (Sonnet 페르소나) 은 기존 `cli_only_mode` (SPEC-015/016) 를 유지한다.
+
+**근거**:
+- Tier 1 은 분단위 폴링 (또는 stream 이벤트당) 발사되므로 `claude` CLI subprocess spawn overhead (~10~30s) 가 누적되면 실시간성 손상.
+- 직접 API 호출 시 응답 latency ~2~5s 로 단축, 거의 무료 (Haiku 모델 가격 매우 저렴: $0.25/$1.25 per 1M tokens).
+- Tier 2/3 은 기존 SPEC-015 REQ-015-1 `block_if_cli_only_mode` 데코레이터 위반 우려가 있어 CLI bridge 를 그대로 사용.
+- 결과적으로 cli_only_mode 자체는 "Sonnet 페르소나만 CLI 의무화" 로 의미가 축소된다 — Haiku 는 적용 대상 외.
+
+**구현 요구**:
+- Tier 1 모듈은 `anthropic` Python SDK 를 직접 호출 (env: `ANTHROPIC_API_KEY` 사용)
+- Tier 2/3 호출 코드는 변경 없음 (기존 `trading.personas.base.call_persona_via_cli` 그대로)
+- `block_if_cli_only_mode` 데코레이터는 Haiku Tier-1 코드 경로에는 적용하지 않는다 (allowlist 추가)
+- 비용 모니터 (REQ-024-9) 는 Haiku API 호출 토큰 사용량도 함께 집계해야 한다
 
 #### REQ-024-9 (P1, Ubiquitous) — Cost monitor + circuit breaker
 
