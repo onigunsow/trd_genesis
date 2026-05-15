@@ -25,6 +25,9 @@ from trading.risk.blocked_cache import refresh_blocked_tickers
 from trading.scheduler.calendar import is_trading_day, reason_if_closed
 from trading.screener import daily_screen
 from trading.scripts import refresh_market_data
+from trading.watchers import blocked_release as _watcher_blocked_release
+from trading.watchers import price_threshold as _watcher_price_threshold
+from trading.watchers import volume_anomaly as _watcher_volume_anomaly
 
 LOG = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
@@ -210,6 +213,56 @@ def main() -> None:
             name=f"intraday {h:02d}:{m:02d}",
         )
 
+    # @MX:NOTE: SPEC-TRADING-024 REQ-024-1 — adaptive intraday cron.
+    # Backward-compat (resolved Q-8): the four hard-coded intraday slots above
+    # remain. The adaptive cron is *additive* — every 15 min between 09:00 and
+    # 15:30 KST (mon-fri). The :00/:15/:30/:45 cadence will overlap the
+    # existing 09:30/11:00/13:30/14:30 minute slots; orchestrator's own
+    # cached-micro reuse (SPEC-016 REQ-016-1-1) plus the watcher event_handler
+    # in-flight lock keep concurrent firings safe. Defaults configurable via
+    # .moai/config/sections/scheduler.yaml (intraday_interval_minutes).
+    # @MX:SPEC: SPEC-TRADING-024
+    sched.add_job(
+        lambda: _wrap("intraday_adaptive", orchestrator.run_intraday_cycle),
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="*/15",
+            timezone=KST,
+        ),
+        id="intraday_adaptive",
+        name="intraday_adaptive */15 (09-15 KST)",
+    )
+
+    # SPEC-TRADING-024 REQ-024-2/3/4 — 5-min watcher pollers (mon-fri 09-15 KST).
+    sched.add_job(
+        lambda: _wrap(
+            "watcher_price_threshold",
+            _watcher_price_threshold.poll_price_threshold,
+        ),
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        id="watcher_price_threshold",
+        name="watcher_price_threshold */5 (09-15 KST)",
+    )
+    sched.add_job(
+        lambda: _wrap(
+            "watcher_volume_anomaly",
+            _watcher_volume_anomaly.poll_volume_anomaly,
+        ),
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        id="watcher_volume_anomaly",
+        name="watcher_volume_anomaly */5 (09-15 KST)",
+    )
+    sched.add_job(
+        lambda: _wrap(
+            "watcher_blocked_release",
+            _watcher_blocked_release.poll_blocked_release,
+        ),
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        id="watcher_blocked_release",
+        name="watcher_blocked_release */5 (09-15 KST)",
+    )
+
     # Daily report 16:00
     sched.add_job(
         lambda: _wrap("daily_report", daily_report.generate_and_send),
@@ -251,18 +304,14 @@ def main() -> None:
     )
     # REQ-019-3: Weekly fundamentals refresh — Sunday 18:00 KST (no trading-day guard)
     sched.add_job(
-        lambda: _safe_call(
-            "data_refresh_fundamentals", refresh_market_data.refresh_fundamentals
-        ),
+        lambda: _safe_call("data_refresh_fundamentals", refresh_market_data.refresh_fundamentals),
         CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=KST),
         id="data_refresh_fundamentals",
         name="data_refresh_fundamentals Sun 18:00",
     )
     # REQ-019-4: Daily DART disclosure refresh — 18:00 KST every day (DART 365/yr)
     sched.add_job(
-        lambda: _safe_call(
-            "data_refresh_disclosures", refresh_market_data.refresh_disclosures
-        ),
+        lambda: _safe_call("data_refresh_disclosures", refresh_market_data.refresh_disclosures),
         CronTrigger(hour=18, minute=0, timezone=KST),
         id="data_refresh_disclosures",
         name="data_refresh_disclosures 18:00",
@@ -284,9 +333,7 @@ def main() -> None:
     try:
         refresh_market_data.bootstrap_backfill_if_empty()
     except Exception:
-        LOG.exception(
-            "bootstrap_backfill_if_empty failed; continuing with scheduler start"
-        )
+        LOG.exception("bootstrap_backfill_if_empty failed; continuing with scheduler start")
 
     sched.start()
 
@@ -299,7 +346,5 @@ def main() -> None:
 # module execution is dropped from the operator workflow.
 # @MX:SPEC: SPEC-TRADING-017
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     main()

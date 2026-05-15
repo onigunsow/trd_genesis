@@ -1,0 +1,33 @@
+# SPEC-TRADING-024 Stage 1 scheduler / watcher configuration.
+#
+# Stage 1 keys only — Stage 2 (REQ-024-5~9: WebSocket, multi-tier dispatch,
+# cost monitor) will append further sections. Values here are defaults
+# embedded in code; this file documents the surface and lets ops override
+# without a redeploy once Stage 1 lands.
+#
+# Resolved Open Questions reflected in defaults:
+#   Q-3 daily LLM budget: 10_000 KRW (soft warn in Stage 1)
+#   Q-4 price threshold: ATR-based, multiplier 1.5x ATR(14d)
+#   Q-7 circuit breaker: tier degradation (log-only in Stage 1)
+#   Q-8 existing 4 crons: keep in parallel
+
+scheduler:
+  # REQ-024-1 — adaptive cron cadence (additive to existing 09:30/11:00/13:30/14:30)
+  intraday_interval_minutes: 15
+
+  # REQ-024-2/3/4 — watcher poll cadence (mon-fri 09:00-15:30 KST)
+  watcher_poll_interval_minutes: 5
+
+  # REQ-024-2 — ATR-based price threshold (Q-4)
+  atr_threshold_multiplier: 1.5
+
+  # REQ-024-3 — volume + volatility anomaly thresholds
+  volume_anomaly_ratio: 2.0
+  volume_anomaly_atr_ratio: 1.5
+
+  # Shared throttling (REQ-024-2/3)
+  trigger_daily_cap: 20
+  trigger_cooldown_seconds: 300
+
+  # Stage 1 soft LLM budget warning (Q-3). Hard enforcement is Stage 2.
+  daily_llm_budget_krw: 10000
