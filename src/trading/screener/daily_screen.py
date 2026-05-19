@@ -15,15 +15,23 @@ Mechanical screening criteria (Phase 1):
 - OR: foreign 5-day net buy > 0 (smart money inflow)
 
 Phase 1 outputs top ~50 candidates for LLM review.
+
+SPEC-TRADING-025: Blocked-aware filtering. ``data/blocked_tickers.json`` is
+loaded at the start of ``run()`` and applied as a pure set-difference against
+the candidate pool BEFORE LLM scoring. This prevents the screener from
+re-emitting tickers that the exchange has just designated as short-term
+overheating (단기과열), which since 2026-05-13 had produced a 100% overlap
+between screened picks and the blocked set.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trading.config import project_root
 from trading.db.session import connection
@@ -32,8 +40,99 @@ from trading.personas.context import DEFAULT_WATCHLIST
 LOG = logging.getLogger(__name__)
 SCREEN_FILE = project_root() / "data" / "screened_tickers.json"
 PENDING_FILE = project_root() / "data" / "pending_screen.json"
+
+# @MX:NOTE: SPEC-TRADING-025 — blocked-list source. Produced by SPEC-019's
+# refresh cron at 07:25 KST; consumed here at 06:35 KST screener run.
+# @MX:SPEC: SPEC-TRADING-025
+BLOCKED_FILE = project_root() / "data" / "blocked_tickers.json"
+
 MAX_CANDIDATES = 50
 MAX_SCREENED = 20
+
+# @MX:NOTE: SPEC-TRADING-025 REQ-025-5 — low-yield warning threshold.
+# Configuration-only knob; recovery via universe expansion is deferred to
+# SPEC-TRADING-026.
+# @MX:SPEC: SPEC-TRADING-025
+MIN_CANDIDATES_WARN = 5
+
+# KST is the canonical timezone for the blocked-file freshness check
+# (REQ-025-3, A-7). Consistent with the rest of the trading codebase.
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _today_kst_iso() -> str:
+    """Return today's date in KST as an ISO string (YYYY-MM-DD).
+
+    SPEC-TRADING-025 A-7: KST is the canonical timezone for blocked-file
+    freshness checks. Exposed as a module-level helper so tests can pin the
+    expected date without depending on local-tz semantics.
+    """
+    return datetime.now(_KST).date().isoformat()
+
+
+# @MX:ANCHOR: SPEC-TRADING-025 REQ-025-1 + REQ-025-3 — single load/validate
+# entry point for the blocked set. Called once per screener run; on missing,
+# stale, or malformed input returns ``set()`` and emits a WARNING. Never
+# raises — the daily cycle must not halt on a missing blocked file.
+# @MX:REASON: fan_in >= 2 (run() + future intraday consumers) and it
+# encapsulates the REQ-025-3 graceful-degrade contract.
+# @MX:SPEC: SPEC-TRADING-025
+def _load_blocked_set() -> set[str]:
+    """Load ``data/blocked_tickers.json`` and return its blocked-ticker set.
+
+    Validates the ``date`` field against today's KST date. On any failure
+    (missing file, stale date, malformed JSON, unexpected schema) returns
+    an empty set and emits a WARNING — the screener must remain functional
+    when the blocked-data refresh layer (SPEC-019) is degraded.
+
+    Returns:
+        Set of blocked ticker codes (e.g. ``{"005930", "000660"}``), or
+        ``set()`` if the file is missing, stale, or malformed.
+    """
+    today = _today_kst_iso()
+
+    if not BLOCKED_FILE.exists():
+        LOG.warning(
+            "daily_screen: blocked file missing at %s — proceeding with empty blocked set",
+            BLOCKED_FILE,
+        )
+        return set()
+
+    try:
+        payload = json.loads(BLOCKED_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        LOG.warning(
+            "daily_screen: blocked file unreadable (%s) — proceeding with empty blocked set",
+            exc,
+        )
+        return set()
+
+    if not isinstance(payload, dict):
+        LOG.warning(
+            "daily_screen: blocked file has unexpected schema (not a dict) — "
+            "proceeding with empty blocked set"
+        )
+        return set()
+
+    file_date = payload.get("date", "")
+    if file_date != today:
+        LOG.warning(
+            "daily_screen: blocked file stale: file_date=%s today=%s — "
+            "proceeding with empty blocked set",
+            file_date or "<missing>",
+            today,
+        )
+        return set()
+
+    blocked = payload.get("blocked", {})
+    if not isinstance(blocked, dict):
+        LOG.warning(
+            "daily_screen: blocked field has unexpected schema (not a dict) — "
+            "proceeding with empty blocked set"
+        )
+        return set()
+
+    return set(blocked.keys())
 
 
 def _get_universe_tickers() -> list[str]:
@@ -190,6 +289,17 @@ def run() -> dict[str, Any]:
     base_set = set(DEFAULT_WATCHLIST)
     candidates = [t for t in universe if t not in base_set]
 
+    # SPEC-TRADING-025 REQ-025-1 + REQ-025-2: load the exchange overheating /
+    # blocked set and apply pure set-difference BEFORE LLM scoring. This is
+    # the efficiency point — we avoid spending LLM tokens (or even mechanical
+    # scoring SQL) on tickers that will be discarded anyway.
+    blocked_set = _load_blocked_set()
+    before_count = len(candidates)
+    if blocked_set:
+        candidates = [t for t in candidates if t not in blocked_set]
+        filtered_n = before_count - len(candidates)
+        LOG.info("daily_screen: filtered %d tickers from blocked list", filtered_n)
+
     results: list[dict[str, Any]] = []
     for ticker in candidates:
         try:
@@ -218,6 +328,30 @@ def run() -> dict[str, Any]:
     }
     SCREEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     SCREEN_FILE.write_text(json.dumps(fallback_output, ensure_ascii=False, indent=2))
+
+    # SPEC-TRADING-025 REQ-025-4: defensive post-write verification of the
+    # output invariant — screened set must contain zero blocked tickers.
+    # Should be unreachable given the upstream set-difference filter, but
+    # logged as ERROR if violated to make the invariant observable.
+    if blocked_set:
+        leaked = set(fallback_output["tickers"]) & blocked_set
+        if leaked:
+            LOG.error(
+                "daily_screen: REQ-025-4 invariant violation — blocked tickers "
+                "leaked into screened output: %s",
+                sorted(leaked),
+            )
+
+    # SPEC-TRADING-025 REQ-025-5: low-yield warning when the post-filter
+    # candidate pool falls below MIN_CANDIDATES_WARN. Recovery via universe
+    # expansion is deferred to SPEC-TRADING-026.
+    if len(candidates) < MIN_CANDIDATES_WARN:
+        LOG.warning(
+            "daily_screen: low yield — only %d candidates after blocked filter "
+            "(threshold=%d). Recovery deferred to SPEC-TRADING-026.",
+            len(candidates),
+            MIN_CANDIDATES_WARN,
+        )
 
     # Load intelligence context for LLM prompt
     intel_macro = _read_intelligence_md("intelligence_macro.md")
