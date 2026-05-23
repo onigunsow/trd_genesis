@@ -177,33 +177,68 @@ def _update_cluster_relevance(
         cur.execute(sql, (portfolio_relevant, relevance_tickers, cluster_id))
 
 
-def _already_alerted_today(title_hash: str) -> bool:
-    """Check if an alert with this content hash was already sent today."""
-    sql = "SELECT 1 FROM news_alerts_sent WHERE content_hash = %s AND alerted_at::date = CURRENT_DATE LIMIT 1"
+# @MX:NOTE: SPEC-TRADING-026 c4 — re-clustering runs every ~3h; an 18h rolling
+# window suppresses repeats of a persisting story (incl. across midnight)
+# without permanently muting a genuinely recurring topic.
+# @MX:SPEC: SPEC-TRADING-026
+_ALERT_DEDUP_WINDOW_HOURS = 18
+
+
+def _alert_keys(cluster: dict) -> list[str]:
+    """Stable dedup keys for a cluster — one per member article (``art:{id}``).
+
+    SPEC-026 c4: article membership is stable across re-clustering even when the
+    representative title changes (a higher-impact member joins), so dedup keys
+    derived from ``article_ids`` no longer drift. Falls back to a title hash
+    only when the cluster carries no article_ids.
+    """
+    ids = cluster.get("article_ids") or []
+    keys = [f"art:{aid}" for aid in ids]
+    if not keys:
+        title = cluster.get("representative_title", "") or ""
+        if title:
+            keys = [hashlib.sha256(title.encode()).hexdigest()[:32]]
+    return keys
+
+
+def _any_alerted_recently(keys: list[str]) -> bool:
+    """True if ANY key was alerted within the dedup window."""
+    if not keys:
+        return False
+    sql = (
+        "SELECT 1 FROM news_alerts_sent "
+        "WHERE content_hash = ANY(%s) "
+        "AND alerted_at >= now() - make_interval(hours => %s) LIMIT 1"
+    )
     with connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (title_hash,))
+        cur.execute(sql, (keys, _ALERT_DEDUP_WINDOW_HOURS))
         return cur.fetchone() is not None
 
 
-def _record_alert(title_hash: str) -> None:
-    """Record that an alert was sent for deduplication."""
+def _record_alerts(keys: list[str]) -> None:
+    """Record that an alert was sent for each key (idempotent per UTC day)."""
+    if not keys:
+        return
     sql = "INSERT INTO news_alerts_sent (content_hash) VALUES (%s) ON CONFLICT DO NOTHING"
     with connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (title_hash,))
+        for k in keys:
+            cur.execute(sql, (k,))
 
 
 def _send_critical_alert(cluster: dict) -> None:
     """Send Telegram alert for critical portfolio-relevant news.
 
     REQ-INTEL-04-4: When impact == 5 AND portfolio-relevant.
+    SPEC-026 c4: dedup by stable article identity, not the volatile
+    representative title; record only after a successful send so a failed send
+    is retried on the next cycle.
     """
     try:
         from trading.alerts.telegram import system_briefing
+        keys = _alert_keys(cluster)
+        if _any_alerted_recently(keys):
+            return  # Skip duplicate — same story already alerted within window.
         title = cluster["representative_title"]
-        title_hash = hashlib.sha256(title.encode()).hexdigest()[:32]
-        if _already_alerted_today(title_hash):
-            return  # Skip duplicate
-        _record_alert(title_hash)
         sector = cluster["sector"]
         msg = (
             f"[NEWS ALERT] {title} "
@@ -211,5 +246,6 @@ def _send_critical_alert(cluster: dict) -> None:
             f"— 포트폴리오 관련 고위험 뉴스 감지"
         )
         system_briefing("News Intelligence", msg)
+        _record_alerts(keys)
     except Exception as e:  # noqa: BLE001
         LOG.warning("Failed to send critical news alert: %s", e)

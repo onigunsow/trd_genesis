@@ -27,6 +27,7 @@ from trading.config import get_settings
 from trading.db.session import audit, connection, get_system_state, update_system_state
 from trading.kis.account import balance
 from trading.kis.client import KisClient
+from trading.kis.market import OVERHEAT_STAT_CLS
 from trading.kis.order import buy as kis_buy
 from trading.kis.order import sell as kis_sell
 from trading.models.router import resolve_model
@@ -38,7 +39,7 @@ from trading.personas import risk as risk_persona
 from trading.risk import circuit_breaker
 from trading.risk.blocked_cache import get_blocked_tickers, record_blocked_by_safety
 from trading.risk.limits import check_pre_order, record_breach
-from trading.risk.market_safety import check_pre_order_safety
+from trading.risk.market_safety import OVERHEAT_SIZE_FACTOR, check_pre_order_safety
 from trading.screener.daily_screen import load_screened_tickers
 from trading.scripts.refresh_market_data import (
     RECENT_OHLCV_DAYS,
@@ -82,6 +83,30 @@ def _has_recent_ohlcv(ticker: str) -> bool:
     if last_ts is None:
         return False
     return last_ts >= _date.today() - _td(days=RECENT_OHLCV_DAYS)
+
+
+# @MX:NOTE: SPEC-TRADING-026 — split the blocked dict by stat_cls so the
+# persona layer can hard-exclude genuine risk states (51~54 / unknown) while
+# keeping 단기과열(55) as a cautioned, de-weighted candidate. Used for every
+# blocked-aware exclusion path (watchlist + decision candidate filter).
+# @MX:SPEC: SPEC-TRADING-026
+def _split_blocked(
+    blocked: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Partition a blocked-ticker dict into ``(hard_blocked, overheated)``.
+
+    Entries with ``stat_cls == "55"`` (단기과열) are overheated (soft); every
+    other entry — including those missing ``stat_cls`` (e.g. intraday
+    safety-recorded blocks) — is hard-blocked (conservative default).
+    """
+    hard: dict[str, Any] = {}
+    over: dict[str, Any] = {}
+    for ticker, info in (blocked or {}).items():
+        if isinstance(info, dict) and info.get("stat_cls") == OVERHEAT_STAT_CLS:
+            over[ticker] = info
+        else:
+            hard[ticker] = info
+    return hard, over
 
 
 def _filter_and_expand_candidates(
@@ -257,11 +282,16 @@ def _build_micro_input(today: str, macro_summary: str | None) -> dict[str, Any]:
     screened = load_screened_tickers()
     blocked_cache = get_blocked_tickers()
     blocked_tickers = blocked_cache.get("blocked", {}) or {}
-    blocked_set = set(blocked_tickers.keys())
+    # SPEC-026: only HARD blocks (51~54 / unknown) are excluded from the
+    # watchlist. 단기과열(55) is kept so the micro persona can still consider it
+    # (the prompt marks it as a reduce-weight caution; execution then size-caps
+    # and forces a limit order).
+    hard_blocked, _overheated = _split_blocked(blocked_tickers)
+    hard_set = set(hard_blocked.keys())
 
     # SPEC-020 REQ-020-3: screened-first; DEFAULT only as cold-start fallback.
     base_universe: list[str] = list(screened) if screened else list(ctx.DEFAULT_WATCHLIST)
-    expanded_watchlist = [t for t in base_universe if t not in blocked_set]
+    expanded_watchlist = [t for t in base_universe if t not in hard_set]
 
     return ctx.assemble_micro_input(
         macro_summary=macro_summary,
@@ -565,6 +595,34 @@ def _persist_reflection_round(
         LOG.warning("Failed to persist reflection_round: %s", e)
 
 
+# @MX:NOTE: SPEC-TRADING-026 — execution policy for 단기과열(55). Size-caps BUY
+# orders and forces a limit order at the reference price (single-price auction).
+# Sells / non-overheated orders are left as market orders so risk exits are
+# never throttled. Mutates ``sig`` in place; returns (new_qty, capped).
+# @MX:SPEC: SPEC-TRADING-026
+def _apply_overheat_order_policy(
+    sig: dict[str, Any],
+    *,
+    qty: int,
+    side: str,
+    ref_price: int,
+    overheated: bool,
+) -> tuple[int, bool]:
+    """Apply SPEC-026 size-cap + limit-only to overheated BUY orders.
+
+    Returns ``(new_qty, capped)``. When ``capped`` is True the caller should
+    surface a briefing; ``sig`` has been updated with the reduced qty, a
+    ``limit`` order_type, and ``limit_price = ref_price``.
+    """
+    if overheated and side == "buy" and qty > 0:
+        new_qty = max(1, int(qty * OVERHEAT_SIZE_FACTOR))
+        sig["qty"] = new_qty
+        sig["order_type"] = "limit"
+        sig["limit_price"] = ref_price
+        return new_qty, True
+    return qty, False
+
+
 def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) -> int | None:
     """Submit a buy/sell order based on a decision signal. Returns DB orders.id or None."""
     side = sig.get("side", "hold")
@@ -575,9 +633,15 @@ def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) ->
     if not ticker or qty <= 0:
         return None
     fn = kis_buy if side == "buy" else kis_sell
+    # SPEC-026: honour a per-signal order_type / limit_price so the orchestrator
+    # can force a limit order on 단기과열(55) entries (single-price auction).
+    # Defaults preserve the prior market-order behaviour.
+    order_type = sig.get("order_type", "market")
+    limit_price = sig.get("limit_price") if order_type == "limit" else None
     try:
         result = fn(client, ticker=ticker, qty=qty,
-                    order_type="market",
+                    order_type=order_type,
+                    limit_price=limit_price,
                     persona_decision_id=decision_id)
         return int(result["order_id"])
     except Exception as e:
@@ -658,10 +722,13 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     # SPEC-023 REQ-023-1: auto-expand universe-out candidates before decision.
     # The helper applies blocked filter AFTER expansion (R-1) so data is still
     # fetched for blocked tickers (they may be unblocked later).
+    # SPEC-026: only HARD blocks (51~54 / unknown) drop a candidate here;
+    # 단기과열(55) stays (the prompt marks it as a reduce-weight caution).
+    _hard_blocked, _ = _split_blocked(blocked_tickers)
     candidate_tickers, _expansion_metrics = _filter_and_expand_candidates(
         candidate_tickers,
         cycle_kind="pre_market",
-        blocked_tickers=blocked_tickers,
+        blocked_tickers=_hard_blocked,
     )
     # Reflect filtered candidates back into the Decision input.
     if _expansion_metrics is not None:
@@ -820,6 +887,21 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
 
         # Use safety.quote.price as authoritative ref_price for limit check.
         ref_price = safety.quote["price"] if safety.quote else 100_000
+
+        # SPEC-026: 단기과열(55) BUYs → size-cap + limit-only (single-price
+        # auction). Applied BEFORE the limit check so the reduced qty governs it.
+        _orig_qty = qty
+        qty, _capped = _apply_overheat_order_policy(
+            sig, qty=qty, side=side_str, ref_price=ref_price,
+            overheated=getattr(safety, "overheated", False),
+        )
+        if _capped:
+            tg.system_briefing(
+                "단기과열 비중 축소",
+                f"{ticker} 단기과열(55) — 수량 {_orig_qty}→{qty}, "
+                f"지정가 {ref_price:,}원 (단일가매매 대응)",
+            )
+
         chk = check_pre_order(
             side=side_str,
             ticker=ticker,
@@ -1080,10 +1162,12 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
     ]
     # SPEC-023 REQ-023-1: same hook as pre_market — auto-expansion runs
     # before blocked filter so universe-out candidates fetch data.
+    # SPEC-026: only HARD blocks drop a candidate; 단기과열(55) stays (cautioned).
+    _hard_blocked, _ = _split_blocked(blocked_tickers)
     candidate_tickers, _expansion_metrics = _filter_and_expand_candidates(
         candidate_tickers,
         cycle_kind="intraday",
-        blocked_tickers=blocked_tickers,
+        blocked_tickers=_hard_blocked,
     )
     if _expansion_metrics is not None:
         kept = set(candidate_tickers)
@@ -1217,6 +1301,21 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             continue
 
         ref_price = safety.quote["price"] if safety.quote else 100_000
+
+        # SPEC-026: 단기과열(55) BUYs → size-cap + limit-only (single-price
+        # auction). Applied BEFORE the limit check so the reduced qty governs it.
+        _orig_qty = qty
+        qty, _capped = _apply_overheat_order_policy(
+            sig, qty=qty, side=side_str, ref_price=ref_price,
+            overheated=getattr(safety, "overheated", False),
+        )
+        if _capped:
+            tg.system_briefing(
+                "단기과열 비중 축소",
+                f"{ticker} 단기과열(55) — 수량 {_orig_qty}→{qty}, "
+                f"지정가 {ref_price:,}원 (단일가매매 대응)",
+            )
+
         chk = check_pre_order(
             side=side_str,
             ticker=ticker or "",

@@ -136,7 +136,7 @@ def _gather_today() -> dict[str, Any]:
     }
 
 
-def _fallback_text(data: dict[str, Any]) -> str:
+def _fallback_text(data: dict[str, Any], skip_reason: str | None = None) -> str:
     orders = data["orders"]
     runs = data["runs"]
     risk = data["risk"]
@@ -220,7 +220,7 @@ def _fallback_text(data: dict[str, Any]) -> str:
         f"reflection_rounds={refl_total}, reflection_success_rate={refl_success_rate:.1f}%\n"
         f"{auto_exp_line}"
         f"누적 (7D/30D): 매매 {week_orders}/{month_orders}건, 수수료 {week_fee:,}/{month_fee:,}원\n"
-        "(Anthropic API 미구성 또는 호출 실패로 LLM 요약 생략)"
+        f"({skip_reason or 'LLM 요약 생략'})"
     )
 
 
@@ -263,13 +263,30 @@ def _llm_text(data: dict[str, Any]) -> str:
     return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
 
+def _llm_skip_reason(exc: Exception) -> str:
+    """SPEC-TRADING-026: human-accurate reason the LLM summary was skipped.
+
+    The previous hardcoded "(Anthropic API 미구성 또는 호출 실패)" was misleading —
+    in ``cli_only_mode`` the direct API call is blocked *by design* (the bot
+    runs personas on the Claude CLI subscription), it did not fail. Surface the
+    real reason so the daily report is not mistaken for a broken system.
+    """
+    msg = str(exc)
+    if "cli_only_mode" in msg:
+        return "CLI 전용 모드 — 직접 API 호출 차단(정상), 결정형 요약 사용"
+    if "ANTHROPIC_API_KEY" in msg:
+        return "ANTHROPIC_API_KEY 미설정 — LLM 요약 생략"
+    return f"LLM 요약 생성 실패: {msg[:120]}"
+
+
 def generate_and_send() -> str:
     data = _gather_today()
     try:
         text = _llm_text(data)
     except Exception as e:
-        LOG.warning("daily report LLM failed (using fallback): %s", e)
-        text = _fallback_text(data)
+        reason = _llm_skip_reason(e)
+        LOG.warning("daily report LLM skipped (%s)", reason)
+        text = _fallback_text(data, skip_reason=reason)
 
     # Persist
     sql = """

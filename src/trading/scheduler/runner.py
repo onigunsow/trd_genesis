@@ -188,12 +188,18 @@ def main() -> None:
         name="daily_screen 06:30",
     )
 
-    # SPEC-FIX: Blocked tickers cache 07:25 (before 07:30 pre_market cycle)
+    # SPEC-TRADING-026 (c-cron): refresh the blocked cache at 06:20 — BEFORE the
+    # 06:30 screener — so the screener sees the same-day 단기과열 set. Previously
+    # 07:25 (after the screener), which left the SPEC-025/026 blocked filter
+    # reading a stale file and silently degrading to an empty set. The screener's
+    # today-OR-yesterday tolerance (SPEC-026 _load_blocked_map) remains the
+    # safety net if this refresh is late or fails. Still well before the 07:30
+    # pre_market cycle.
     sched.add_job(
         lambda: _wrap("blocked_tickers_cache", refresh_blocked_tickers),
-        CronTrigger(day_of_week="mon-fri", hour=7, minute=25, timezone=KST),
+        CronTrigger(day_of_week="mon-fri", hour=6, minute=20, timezone=KST),
         id="blocked_cache",
-        name="blocked_tickers 07:25",
+        name="blocked_tickers 06:20",
     )
 
     # Pre-market 07:30

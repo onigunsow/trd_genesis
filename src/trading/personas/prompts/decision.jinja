@@ -82,11 +82,24 @@
 - 서로 다른 섹터의 종목을 최소 1개 이상 비교 검토할 것
 
 {% if blocked_tickers is defined and blocked_tickers %}
+{%- set ns = namespace(has_hard=false, has_over=false) -%}
+{%- for _t, _info in blocked_tickers.items() -%}
+{%- if _info is mapping and _info.get('stat_cls') == '55' -%}{%- set ns.has_over = true -%}{%- else -%}{%- set ns.has_hard = true -%}{%- endif -%}
+{%- endfor -%}
+{% if ns.has_hard %}
 ## 거래소 지정 매매 제한 종목 (제안 금지)
-{% for ticker, info in blocked_tickers.items() %}
-- {{ ticker }}: {{ info.reason }} -- 매수/매도 불가
+{% for ticker, info in blocked_tickers.items() if not (info is mapping and info.get('stat_cls') == '55') %}
+- {{ ticker }}: {{ info.reason if info is mapping and info.reason is defined else info }} -- 매수/매도 불가
 {% endfor %}
 위 종목은 거래소에서 매매를 제한하고 있습니다. 절대 매수/매도 시그널을 생성하지 마세요.
+{% endif %}
+{% if ns.has_over %}
+## 단기과열 주의 종목 (비중 축소)
+{% for ticker, info in blocked_tickers.items() if info is mapping and info.get('stat_cls') == '55' %}
+- {{ ticker }}: {{ info.reason if info.reason is defined else '' }} -- 단일가매매 대상. 제외하지 말고 비중 축소·지정가로 보수적으로 접근.
+{% endfor %}
+위 종목은 단기과열로 단일가매매 대상이다. 진입 시 비중을 줄이고 지정가로만 제안하라.
+{% endif %}
 {% endif %}
 
 {% if hold_warnings is defined and hold_warnings %}

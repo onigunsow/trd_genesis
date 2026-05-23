@@ -66,3 +66,26 @@ STAT_CLS_LABELS = {
 
 def stat_cls_label(code: str) -> str:
     return STAT_CLS_LABELS.get(code, f"알수없음({code})")
+
+
+# SPEC-TRADING-026: stat_cls risk tiers.
+# 단기과열(55) is tradeable (via single-price auction) and is treated as a
+# soft / cautioned state — de-weighted at the screener, size-reduced and
+# limit-only at execution — rather than a hard block. The genuine danger
+# states (관리 51 / 투자위험 52 / 투자경고 53 / 거래정지 54) and any unknown
+# non-normal code remain a hard block.
+OVERHEAT_STAT_CLS = "55"  # 단기과열
+
+
+def is_overheated(stat_cls: str) -> bool:
+    """True for 단기과열(55) — tradeable but cautioned (single-price auction)."""
+    return stat_cls == OVERHEAT_STAT_CLS
+
+
+def is_hard_block(stat_cls: str) -> bool:
+    """True when the stat_cls must hard-block trading.
+
+    Conservative default: anything that is neither normal(00) nor
+    overheated(55) hard-blocks, including unknown / missing codes.
+    """
+    return stat_cls not in ("00", OVERHEAT_STAT_CLS)

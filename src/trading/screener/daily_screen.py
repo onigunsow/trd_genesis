@@ -28,22 +28,24 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from trading.config import project_root
 from trading.db.session import connection
+from trading.kis.market import OVERHEAT_STAT_CLS
 from trading.personas.context import DEFAULT_WATCHLIST
 
 LOG = logging.getLogger(__name__)
 SCREEN_FILE = project_root() / "data" / "screened_tickers.json"
 PENDING_FILE = project_root() / "data" / "pending_screen.json"
 
-# @MX:NOTE: SPEC-TRADING-025 — blocked-list source. Produced by SPEC-019's
-# refresh cron at 07:25 KST; consumed here at 06:35 KST screener run.
-# @MX:SPEC: SPEC-TRADING-025
+# @MX:NOTE: SPEC-TRADING-025/026 — blocked-list source. Refreshed at 06:20 KST
+# (SPEC-026 c-cron), BEFORE the 06:30 screener run, so the filter sees same-day
+# data. _load_blocked_map() also accepts yesterday's file as a safety net if the
+# refresh is late/failed.
+# @MX:SPEC: SPEC-TRADING-026
 BLOCKED_FILE = project_root() / "data" / "blocked_tickers.json"
 
 MAX_CANDIDATES = 50
@@ -54,6 +56,18 @@ MAX_SCREENED = 20
 # SPEC-TRADING-026.
 # @MX:SPEC: SPEC-TRADING-025
 MIN_CANDIDATES_WARN = 5
+
+# @MX:NOTE: SPEC-TRADING-026 — 단기과열(55) score penalty knobs. 55 is no longer
+# excluded (that was the SPEC-025 self-collision bug on surge days); it is kept
+# and de-weighted. The penalty is regime-aware (threshold guard): a handful of
+# overheated names is a stock-specific signal (strong penalty), while a
+# market-wide overheating day is a regime artifact (light penalty) so strong
+# names still surface.
+# @MX:SPEC: SPEC-TRADING-026
+OVERHEAT_PENALTY_NORMAL = 2.5       # stock-specific overheating: strong de-rank
+OVERHEAT_PENALTY_MARKETWIDE = 0.5  # market-wide surge: light tiebreaker only
+OVERHEAT_MARKETWIDE_COUNT = 15     # >= N overheated tickers => market-wide
+OVERHEAT_MARKETWIDE_RATIO = 0.30   # OR overheated/pool >= 30% => market-wide
 
 # KST is the canonical timezone for the blocked-file freshness check
 # (REQ-025-3, A-7). Consistent with the rest of the trading codebase.
@@ -70,33 +84,36 @@ def _today_kst_iso() -> str:
     return datetime.now(_KST).date().isoformat()
 
 
-# @MX:ANCHOR: SPEC-TRADING-025 REQ-025-1 + REQ-025-3 — single load/validate
-# entry point for the blocked set. Called once per screener run; on missing,
-# stale, or malformed input returns ``set()`` and emits a WARNING. Never
-# raises — the daily cycle must not halt on a missing blocked file.
-# @MX:REASON: fan_in >= 2 (run() + future intraday consumers) and it
-# encapsulates the REQ-025-3 graceful-degrade contract.
-# @MX:SPEC: SPEC-TRADING-025
-def _load_blocked_set() -> set[str]:
-    """Load ``data/blocked_tickers.json`` and return its blocked-ticker set.
+# @MX:ANCHOR: SPEC-TRADING-025 REQ-025-1/-3 + SPEC-TRADING-026 — single
+# load/validate entry point for the blocked list. Returns a ``ticker ->
+# stat_cls`` map so callers can distinguish hard blocks (51~54 / unknown) from
+# 단기과열(55). On missing, stale, or malformed input returns ``{}`` and emits a
+# WARNING. Never raises — the daily cycle must not halt on a missing file.
+# @MX:REASON: fan_in >= 2 (run() + _load_blocked_set wrapper) and it
+# encapsulates the graceful-degrade + freshness contract.
+# @MX:SPEC: SPEC-TRADING-026
+def _load_blocked_map() -> dict[str, str]:
+    """Load ``data/blocked_tickers.json`` → ``{ticker: stat_cls}``.
 
-    Validates the ``date`` field against today's KST date. On any failure
-    (missing file, stale date, malformed JSON, unexpected schema) returns
-    an empty set and emits a WARNING — the screener must remain functional
-    when the blocked-data refresh layer (SPEC-019) is degraded.
+    ``stat_cls`` is ``""`` when the entry omits it (e.g. intraday
+    safety-recorded blocks); such entries are treated as hard blocks by the
+    caller (conservative default).
 
-    Returns:
-        Set of blocked ticker codes (e.g. ``{"005930", "000660"}``), or
-        ``set()`` if the file is missing, stale, or malformed.
+    Freshness (SPEC-026): the blocked refresh cron runs at 07:25 KST, *after*
+    the screener at 06:30 KST, so at screen time the freshest file on disk is
+    typically yesterday's. We therefore accept a ``date`` of today OR yesterday
+    (KST); anything older is stale. On any failure (missing file, stale date,
+    malformed JSON, unexpected schema) returns ``{}`` and emits a WARNING.
     """
     today = _today_kst_iso()
+    yesterday = (datetime.now(_KST).date() - timedelta(days=1)).isoformat()
 
     if not BLOCKED_FILE.exists():
         LOG.warning(
             "daily_screen: blocked file missing at %s — proceeding with empty blocked set",
             BLOCKED_FILE,
         )
-        return set()
+        return {}
 
     try:
         payload = json.loads(BLOCKED_FILE.read_text(encoding="utf-8"))
@@ -105,24 +122,24 @@ def _load_blocked_set() -> set[str]:
             "daily_screen: blocked file unreadable (%s) — proceeding with empty blocked set",
             exc,
         )
-        return set()
+        return {}
 
     if not isinstance(payload, dict):
         LOG.warning(
             "daily_screen: blocked file has unexpected schema (not a dict) — "
             "proceeding with empty blocked set"
         )
-        return set()
+        return {}
 
     file_date = payload.get("date", "")
-    if file_date != today:
+    if file_date not in (today, yesterday):
         LOG.warning(
             "daily_screen: blocked file stale: file_date=%s today=%s — "
             "proceeding with empty blocked set",
             file_date or "<missing>",
             today,
         )
-        return set()
+        return {}
 
     blocked = payload.get("blocked", {})
     if not isinstance(blocked, dict):
@@ -130,9 +147,38 @@ def _load_blocked_set() -> set[str]:
             "daily_screen: blocked field has unexpected schema (not a dict) — "
             "proceeding with empty blocked set"
         )
-        return set()
+        return {}
 
-    return set(blocked.keys())
+    out: dict[str, str] = {}
+    for ticker, info in blocked.items():
+        if isinstance(info, dict):
+            out[ticker] = str(info.get("stat_cls", "") or "")
+        else:
+            out[ticker] = ""
+    return out
+
+
+def _load_blocked_set() -> set[str]:
+    """Backward-compatible wrapper: all blocked ticker codes (any stat_cls).
+
+    Retained for SPEC-025 callers/tests; SPEC-026 logic uses
+    :func:`_load_blocked_map` to split hard blocks from 단기과열(55).
+    """
+    return set(_load_blocked_map().keys())
+
+
+def _overheat_penalty(overheat_count: int, pool_size: int) -> tuple[float, bool]:
+    """SPEC-026 REQ-026-4 threshold guard → ``(penalty, market_wide)``.
+
+    A market-wide overheating regime (many 단기과열 names) is a market artifact,
+    not a per-stock red flag, so it uses a light penalty; a stock-specific
+    handful uses a strong penalty.
+    """
+    market_wide = overheat_count >= OVERHEAT_MARKETWIDE_COUNT or (
+        pool_size > 0 and (overheat_count / pool_size) >= OVERHEAT_MARKETWIDE_RATIO
+    )
+    penalty = OVERHEAT_PENALTY_MARKETWIDE if market_wide else OVERHEAT_PENALTY_NORMAL
+    return penalty, market_wide
 
 
 def _get_universe_tickers() -> list[str]:
@@ -265,7 +311,7 @@ def _read_intelligence_md(name: str) -> str:
         return ""
     try:
         return p.read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
@@ -289,14 +335,20 @@ def run() -> dict[str, Any]:
     base_set = set(DEFAULT_WATCHLIST)
     candidates = [t for t in universe if t not in base_set]
 
-    # SPEC-TRADING-025 REQ-025-1 + REQ-025-2: load the exchange overheating /
-    # blocked set and apply pure set-difference BEFORE LLM scoring. This is
-    # the efficiency point — we avoid spending LLM tokens (or even mechanical
-    # scoring SQL) on tickers that will be discarded anyway.
-    blocked_set = _load_blocked_set()
+    # SPEC-TRADING-025/026: load the blocked map and split it by stat_cls.
+    #  - Hard blocks (관리 51 / 투자위험 52 / 투자경고 53 / 거래정지 54, plus any
+    #    entry without an explicit 55) are excluded BEFORE scoring (efficiency:
+    #    no LLM tokens / scoring SQL spent on untradeable names).
+    #  - 단기과열(55) is KEPT and score-penalized after scoring (SPEC-026), fixing
+    #    the SPEC-025 self-collision that zeroed out signals on surge days.
+    blocked_map = _load_blocked_map()
+    hard_blocked = {t for t, sc in blocked_map.items() if sc != OVERHEAT_STAT_CLS}
+    overheated = {t for t, sc in blocked_map.items() if sc == OVERHEAT_STAT_CLS}
+    blocked_set = hard_blocked  # retained name for the REQ-025-4 leak check below
+
     before_count = len(candidates)
-    if blocked_set:
-        candidates = [t for t in candidates if t not in blocked_set]
+    if hard_blocked:
+        candidates = [t for t in candidates if t not in hard_blocked]
         filtered_n = before_count - len(candidates)
         LOG.info("daily_screen: filtered %d tickers from blocked list", filtered_n)
 
@@ -306,9 +358,31 @@ def run() -> dict[str, Any]:
             result = _screen_ticker(ticker)
             if result:
                 results.append(result)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             LOG.debug("daily_screen: error screening %s: %s", ticker, e)
             continue
+
+    # SPEC-TRADING-026 REQ-026-2/-4: de-weight 단기과열(55) instead of excluding.
+    # The penalty is regime-aware via the threshold guard — light on market-wide
+    # overheating days so strong names still surface, strong for a stock-specific
+    # handful. Penalty is applied before the score sort so it affects ranking.
+    overheat_in_pool = overheated & {r["ticker"] for r in results}
+    penalty, market_wide = _overheat_penalty(len(overheat_in_pool), len(results))
+    n_penalized = 0
+    for r in results:
+        r["overheated"] = r["ticker"] in overheated
+        if r["overheated"]:
+            r["score"] = max(0.0, float(r["score"]) - penalty)
+            r.setdefault("reasons", []).append(
+                f"단기과열 감점(-{penalty:g}, {'장세' if market_wide else '개별'})"
+            )
+            n_penalized += 1
+    if n_penalized:
+        LOG.info(
+            "daily_screen: de-weighted %d overheated(55) tickers "
+            "(penalty=%.1f, market_wide=%s)",
+            n_penalized, penalty, market_wide,
+        )
 
     # Sort by score descending, take top N for LLM review
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -447,7 +521,7 @@ def load_screened_tickers() -> list[str]:
                 if isinstance(item, dict) and item.get("ticker")
             ]
 
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return []
 

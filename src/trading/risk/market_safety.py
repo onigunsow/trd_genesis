@@ -15,9 +15,13 @@ from dataclasses import dataclass, field
 
 from trading.kis.account import balance
 from trading.kis.client import KisClient
-from trading.kis.market import current_price, stat_cls_label
+from trading.kis.market import current_price, is_overheated, stat_cls_label
 
 LOG = logging.getLogger(__name__)
+
+# SPEC-TRADING-026: position-size factor applied to BUY orders on 단기과열(55)
+# names (single-price auction). Sells are unaffected so risk exits stay intact.
+OVERHEAT_SIZE_FACTOR = 0.5
 
 
 @dataclass
@@ -27,6 +31,10 @@ class SafetyResult:
     warnings: list[str] = field(default_factory=list)
     quote: dict | None = None
     buyable_effective: int | None = None
+    # SPEC-TRADING-026: True when the ticker is 단기과열(55) — tradeable but
+    # cautioned. The orchestrator size-caps and forces a limit order; it is NOT
+    # a blocker, so ``passed`` can still be True.
+    overheated: bool = False
 
 
 def check_pre_order_safety(
@@ -48,7 +56,7 @@ def check_pre_order_safety(
     # 1. Quote — stat_cls + upper/lower limits
     try:
         q = current_price(client, ticker)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         res.passed = False
         res.blockers.append(f"quote_fetch_failed: {e}")
         return res
@@ -56,7 +64,16 @@ def check_pre_order_safety(
 
     if not q["is_normal"]:
         label = stat_cls_label(q["stat_cls"])
-        res.blockers.append(f"stat_cls={q['stat_cls']} ({label}) — 매매 차단")
+        if is_overheated(q["stat_cls"]):
+            # SPEC-026: 단기과열(55) is tradeable via single-price auction — flag
+            # it as a caution (size-cap + limit-only handled by the orchestrator)
+            # instead of hard-blocking the order.
+            res.overheated = True
+            res.warnings.append(
+                f"stat_cls={q['stat_cls']} ({label}) — 단기과열: 비중 축소 + 지정가 (단일가매매)"
+            )
+        else:
+            res.blockers.append(f"stat_cls={q['stat_cls']} ({label}) — 매매 차단")
 
     if side == "buy" and q["near_upper_limit"]:
         res.blockers.append(
@@ -71,7 +88,7 @@ def check_pre_order_safety(
     if side == "buy":
         try:
             bal = balance(client)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             res.warnings.append(f"balance_fetch_failed: {e}")
             return res
 

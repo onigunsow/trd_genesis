@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from trading.news.sector_classifier import classify_sector
+
 
 @dataclass
 class Article:
@@ -181,7 +183,9 @@ def normalize_articles(
             summary=summary,
             body_text=body_text,
             source_name=raw.get("source_name", ""),
-            sector=raw.get("sector", ""),
+            # SPEC-TRADING-026 c3: override the feed sector when the article's
+            # own content clearly belongs to a different sector (conservative).
+            sector=classify_sector(title, summary or body_text, raw.get("sector", "")),
             language=raw.get("language", "ko"),
             published_at=published_at,
             crawled_at=crawled_at,
