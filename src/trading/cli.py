@@ -66,6 +66,13 @@ def _bootstrap_logging() -> None:
     # attaches its own LogCaptureHandler before our bootstrap runs.
     logging.getLogger().setLevel(level)
 
+    # SPEC-TRADING-026 (security): httpx logs every request URL at INFO. For the
+    # Telegram bot that URL embeds the bot token (…/bot<TOKEN>/getUpdates),
+    # leaking the secret into container logs. Force httpx/httpcore to WARNING
+    # regardless of the root level so the token is never logged.
+    for _noisy in ("httpx", "httpcore"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
     if invalid_value is not None:
         logging.warning(
             "TRADING_LOG_LEVEL=%r is not one of %s; falling back to INFO",

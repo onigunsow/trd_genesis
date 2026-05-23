@@ -353,4 +353,8 @@ def main() -> None:
 # @MX:SPEC: SPEC-TRADING-017
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # SPEC-TRADING-026 (security): mute httpx/httpcore so the Telegram bot token
+    # in request URLs is never logged (mirrors trading.cli._bootstrap_logging).
+    for _noisy in ("httpx", "httpcore"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
     main()

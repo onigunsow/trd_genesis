@@ -209,3 +209,31 @@ def test_format_string_matches_spec(monkeypatch, capsys):
         f"expected exactly one bootstrap handler; got {len(bootstrap)}"
     )
     assert bootstrap[0].formatter._fmt == EXPECTED_FORMAT
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-026 (security) — httpx logs the Telegram bot token in request
+# URLs at INFO; the bootstrap must mute httpx/httpcore to WARNING.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("noisy", ["httpx", "httpcore"])
+def test_httpx_logger_muted_to_warning(monkeypatch, noisy):
+    from trading.cli import _bootstrap_logging
+
+    monkeypatch.delenv("TRADING_LOG_LEVEL", raising=False)
+    # Pretend a prior run left it noisy.
+    logging.getLogger(noisy).setLevel(logging.INFO)
+
+    _bootstrap_logging()
+
+    assert logging.getLogger(noisy).level == logging.WARNING
+
+
+def test_httpx_muted_even_when_root_is_debug(monkeypatch):
+    """Even at DEBUG, token-bearing httpx request lines must stay suppressed."""
+    from trading.cli import _bootstrap_logging
+
+    monkeypatch.setenv("TRADING_LOG_LEVEL", "DEBUG")
+    _bootstrap_logging()
+
+    assert logging.getLogger("httpx").level == logging.WARNING
