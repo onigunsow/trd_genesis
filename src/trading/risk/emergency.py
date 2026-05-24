@@ -51,6 +51,15 @@ def handle(text: str, actor: str = "telegram") -> str:
         update_system_state(silent_mode=True, updated_by=actor)
         audit("SILENT_MODE_ON", actor=actor, details={"reason": "manual"})
         return "✓ silent_mode=true. 주요 이벤트만 발송."
+    # SPEC-027: cycle-chain briefing detail toggle (separate from silent_mode).
+    if cmd == "/detail":
+        update_system_state(verbose_briefing=True, updated_by=actor)
+        audit("VERBOSE_BRIEFING_ON", actor=actor, details={})
+        return "✓ verbose_briefing=true. 사이클 요약 + 페르소나별 상세 브리핑 발송."
+    if cmd == "/brief":
+        update_system_state(verbose_briefing=False, updated_by=actor)
+        audit("VERBOSE_BRIEFING_OFF", actor=actor, details={})
+        return "✓ verbose_briefing=false. 사이클 요약(통합)만 발송."
     # SPEC-009 REQ-COMPAT-04-7: Tool-calling and reflection toggle commands
     if cmd == "/tool-calling":
         return _handle_tool_calling(text, actor)

@@ -73,6 +73,26 @@ def system_briefing(category: str, message: str) -> None:
     _send_raw(text)
 
 
+def _system_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean feature flag from system_state (lazy import; fail-safe)."""
+    try:
+        from trading.db.session import get_system_state
+        return bool(get_system_state().get(name, default))
+    except Exception:
+        return default
+
+
+def _verbose_briefing_active() -> bool:
+    """SPEC-027: when True, also emit the per-persona briefings (full detail).
+    Default (concise) sends only the consolidated cycle-chain briefing."""
+    return _system_flag("verbose_briefing", False)
+
+
+def _briefing_silent() -> bool:
+    """SPEC-027: when True (/silent), suppress non-critical briefings."""
+    return _system_flag("silent_mode", False)
+
+
 def persona_briefing(
     persona: str,
     model: str,
@@ -81,7 +101,13 @@ def persona_briefing(
     output_tokens: int = 0,
     cost_krw: float = 0.0,
 ) -> None:
-    """REQ-BRIEF-04-8 persona briefing — sent immediately after a persona response."""
+    """REQ-BRIEF-04-8 persona briefing — per-persona detail.
+
+    SPEC-027: only sent in verbose mode (/detail). In the default concise mode
+    the consolidated cycle-chain briefing replaces these fragmented messages.
+    """
+    if not _verbose_briefing_active():
+        return
     persona_e = _escape_html(persona)
     model_e = _escape_html(model)
     summary_e = _escape_html(summary)
@@ -91,6 +117,23 @@ def persona_briefing(
         f"{summary_e}\n"
         f"<i>{input_tokens} in / {output_tokens} out / {cost_str}</i>"
     )
+    _send_raw(text)
+
+
+def cycle_briefing(cycle_kind: str, chain: str) -> None:
+    """SPEC-027: one consolidated decision-chain summary per cycle.
+
+    Shows Macro -> Micro -> Decision -> Risk -> outcome with each persona's own
+    reasoning. Suppressed in silent mode.
+    """
+    if _briefing_silent():
+        return
+    label = {
+        "pre_market": "장전 사이클",
+        "intraday": "장중 사이클",
+        "event": "이벤트 사이클",
+    }.get(cycle_kind, cycle_kind)
+    text = f"<b>[사이클 요약 · {_escape_html(label)} · {_now_kst()}]</b>\n{_escape_html(chain)}"
     _send_raw(text)
 
 
@@ -144,8 +187,8 @@ def system_error(component: str, error: BaseException, *, context: str = "") -> 
     """
     # Lazy-import audit to avoid circular deps in alert module.
     try:
-        from trading.db.session import audit  # noqa: WPS433 (intentional lazy)
-    except Exception:  # noqa: BLE001
+        from trading.db.session import audit
+    except Exception:
         audit = None
     err_type = type(error).__name__
     err_msg = str(error)[:300]
@@ -157,7 +200,7 @@ def system_error(component: str, error: BaseException, *, context: str = "") -> 
         text += f"\n<i>{_escape_html(context[:200])}</i>"
     try:
         _send_raw(text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Last-resort: cannot reach Telegram. At least audit.
         LOG.exception("system_error telegram delivery failed (component=%s)", component)
     if audit is not None:
@@ -167,5 +210,5 @@ def system_error(component: str, error: BaseException, *, context: str = "") -> 
                 "error_msg": err_msg,
                 "context": context,
             })
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOG.exception("system_error audit insert failed (component=%s)", component)

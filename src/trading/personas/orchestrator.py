@@ -16,6 +16,7 @@ SPEC-009: Tool-calling integration + Reflection Loop.
 
 from __future__ import annotations
 
+import functools
 import logging
 import time
 from dataclasses import dataclass, field
@@ -230,19 +231,26 @@ def _summarize_persona(name: str, response_json: dict[str, Any] | None, max_line
         sell = c.get("sell", []) or []
         hold = c.get("hold", []) or []
         line = f"매수 {len(buy)} / 매도 {len(sell)} / 관망 {len(hold)}"
-        top = ""
         if buy:
-            top = "\n매수 후보: " + ", ".join(b.get("ticker", "") for b in buy[:3])
-        return line + top
+            line += "\n매수 후보: " + ", ".join(b.get("ticker", "") for b in buy[:3])
+        # SPEC-027: surface the market-tone summary the persona already produced.
+        tone = (response_json.get("summary") or "").strip()
+        if tone:
+            line += f"\n톤: {tone[:150]}"
+        return line
     if name == "decision":
         sigs = response_json.get("signals", []) or []
+        # SPEC-027: the decision persona writes a 1-2 line intent summary even
+        # when it proposes no trade — surface it so "왜 매매 안 했는지" is visible.
+        intent = (response_json.get("summary") or "").strip()
         if not sigs:
-            return "신규 시그널 없음"
-        return "\n".join(
+            return "신규 시그널 없음" + (f" — {intent[:150]}" if intent else "")
+        body = "\n".join(
             f"- {s.get('ticker','')} {s.get('side','?')} {s.get('qty',0)}주: "
             f"{(s.get('rationale','') or '')[:80]}"
             for s in sigs[:3]
         )
+        return body + (f"\n의도: {intent[:120]}" if intent else "")
     if name == "risk":
         return (
             f"verdict: {response_json.get('verdict','?')}\n"
@@ -310,6 +318,100 @@ class CycleResult:
     decisions: list[int] = field(default_factory=list)
     executed_orders: list[int] = field(default_factory=list)
     rejected: list[int] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-027: consolidated per-cycle decision-chain briefing.
+# ---------------------------------------------------------------------------
+
+def _build_cycle_chain(
+    cycle_kind: str,
+    macro_json: dict[str, Any] | None,
+    micro_json: dict[str, Any] | None,
+    decision_json: dict[str, Any] | None,
+    risk_json: dict[str, Any] | None,
+    executed: int,
+    rejected: int,
+) -> str:
+    """Build one consolidated decision-chain summary for a cycle.
+
+    Compresses no-trade cycles to a few lines (leading with the decision's WHY);
+    shows the full Macro -> Micro -> Decision -> Risk path + outcome when a trade
+    is proposed. Surfaces each persona's own reasoning, not just verdicts.
+    """
+    sigs = (decision_json or {}).get("signals", []) or []
+    traded = executed > 0 or bool(sigs)
+    lines: list[str] = []
+
+    if macro_json:
+        lines.append(
+            f"매크로: {macro_json.get('regime', '?')} / "
+            f"위험선호 {macro_json.get('risk_appetite', '?')}"
+        )
+
+    if traded:
+        if micro_json:
+            lines.append("마이크로: " + _summarize_persona("micro", micro_json).replace("\n", " / "))
+        if decision_json:
+            lines.append("결정: " + _summarize_persona("decision", decision_json).replace("\n", " | "))
+        if risk_json:
+            lines.append("리스크: " + _summarize_persona("risk", risk_json).replace("\n", " "))
+        lines.append(f"결과: 체결 {executed}건 / 거부 {rejected}건")
+    else:
+        dec = _summarize_persona("decision", decision_json) if decision_json else "결정 미실행"
+        lines.append("결정: " + dec.replace("\n", " "))
+        if micro_json:
+            c = micro_json.get("candidates", {}) or {}
+            lines.append(
+                f"(마이크로 매수 {len(c.get('buy') or [])} / 관망 {len(c.get('hold') or [])})"
+            )
+    return "\n".join(lines)
+
+
+def _fetch_persona_run(run_id: int | None) -> dict[str, Any] | None:
+    """Fetch a persona run's response_json by id (for the cycle-chain briefing)."""
+    if not run_id:
+        return None
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT response_json FROM persona_runs WHERE id = %s", (run_id,))
+            row = cur.fetchone()
+            return row["response_json"] if row else None
+    except Exception as e:
+        LOG.warning("cycle chain: fetch persona_run %s failed: %s", run_id, e)
+        return None
+
+
+def _send_cycle_chain(res: CycleResult, cycle_kind: str) -> None:
+    """Send the consolidated cycle-chain briefing (best-effort, never raises)."""
+    try:
+        chain = _build_cycle_chain(
+            cycle_kind,
+            _fetch_persona_run(res.macro_run_id),
+            _fetch_persona_run(res.micro_run_id),
+            _fetch_persona_run(res.decision_run_id),
+            _fetch_persona_run(res.risk_run_ids[-1] if res.risk_run_ids else None),
+            executed=len(res.executed_orders),
+            rejected=len(res.rejected),
+        )
+        tg.cycle_briefing(cycle_kind, chain)
+    except Exception as e:
+        LOG.warning("cycle chain briefing failed: %s", e)
+
+
+def _with_cycle_briefing(cycle_kind: str):
+    """Decorator: after a cycle returns its CycleResult, emit one consolidated
+    decision-chain briefing. Runs post-cycle and swallows errors so briefing can
+    never affect the trading path."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any):
+            res = fn(*args, **kwargs)
+            if isinstance(res, CycleResult):
+                _send_cycle_chain(res, cycle_kind)
+            return res
+        return wrapper
+    return deco
 
 
 def _maybe_enter_silent_mode(latest_signal_count: int) -> None:
@@ -651,6 +753,7 @@ def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) ->
         return None
 
 
+@_with_cycle_briefing("pre_market")
 def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     """Pre-market 07:30 sequence: Micro → Decision → Risk → paper auto-execute.
 
@@ -949,6 +1052,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     return res
 
 
+@_with_cycle_briefing("event")
 def run_event_trigger_cycle(
     today: str | None = None,
     *,
@@ -1098,6 +1202,7 @@ def run_event_trigger_cycle(
 # "intraday" BEFORE persona records are persisted, reuses the morning Micro cache,
 # and runs Decision/Risk fresh.
 # @MX:SPEC: SPEC-TRADING-016/REQ-016-1-1
+@_with_cycle_briefing("intraday")
 def run_intraday_cycle(today: str | None = None) -> CycleResult:
     """Intraday cycle (매시 정각 09~15): reuse cached Micro; fresh Decision/Risk.
 
