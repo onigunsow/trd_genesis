@@ -66,6 +66,44 @@ class TestKeepsFeedSectorWhenUnsure:
         assert out == "finance_banking"
 
 
+class TestGeopoliticsAndIndex:
+    """SPEC-026 c3 round 2 — real 2026-05-24 misclassifications.
+
+    Iran/Hormuz geopolitics belongs to energy_commodities (the source feed even
+    labels it 'Geopolitical energy impact'); KOSPI/pension/index stories belong
+    to stock_market.
+    """
+
+    def test_iran_geopolitics_from_semiconductor_feed(self):
+        out = classify_sector(
+            "美 “이란, 고농축 우라늄 포기 수용”…트럼프·이란 '극비 담판'",
+            None,
+            fallback="semiconductor",
+        )
+        assert out == "energy_commodities"
+
+    def test_hormuz_from_semiconductor_feed(self):
+        out = classify_sector(
+            "[속보] 미-이란 60일 휴전연장·호르무즈 개방 합의",
+            None,
+            fallback="semiconductor",
+        )
+        assert out == "energy_commodities"
+
+    def test_kospi_pension_to_stock_market(self):
+        out = classify_sector(
+            "코스피 급등에 국민연금 고민 커졌다…28일 회의서 국내주식 확대 여부 주목",
+            None,
+            fallback="energy_commodities",
+        )
+        assert out == "stock_market"
+
+    def test_iran_single_keyword_still_reclassifies(self):
+        out = classify_sector("무뎌지는 美 '제재 칼날'…이란 내성만 생겼다", None,
+                              fallback="semiconductor")
+        assert out == "energy_commodities"
+
+
 class TestFallbackHandling:
     def test_empty_fallback_returned_when_no_match(self):
         assert classify_sector("그냥 일반 뉴스", None, fallback="") == ""

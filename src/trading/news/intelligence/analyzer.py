@@ -71,6 +71,24 @@ VALID_CLASSIFICATIONS = frozenset({
     "macro_market_moving", "sector_specific", "company_specific", "noise",
 })
 
+# SPEC-TRADING-026 A2: canonical sectors the analyzer may assign (content-based
+# override of the feed sector). Sourced from the single source of truth.
+from trading.news.sources import SECTORS as _SECTORS  # noqa: E402
+
+VALID_SECTORS = frozenset(_SECTORS)
+
+
+def _corrected_sector(result: dict, current_sector: str) -> str | None:
+    """Return the LLM's content-derived sector if it is valid and differs.
+
+    SPEC-026 A2: applied on import to correct feed-mislabelled article sectors.
+    Returns None when the sector is missing, invalid, or already correct.
+    """
+    sec = str(result.get("sector", "") or "").strip()
+    if sec in VALID_SECTORS and sec != current_sector:
+        return sec
+    return None
+
 
 @dataclass
 class AnalysisRunMetrics:
@@ -424,12 +442,19 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
         if sentiment not in ("positive", "neutral", "negative"):
             sentiment = "neutral"
 
+        # SPEC-026 A2: content-derived sector ("" when missing/invalid; the
+        # caller keeps the existing article sector in that case).
+        sector = str(item.get("sector", "") or "").strip()
+        if sector not in VALID_SECTORS:
+            sector = ""
+
         validated.append({
             "summary_2line": str(implication),
             "impact_score": impact,
             "keywords": keywords,
             "sentiment": sentiment,
             "classification": classification,
+            "sector": sector,
         })
 
     return validated if validated else None
@@ -510,6 +535,14 @@ def _store_results(
                 out_tok // len(results),
                 cost_per_article,
             ))
+
+            # SPEC-026 A2: correct the article's feed-derived sector from content.
+            new_sector = _corrected_sector(result, article.get("sector", ""))
+            if new_sector:
+                cur.execute(
+                    "UPDATE news_articles SET sector = %s WHERE id = %s",
+                    (new_sector, article_id),
+                )
 
             stored.append(AnalysisResult(
                 article_id=article_id,
@@ -847,6 +880,15 @@ def import_host_results() -> int:
                 0,  # token_output: not tracked by CLI
                 0.0,  # cost_krw: zero marginal cost with Max subscription
             ))
+
+            # SPEC-026 A2: correct the article's feed-derived sector from content.
+            new_sector = _corrected_sector(result, article_map.get(aid, {}).get("sector", ""))
+            if new_sector:
+                cur.execute(
+                    "UPDATE news_articles SET sector = %s WHERE id = %s",
+                    (new_sector, aid),
+                )
+
             stored_count += 1
 
     # Clean up processed files

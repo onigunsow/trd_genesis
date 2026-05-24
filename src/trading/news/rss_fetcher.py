@@ -25,6 +25,12 @@ LOG = logging.getLogger(__name__)
 
 USER_AGENT = "trading-bot/0.2 (personal use; non-commercial)"
 HTTP_TIMEOUT = 15.0
+
+# SPEC-TRADING-026 B2: bounded retry for transient connection/timeout errors.
+# A single intermittent ConnectError used to fail the whole crawl cycle for a
+# source; 7 such cycles auto-disabled an otherwise-healthy feed (연합뉴스 경제).
+MAX_FETCH_RETRIES = 3
+FETCH_RETRY_BACKOFF = 0.5  # seconds; exponential: 0.5s, 1.0s
 MAX_CONCURRENCY = 10
 
 # Article body fetching configuration
@@ -97,17 +103,31 @@ class RSSFetcher:
         """Fetch and parse a single RSS feed, then fetch article bodies."""
         async with self._semaphore:
             await self._rate_limiter.acquire(source.url)
-            try:
-                response = await client.get(source.url)
-                response.raise_for_status()
-            except httpx.TimeoutException:
-                LOG.warning("RSS timeout (>%ss): %s", self._timeout, source.name)
-                return [], False
-            except httpx.HTTPStatusError as e:
-                LOG.warning("RSS HTTP %d: %s", e.response.status_code, source.name)
-                return [], False
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("RSS fetch error: %s — %s", source.name, e)
+            # SPEC-026 B2: retry transient connect/timeout failures with backoff.
+            # HTTP status errors (4xx/5xx) are terminal (no retry).
+            response = None
+            for attempt in range(MAX_FETCH_RETRIES):
+                try:
+                    response = await client.get(source.url)
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as e:
+                    LOG.warning("RSS HTTP %d: %s", e.response.status_code, source.name)
+                    return [], False
+                except (httpx.TransportError, httpx.TimeoutException) as e:
+                    if attempt < MAX_FETCH_RETRIES - 1:
+                        await asyncio.sleep(FETCH_RETRY_BACKOFF * (2 ** attempt))
+                        continue
+                    LOG.warning(
+                        "RSS fetch error (after %d attempts): %s — %s",
+                        MAX_FETCH_RETRIES, source.name, e,
+                    )
+                    return [], False
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("RSS fetch error: %s — %s", source.name, e)
+                    return [], False
+
+            if response is None:  # pragma: no cover - defensive
                 return [], False
 
             items = self._parse_feedparser(response.content, source)

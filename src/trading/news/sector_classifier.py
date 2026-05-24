@@ -34,6 +34,14 @@ _SECTOR_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "energy_commodities": (
         "유가", "원유", "천연가스", "OPEC", "정유", "원자재", "셰일", "LNG",
+        # SPEC-026 c3 r2: Mideast/oil geopolitics → energy (the source feeds
+        # themselves classify "geopolitical energy impact" here).
+        "이란", "호르무즈", "우라늄", "사우디", "중동",
+    ),
+    # SPEC-026 c3 r2: index / pension / domestic-market stories → stock_market.
+    # Specific index terms only (avoid the over-broad bare "시장"/"주식").
+    "stock_market": (
+        "코스피", "코스닥", "국민연금", "증시", "코스피지수", "코스닥지수",
     ),
     "auto_ev_battery": (
         "전기차", "배터리", "2차전지", "이차전지", "양극재", "음극재",
