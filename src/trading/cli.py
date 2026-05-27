@@ -162,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         circuit_breaker.reset(actor="cli")
         print("halt_state=false")
         return 0
+    if cmd == "fill-sync":
+        return _cmd_fill_sync(rest)
     if cmd == "status":
         from trading.db.session import get_system_state
         state = get_system_state()
@@ -224,6 +226,67 @@ def _cmd_crawl_news(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_fill_sync(rest: list[str]) -> int:
+    """SPEC-TRADING-029 REQ-029-5: manual / backfill entry point for fill_sync.
+
+    Flags
+    -----
+    --dry-run         Preview intended transitions without DB writes.
+    --start YYYYMMDD  Accepted-but-not-yet-implemented in Phase C; warns and
+                      continues using today's date (KST). Reserved for a
+                      future iteration that needs multi-day historical sync.
+
+    Exit codes: 0 on success, 1 on KisError / RuntimeError. Any unknown flag
+    emits a WARNING but does not fail the command (forward-compat with the
+    scheduler driver, which already runs unattended).
+    """
+    dry_run = False
+    skip_next = False
+    known_flags = {"--dry-run", "--start"}
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--dry-run":
+            dry_run = True
+            continue
+        if arg == "--start":
+            value = rest[i + 1] if i + 1 < len(rest) else "<missing>"
+            logging.warning(
+                "trading fill-sync: --start %s flag not yet implemented in v1; "
+                "using today's KST date",
+                value,
+            )
+            skip_next = True
+            continue
+        if arg not in known_flags:
+            logging.warning(
+                "trading fill-sync: ignoring unknown flag %s", arg
+            )
+
+    from trading.config import get_settings
+    from trading.kis.client import KisClient, KisError
+    from trading.kis.fills import fill_sync as _fill_sync
+
+    try:
+        client = KisClient(get_settings().trading_mode)
+        result = _fill_sync(client, dry_run=dry_run)
+    except KisError as e:
+        print(f"trading fill-sync: KIS error: {e}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"trading fill-sync: runtime error: {e}", file=sys.stderr)
+        return 1
+
+    print(
+        f"fill_sync: queried={result.get('queried', 0)} "
+        f"transitioned={result.get('transitioned', 0)} "
+        f"errors={result.get('errors', 0)} "
+        f"dry_run={result.get('dry_run', dry_run)}"
+    )
+    return 0
+
+
 def _cmd_news_health(rest: list[str]) -> int:
     """SPEC-013: Display news source health status."""
     from trading.news.health import get_all_health_status
@@ -270,6 +333,7 @@ def _print_help(file=sys.stdout) -> int:
         "  bot               run Telegram command listener (M5)\n"
         "  scheduler         start APScheduler cron loop (M5)\n"
         "  daily-report      generate and send today's report (M5)\n"
+        "  fill-sync         sync KIS fill confirmations [--dry-run] [--start YYYYMMDD]\n"
         "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
         "  analyze-news      run intelligence analysis [--sector X] [--force]\n"
         "  news-health       show news source health status table\n",

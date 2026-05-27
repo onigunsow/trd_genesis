@@ -64,6 +64,29 @@ def _run_news_import() -> None:
     scheduled_import()
 
 
+def _run_fill_sync() -> None:
+    """SPEC-TRADING-029 REQ-029-4: run one fill_sync cycle from the scheduler.
+
+    Imports are deferred so the heavy ``trading.kis`` stack only loads when
+    the cron actually fires (matches the pattern used by ``_run_news_crawl``
+    et al. in this module). The orchestrator returns a summary dict with
+    ``queried`` / ``transitioned`` / ``errors`` / ``dry_run`` keys — they are
+    logged at INFO so operators can grep the container logs for cycle health.
+    """
+    from trading.config import get_settings
+    from trading.kis.client import KisClient
+    from trading.kis.fills import fill_sync as _fill_sync
+
+    client = KisClient(get_settings().trading_mode)
+    result = _fill_sync(client, dry_run=False)
+    LOG.info(
+        "fill_sync queried=%d transitioned=%d errors=%d",
+        int(result.get("queried", 0)),
+        int(result.get("transitioned", 0)),
+        int(result.get("errors", 0)),
+    )
+
+
 def _wrap(name: str, fn, *args, **kwargs):
     """Run `fn` only if today is a KRX trading day (Mon-Fri ∩ no public holidays)."""
     if not is_trading_day():
@@ -186,6 +209,29 @@ def main() -> None:
         CronTrigger(day_of_week="mon-fri", hour=6, minute=30, timezone=KST),
         id="daily_screen",
         name="daily_screen 06:30",
+    )
+
+    # SPEC-TRADING-029 REQ-029-4: KIS order lifecycle sync.
+    # Polls KIS inquire-daily-ccld every 60s during the trading session and
+    # transitions orders.status (submitted → filled/partial/cancelled/rejected)
+    # + UPSERTs positions for BUY/SELL fills. Wrapped in _wrap() so the KRX
+    # trading-day guard suppresses execution on weekends and holidays.
+    # @MX:NOTE: hour="9-15" includes the full 15:** window — ~30 extra calls
+    # after the 15:30 close per session is harmless because KIS simply returns
+    # the same day's fills again (apply_fill_to_order is idempotent against
+    # terminal states; see EC-029-4). Trade-off is favored over a more complex
+    # cron expression. @MX:SPEC: SPEC-TRADING-029
+    sched.add_job(
+        lambda: _wrap("fill_sync", _run_fill_sync),
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",
+            minute="*",
+            second="0",
+            timezone=KST,
+        ),
+        id="fill_sync",
+        name="fill_sync 09:00-15:30 every 60s",
     )
 
     # SPEC-TRADING-026 (c-cron): refresh the blocked cache at 06:20 — BEFORE the
