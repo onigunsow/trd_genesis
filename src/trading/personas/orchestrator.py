@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from trading.alerts import telegram as tg
 from trading.config import get_settings
+from trading.data.ticker_names import ticker_name
 from trading.db.session import audit, connection, get_system_state, update_system_state
 from trading.kis.account import balance
 from trading.kis.client import KisClient
@@ -53,6 +54,23 @@ from trading.tools.registry import get_tools_for_persona
 LOG = logging.getLogger(__name__)
 
 CycleKind = Literal["pre_market", "intraday", "event", "weekly", "manual"]
+
+
+# @MX:NOTE: SPEC-029 v0.2.0 REQ-029-10 — both trade-briefing percentages share a
+# single invest_basis denominator (cash_d2 + stock_eval) so they sum to 100%.
+# Using KIS tot_evlu_amt as the denominator (as v0.1.0 did) produced sums > 100%
+# because tot_evlu_amt != dnca_tot_amt + scts_evlu_amt. The zero-basis guard
+# avoids ZeroDivisionError on an empty account (AC-029-15).
+def compute_balance_pcts(bal: dict[str, Any]) -> tuple[float, float]:
+    """Return (cash_pct, equity_pct) on the invest_basis denominator."""
+    basis = bal.get("invest_basis")
+    if not basis:
+        basis = int(bal.get("cash_d2", 0) or 0) + int(bal.get("stock_eval", 0) or 0)
+    if basis <= 0:
+        return (0.0, 0.0)
+    cash_pct = int(bal.get("cash_d2", 0) or 0) / basis * 100
+    equity_pct = int(bal.get("stock_eval", 0) or 0) / basis * 100
+    return (cash_pct, equity_pct)
 
 
 # ---------------------------------------------------------------------------
@@ -1031,12 +1049,11 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             res.executed_orders.append(order_id)
             try:
                 bal_after = balance(client)
-                ca_pct = (bal_after["cash_d2"] / bal_after["total_assets"] * 100) if bal_after["total_assets"] else 0.0
-                eq_pct = (bal_after["stock_eval"] / bal_after["total_assets"] * 100) if bal_after["total_assets"] else 0.0
+                ca_pct, eq_pct = compute_balance_pcts(bal_after)
                 tg.trade_briefing(
                     side=sig["side"],
                     ticker=sig["ticker"],
-                    name=None,
+                    name=ticker_name(sig["ticker"]),
                     qty=int(sig.get("qty", 0)),
                     fill_price=None,    # KIS fill price arrives via separate inquiry
                     fee=0,
@@ -1449,18 +1466,11 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             res.executed_orders.append(order_id)
             try:
                 bal_after = balance(client)
-                ca_pct = (
-                    bal_after["cash_d2"] / bal_after["total_assets"] * 100
-                    if bal_after["total_assets"] else 0.0
-                )
-                eq_pct = (
-                    bal_after["stock_eval"] / bal_after["total_assets"] * 100
-                    if bal_after["total_assets"] else 0.0
-                )
+                ca_pct, eq_pct = compute_balance_pcts(bal_after)
                 tg.trade_briefing(
                     side=sig["side"],
                     ticker=sig["ticker"],
-                    name=None,
+                    name=ticker_name(sig["ticker"]),
                     qty=int(sig.get("qty", 0)),
                     fill_price=None,
                     fee=0,

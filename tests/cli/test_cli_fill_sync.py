@@ -71,6 +71,25 @@ class TestFillSyncSubcommand:
         _, kwargs = fill_sync_fn.call_args
         assert kwargs.get("dry_run") is False
 
+    def test_fill_sync_drives_balance_reconcile(self):
+        """SPEC-029 v0.2.0: ``trading fill-sync`` resolves to balance reconcile."""
+        with (
+            patch("trading.config.get_settings", return_value=_stub_settings()),
+            patch("trading.kis.client.KisClient"),
+            patch(
+                "trading.kis.fills.reconcile_from_balance",
+                return_value={
+                    "queried": 0, "transitioned": 0, "errors": 0, "dry_run": False,
+                },
+            ) as reconcile,
+        ):
+            from trading.cli import main
+
+            rc = main(["fill-sync"])
+
+        assert rc == 0
+        reconcile.assert_called_once()
+
     def test_fill_sync_dry_run_flag_propagates(self, patch_kis_and_fill_sync):
         """``trading fill-sync --dry-run`` → fill_sync(client, dry_run=True)."""
         _, fill_sync_fn = patch_kis_and_fill_sync

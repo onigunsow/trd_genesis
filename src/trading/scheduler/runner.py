@@ -211,16 +211,16 @@ def main() -> None:
         name="daily_screen 06:30",
     )
 
-    # SPEC-TRADING-029 REQ-029-4: KIS order lifecycle sync.
-    # Polls KIS inquire-daily-ccld every 60s during the trading session and
-    # transitions orders.status (submitted → filled/partial/cancelled/rejected)
-    # + UPSERTs positions for BUY/SELL fills. Wrapped in _wrap() so the KRX
-    # trading-day guard suppresses execution on weekends and holidays.
+    # SPEC-TRADING-029 v0.2.0 REQ-029-4/6: KIS order lifecycle sync.
+    # Reconciles local orders/positions against KIS inquire-balance holdings
+    # every 60s during the trading session (FIFO attribution of held qty to open
+    # BUY orders + positions mirror). Wrapped in _wrap() so the KRX trading-day
+    # guard suppresses execution on weekends and holidays.
     # @MX:NOTE: hour="9-15" includes the full 15:** window — ~30 extra calls
-    # after the 15:30 close per session is harmless because KIS simply returns
-    # the same day's fills again (apply_fill_to_order is idempotent against
-    # terminal states; see EC-029-4). Trade-off is favored over a more complex
-    # cron expression. @MX:SPEC: SPEC-TRADING-029
+    # after the 15:30 close per session is harmless because balance reconcile is
+    # idempotent (newly_filled = max(0, held_qty - already_accounted) is 0 once
+    # everything is accounted; see AC-029-11). Trade-off is favored over a more
+    # complex cron expression. @MX:SPEC: SPEC-TRADING-029
     sched.add_job(
         lambda: _wrap("fill_sync", _run_fill_sync),
         CronTrigger(

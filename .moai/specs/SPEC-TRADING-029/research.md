@@ -281,3 +281,44 @@ Any "NOTE: ..." inline annotation added to this file will be addressed in the ne
 - [wikidocs.net/239581](https://wikidocs.net/239581) — Korean Python tutorial, blocked 403
 - Live codebase audit: `src/trading/kis/order.py`, `src/trading/kis/account.py`, `src/trading/kis/client.py`, `src/trading/scheduler/runner.py`, `src/trading/risk/limits.py`, `src/trading/personas/orchestrator.py`
 - Live DB inspection: `docker exec trading-postgres psql ...` on `orders`, `positions`, `\dt` 2026-05-26 22:00 KST
+
+---
+
+## §v0.2 — v0.2.0 Redesign Findings (2026-05-28)
+
+### v0.2.1 Live failure confirmation
+
+v0.1.0 의 `fill_sync` cron (inquire-daily-ccld, `VTTC8001R`) 이 첫 실거래일에
+300 회 실행, 매번 `queried=0`. 직접 API 테스트로 확정:
+
+- paper 모드에서 모든 `CCLD_DVSN` (00/01/02) 에 대해 `output1=[]` +
+  `"모의투자 조회할 내역(자료)이 없습니다"` (msg_cd `70070000`).
+- 동일 계좌 (`CANO=50185724`) 의 `inquire-balance` 는 보유 5 종목 정상 반환.
+- 결론: inquire-daily-ccld 는 paper 환경에서 당일 체결 미노출. 데이터 소스를
+  검증된 `inquire-balance` (`VTTC8434R`) 로 전환 (REQ-029-6).
+
+### v0.2.2 inquire-psbl-rvsecncl (정정취소가능주문조회) 조사
+
+출처: Context7 `koreainvestment/open-trading-api`,
+GitHub `examples_llm/domestic_stock/inquire_psbl_rvsecncl/`.
+
+- Path: `/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl`, tr_id `TTTC0084R`
+  (live). **공식 예제에 paper(V) tr_id 미문서화.**
+- Response fields: `odno`, `orgn_odno`, `pdno`, `prdt_name`, `ord_qty`,
+  `tot_ccld_qty`, `tot_ccld_amt`, `psbl_qty` (정정취소가능수량=미체결 잔량),
+  `sll_buy_dvsn_cd`, `ord_dvsn_cd`, `excg_dvsn_cd` 등 — 정밀 partial/미체결 구분
+  가능.
+- **결정: 미도입 (deferred).** 근거: (1) inquire-daily-ccld 와 동일한 "주문조회"
+  계열 → paper 빈 응답 위험 매우 높음, (2) paper tr_id 부재, (3) 사용자 선호 =
+  단순 balance-only reconcile. Tradeoff: balance-only 는 "KIS 취소"와 "미체결"을
+  구분 못 함 → cancel/reject 자동 전이 및 stale-order 정리는 별도 SPEC 으로 보류.
+
+### v0.2.3 balance 필드 매핑 (검증됨, account.py:42-75)
+
+holdings: `pdno`→ticker, `prdt_name`→name, `hldg_qty`→qty,
+`pchs_avg_pric`→avg_cost, `prpr`→current_price, `evlu_amt`→eval_amount.
+summary: `dnca_tot_amt`→cash_d2, `nxdy_excc_amt`→buyable,
+`tot_evlu_amt`→total_assets, `scts_evlu_amt`→stock_eval,
+`evlu_pfls_smtl_amt`→pnl_total. `invest_basis = cash_d2 + stock_eval` 신설
+(REQ-029-10). 검증: `tot_evlu_amt(9,919,870) ≠ cash_d2(8,787,740) +
+stock_eval(3,128,400) = 11,916,140` → % 분모로 basis 사용 필요.

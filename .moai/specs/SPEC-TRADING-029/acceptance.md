@@ -191,6 +191,134 @@ SPEC-022 / 023 / 025 / 026 의 동작이 회귀 없이 유지되는 시점.
 
 ---
 
+---
+
+# v0.2.0 Acceptance Criteria (REDESIGN — balance reconcile + name + pct)
+
+> AC-029-1 ~ AC-029-8 (위) 는 v0.1.0 의 inquire-daily-ccld 기반 시나리오로,
+> 데이터 소스 전환에 따라 **AC-029-9 ~ AC-029-15 로 대체/보강** 된다.
+> v0.1.0 AC 중 audit_log / FOR UPDATE / dry-run / EC-029-1·3·4 의 일반 동작은
+> 여전히 유효하다. 아래는 v0.2.0 의 핵심 검증 항목.
+
+## AC-029-9 (REQ-029-6, REQ-029-7) — balance reconcile 로 submitted → filled
+
+- **Given**: paper 모드에서 ticker 005930 (삼성전자) 1 주 BUY 가
+  `submit_order()` 로 제출되어 `orders.status='submitted'`,
+  `kis_order_no IS NOT NULL`, `side='buy'`, `qty=1` 로 기록되어 있고,
+  `positions` 에는 005930 행이 없거나 `qty=0` 이다 (already_accounted=0)
+- **When**: 다음 fill-sync cycle 이 `balance(client)` 를 호출하여 holdings 에
+  `(ticker='005930', qty=1, avg_cost=70000)` 가 포함되어 도착하면
+- **Then**:
+  - `orders` 해당 row 가 `status='filled'`, `fill_qty=1`, `fill_price=70000`,
+    `filled_at IS NOT NULL` 로 업데이트되어야 한다
+  - `audit_log` 에 `event_type='ORDER_FILLED'` event 가 기록되어야 한다
+  - **`inquire-daily-ccld` 는 호출되지 않아야 한다** (REQ-029-6)
+
+## AC-029-10 (REQ-029-7) — 동일 ticker 복수 submitted 주문 FIFO 배분
+
+- **Given**: ticker 000660 에 submitted BUY 주문이 두 개 존재한다 —
+  주문 A (`ts` 이른 것, `qty=3`), 주문 B (`ts` 늦은 것, `qty=5`).
+  `positions` 의 000660 `already_accounted=0`
+- **When**: fill-sync 가 balance holdings 에서 `(000660, held_qty=5)` 를 본다면
+  (newly_filled=5)
+- **Then**:
+  - 주문 A (oldest-first) 가 먼저 `qty=3` 전량 배분 → `filled`, `fill_qty=3`
+  - 주문 B 에 남은 `5-3=2` 가 배분 → `partial`, `fill_qty=2` (`ord_qty=5`)
+  - 다음 cycle 에서 balance 가 `held_qty=8` 이 되면 (already_accounted=5,
+    newly_filled=3) 주문 B 의 잔여 3 이 채워져 `partial → filled` 로 전이
+
+## AC-029-11 (REQ-029-7) — newly_filled=0 이면 no-op
+
+- **Given**: ticker 035420 의 submitted BUY 주문이 있고 balance holdings 의
+  `held_qty` 가 `already_accounted` 와 동일하다 (newly_filled=0)
+- **Then**: 해당 주문은 `submitted` 로 유지되고, `orders` UPDATE 도
+  `audit_log` 도 발생하지 않아야 한다 (idempotent)
+
+## AC-029-12 (REQ-029-8) — positions = balance mirror
+
+- **Given**: `inquire-balance` 가 holdings `[(005930, qty=2, avg_cost=71000),
+  (000660, qty=1, avg_cost=150000)]` 를 반환하고, `positions` 테이블에는
+  이전에 보유했던 035720 (`qty=4`) 행이 남아 있다
+- **When**: fill-sync 가 positions mirror 를 수행하면
+- **Then**:
+  - `positions` 의 005930 = `(qty=2, avg_cost=71000)`, 000660 =
+    `(qty=1, avg_cost=150000)` 로 UPSERT 되어야 한다 (avg_cost 는 KIS
+    `pchs_avg_pric` 그대로, 정수 가중평균 재계산 없음)
+  - 035720 행은 balance 에 없으므로 `qty=0` 으로 업데이트되되 **DELETE 되지
+    않아야** 한다 (ADR-029-4 보존)
+  - `audit_log` 에 `event_type='POSITION_SYNCED'` event 가 기록되어야 한다
+
+## AC-029-13 (REQ-029-9) — Telegram 매매 알림 종목명 표시
+
+- **Given**: 매수 실행 후 `tg.trade_briefing` 이 호출되는 시점에 ticker
+  005930 의 주문이 막 제출되어 아직 `inquire-balance` holdings 에 없을 수 있다
+- **When**: orchestrator 가 `name=ticker_name("005930")` 을 전달하면
+- **Then**:
+  - 알림 메시지에 `005930 삼성전자 1주 매수 ...` 와 같이 종목명이 표시되어야
+    한다 (`name=None` 이 아님)
+  - `ticker_name()` 은 `pykrx.stock.get_market_ticker_name` 으로 해석하고
+    동일 ticker 재호출 시 `lru_cache` 로 네트워크 재호출 없이 반환해야 한다
+- **Given (fallback)**: pykrx 호출이 예외를 던지는 경우
+- **Then**: `context.TICKER_NAMES` static dict 로 폴백하고, 거기에도 없으면
+  `None` 을 반환해 trade_briefing 이 종목명 없이 정상 렌더링되어야 한다 (크래시
+  금지)
+
+## AC-029-14 (REQ-029-10) — 잔액 % 합계 100%
+
+- **Given**: balance 가 `cash_d2=8,787,740`, `stock_eval=3,128,400`,
+  `total_assets(tot_evlu_amt)=9,919,870` 를 반환한다 (라이브 관측값)
+- **When**: trade_briefing 의 `cash_pct` / `equity_pct` 가 계산되면
+- **Then**:
+  - `invest_basis = 8,787,740 + 3,128,400 = 11,916,140`
+  - `cash_pct = 8,787,740 / 11,916,140 ≈ 73.7%`,
+    `equity_pct = 3,128,400 / 11,916,140 ≈ 26.3%`
+  - **`cash_pct + equity_pct == 100.0%`** (±0.1 반올림 허용) 이어야 한다
+    (이전: 88.6% + 31.5% = 120% 버그 수정)
+  - headline `자산:` 금액은 `total_assets` (9,919,870) 그대로 표시 가능
+
+## AC-029-15 (REQ-029-10) — invest_basis=0 가드
+
+- **Given**: 신규 계좌로 `cash_d2=0`, `stock_eval=0` 이다 (invest_basis=0)
+- **Then**: 0 나눗셈 없이 `cash_pct=0.0`, `equity_pct=0.0` 으로 처리되어야 한다
+
+## v0.2.0 Edge Cases
+
+### EC-029-7 — held_qty < already_accounted (외부 매도 / 데이터 reset)
+
+- **Given**: `positions.already_accounted` 합이 4 인데 balance held_qty 가
+  2 로 줄었다 (사용자가 KIS 웹포털에서 직접 매도 등)
+- **Then**: `newly_filled = max(0, held_qty - already_accounted)` 로 clamp 하여
+  음수 배분이 발생하지 않아야 한다. submitted BUY 주문은 전이되지 않고, positions
+  mirror 가 balance 의 실제 `qty=2` 로 정정되어야 한다 (balance = source of truth)
+
+### EC-029-8 — ticker held in balance, 그러나 submitted 주문 없음 (수기 매수)
+
+- **Given**: balance 에 `(078930, qty=10)` 이 있으나 로컬 `orders` 에 078930
+  submitted BUY 가 없다 (KIS 웹 직접 매수)
+- **Then**: orders 전이는 발생하지 않고, positions mirror 만 078930 을 UPSERT
+  해야 한다 (positions 는 항상 balance 를 미러). orders 와 positions 는 독립적
+  으로 처리됨
+
+### EC-029-9 — pykrx 종목명 해석 캐시 일관성
+
+- **Given**: 동일 ticker 005930 에 대해 `ticker_name()` 이 한 cycle 에서 여러 번
+  호출된다
+- **Then**: pykrx 네트워크 호출은 최초 1 회만 발생하고 이후는 `lru_cache` 에서
+  반환되어야 한다 (테스트는 pykrx 를 mock 하여 호출 횟수 1 회 검증)
+
+## v0.2.0 File-level Test Mapping
+
+| Test file | Covers |
+|---|---|
+| `tests/kis/test_fills_balance_reconcile.py` (NEW) | REQ-029-6/7/8 — FIFO attribution, positions mirror, no inquire-daily-ccld |
+| `tests/kis/test_account_balance_basis.py` (NEW) | REQ-029-10 — `invest_basis` field, pct consistency, zero guard |
+| `tests/data/test_ticker_names.py` (NEW) | REQ-029-9 — pykrx resolver, lru_cache, fallback chain |
+| `tests/alerts/test_trade_briefing_pct.py` (NEW) | REQ-029-10 — cash_pct+equity_pct==100, name rendered |
+| `tests/scheduler/test_fill_sync_cron.py` (UPDATE) | cron now drives balance reconcile |
+| `tests/cli/test_cli_fill_sync.py` (UPDATE) | `--dry-run` previews balance-reconcile transitions, zero DB writes |
+
+---
+
 ## Backward Compatibility
 
 ### BC-029-1 — 기존 cron 및 persona 시스템 무회귀

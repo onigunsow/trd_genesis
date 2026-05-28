@@ -142,6 +142,31 @@ class TestRunFillSyncWrapper:
         client_cls.assert_called_once_with(fake_settings.trading_mode)
         fill_sync_fn.assert_called_once_with(fake_client, dry_run=False)
 
+    def test_run_fill_sync_drives_balance_reconcile(self):
+        """SPEC-029 v0.2.0: the cron path resolves to balance reconcile.
+
+        ``fill_sync`` now delegates to ``reconcile_from_balance``; patch the
+        latter to prove the scheduler's data source is inquire-balance, not the
+        deprecated inquire-daily-ccld.
+        """
+        from trading.scheduler import runner
+
+        with (
+            patch("trading.config.get_settings", return_value=MagicMock(trading_mode="PAPER")),
+            patch("trading.kis.client.KisClient", return_value=MagicMock()),
+            patch(
+                "trading.kis.fills.reconcile_from_balance",
+                return_value={
+                    "queried": 0, "transitioned": 0, "errors": 0, "dry_run": False,
+                },
+            ) as reconcile,
+        ):
+            runner._run_fill_sync()
+
+        reconcile.assert_called_once()
+        _, kwargs = reconcile.call_args
+        assert kwargs.get("dry_run") is False
+
     def test_run_fill_sync_logs_result_counts(self, caplog):
         """Logged INFO line must contain queried / transitioned / errors values."""
         from trading.scheduler import runner

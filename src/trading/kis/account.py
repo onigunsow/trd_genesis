@@ -61,14 +61,26 @@ def balance(client: KisClient) -> dict[str, Any]:
     nrcvb_buy_amt = int(summary.get("nrcvb_buy_amt", "0") or 0)  # 미체결 매수금 (장중)
     # Effective buyable: D+2 정산금 - 미체결 매수 차감
     buyable_effective = max(0, nxdy_buyable - nrcvb_buy_amt)
+    # 주식평가금액 (scts_evlu_amt)
+    stock_eval = int(summary.get("scts_evlu_amt", "0") or 0)
+
+    # tot_evlu_amt (총자산평가금액) is KIS's full headline valuation: it folds in
+    # D+2 settlement timing and unrealised P&L, so it does NOT equal
+    # dnca_tot_amt + scts_evlu_amt (verified live: 8,787,740 + 3,128,400 =
+    # 11,916,140 != 9,919,870). For consistent allocation percentages that sum
+    # to 100% we expose invest_basis = cash_d2 + stock_eval as the single
+    # denominator both 현금 % and 주식 % are computed against (REQ-029-10).
+    total_assets = int(summary.get("tot_evlu_amt", "0") or 0)
+    invest_basis = cash_d2 + stock_eval
 
     return {
         "cash_d2": cash_d2,                                          # 예수금 총액
         "buyable": nxdy_buyable,                                     # KIS의 명목 매수가능
         "buyable_effective": buyable_effective,                      # 미체결 매수 차감 후 실제 가용 (REQ-KIS-02-11)
         "nrcvb_buy_amt": nrcvb_buy_amt,                              # 현재 묶여있는 미체결 매수금
-        "total_assets": int(summary.get("tot_evlu_amt", "0") or 0),  # 총자산평가금액
-        "stock_eval": int(summary.get("scts_evlu_amt", "0") or 0),   # 주식평가금액
+        "total_assets": total_assets,    # 총자산평가금액 (headline only)
+        "stock_eval": stock_eval,        # 주식평가금액
+        "invest_basis": invest_basis,    # cash_d2 + stock_eval (% 분모, REQ-029-10)
         "pnl_total": int(summary.get("evlu_pfls_smtl_amt", "0") or 0),
         "holdings": holdings,
         "raw": raw,

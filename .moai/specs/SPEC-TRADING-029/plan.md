@@ -421,3 +421,297 @@ Phase E (Live KIS API verification + retroactive sync of today's 12 orders)
 - Phase A → B → C 는 일반적 TDD 사이클 직렬
 - Phase E 는 redeploy 후 실거래 paper API 검증 — 본 SPEC 의 최종 acceptance gate
 - 모든 phase 는 기존 SPEC-022 / 023 / 025 / 026 의 동작 회귀 없이 진행
+
+---
+
+# v0.2.0 Redesign Plan (REDESIGN — supersedes data-source parts of Phase A–E)
+
+> v0.1.0 Phase A–E 는 inquire-daily-ccld 기반이었고 paper 환경에서 실패했다.
+> v0.2.0 은 검증된 `inquire-balance` 로 데이터 소스를 전환하고, 종목명 표시 +
+> 잔액 % 버그를 흡수한다. Methodology: **TDD (RED → GREEN → REFACTOR)**.
+> migration `022_add_filled_at.sql` 는 **이미 적용됨 — 유지** (Phase D 재실행 불필요).
+
+## v0.2.0 Architecture Decision Records
+
+### ADR-029-6: 데이터 소스 = inquire-balance (inquire-daily-ccld 폐기)
+
+**결정**: `inquire-daily-ccld` (VTTC8001R) 폐기, `inquire-balance` (VTTC8434R)
+로 전환. `src/trading/kis/account.py:balance()` 재사용.
+
+**Why**: 2026-05-28 라이브에서 inquire-daily-ccld 가 paper 환경 모든 CCLD_DVSN
+값에 대해 `output1=[]` + msg_cd 70070000 ("모의투자 조회 내역 없음") 확정. 동일
+계좌의 inquire-balance 는 보유 5 종목 정상 반환.
+
+**Trade-off**: balance 는 주문별 체결이 아닌 ticker 누적 보유만 제공 → 주문 ↔
+체결 1:1 매핑 불가. FIFO attribution (ADR-029-7) 로 우회.
+
+### ADR-029-7: FIFO attribution 으로 orders 전이
+
+**결정**: ticker 별 `newly_filled = max(0, held_qty - already_accounted)` 를
+계산해 submitted BUY 주문에 oldest-first 로 배분. `already_accounted` =
+해당 ticker 의 이미 filled/partial 된 row 들의 `fill_qty` 합.
+
+**Why**: balance 가 누적 보유만 주므로, 직전 sync 까지 인식한 체결분을 빼야 이번
+cycle 의 신규 체결분을 안다. FIFO 는 가장 직관적이고 결정론적.
+
+**Trade-off**: 동일 ticker 동시 다발 주문의 정확한 주문-체결 매핑은 보장 못 함
+(KIS 가 부분 체결을 어느 주문에 귀속시키는지 알 수 없음). paper 중기 horizon
+에서 acceptable. 정밀 매핑이 필요하면 inquire-psbl-rvsecncl 도입 (deferred).
+
+### ADR-029-8: positions = balance mirror (정수 가중평균 폐기)
+
+**결정**: `positions` 를 매 sync 마다 balance holdings 의 직접 미러로 UPSERT.
+`avg_cost = KIS pchs_avg_pric`. balance 에 없는 보유 ticker 는 `qty=0` (행 보존).
+v0.1.0 의 정수 가중평균 재구성 (ADR-029-5) **무효화**.
+
+**Why**: balance 가 source of truth 이므로 로컬에서 평단가를 재계산할 이유가
+없다. drift 제거 + 코드 단순화. positions 가 항상 KIS 실제 보유와 일치.
+
+**Trade-off**: positions 가 balance polling 주기에 종속 (60s). 즉시성은 약간
+떨어지나 mid-term horizon 에서 무의미.
+
+### ADR-029-9: 종목명 = pykrx resolver + lru_cache
+
+**결정**: `trading.data.ticker_names.ticker_name(ticker)` 신설.
+`pykrx.stock.get_market_ticker_name` + `functools.lru_cache`. 폴백 체인:
+pykrx → `context.TICKER_NAMES` static dict → `None`.
+
+**Why**: 매매 알림 시점에 갓 제출된 주문은 balance holdings 에 아직 없을 수
+있어 balance `prdt_name` 이 unreliable. pykrx 는 KRX 전 종목을 독립 해석.
+pykrx 는 이미 의존성 (`pykrx_adapter.py`), KRX_ID/KRX_PW 설정 완료.
+
+**Trade-off**: pykrx 첫 호출 지연 (lru_cache 로 1 회만). 네트워크 실패 시 폴백.
+
+### ADR-029-10: 잔액 % 분모 = invest_basis (cash_d2 + stock_eval)
+
+**결정**: `balance()` 반환 dict 에 `invest_basis = cash_d2 + stock_eval` 추가.
+callers 는 `cash_pct = cash_d2/invest_basis`, `equity_pct = stock_eval/invest_basis`
+로 계산 → 합계 100% 보장. headline `total_assets` (tot_evlu_amt) 는 그대로 표시.
+
+**Why**: KIS `tot_evlu_amt ≠ dnca_tot_amt + scts_evlu_amt` (검증:
+8,787,740 + 3,128,400 = 11,916,140 ≠ 9,919,870). 분자와 분모가 다른 필드를
+쓰면 합계 ≠ 100%. 일관된 분모로 해결. 2 개 caller site 중복 방지 위해 balance()
+가 basis 를 제공.
+
+**Trade-off**: invest_basis 는 KIS 의 "총자산"과 다름 (미수/D+2/미실현손익 차이).
+이는 의도된 것 — % 는 "투자 원금 기준 배분"을, headline 금액은 "KIS 총평가"를
+각각 표현. tot_evlu_amt 의 진짜 의미를 account.py 주석에 명시.
+
+---
+
+## Phase F — TDD RED (v0.2.0 failing tests)
+
+### Scope
+balance-reconcile / positions-mirror / ticker-name / pct 의 failing 테스트 작성.
+
+### Pre-conditions
+- v0.1.0 의 `tests/kis/test_fills_inquiry.py` / `test_fills_order_transition.py` /
+  `tests/db/test_positions_upsert.py` 검토 후, inquire-daily-ccld 기반 테스트는
+  **삭제 또는 balance-reconcile 기반으로 재작성** (오래된 가정 제거)
+- `account.balance()` 의 holdings/summary 필드 read-only 재확인
+
+### Milestones (priority-based)
+
+#### Primary Goal — balance reconcile 테스트
+`tests/kis/test_fills_balance_reconcile.py` (NEW):
+- `test_balance_reconcile_uses_inquire_balance_not_daily_ccld`
+  (account.balance 가 호출되고 inquire-daily-ccld 는 호출 안 됨 — mock assert)
+- `test_single_submitted_buy_fills_when_held_qty_matches` (AC-029-9)
+- `test_fifo_allocation_across_two_submitted_orders` (AC-029-10)
+- `test_partial_when_allocation_lt_order_qty` (AC-029-10)
+- `test_noop_when_newly_filled_zero` (AC-029-11)
+- `test_held_qty_less_than_accounted_clamps_to_zero` (EC-029-7)
+- `test_no_cancel_or_reject_autotransition` (balance-only scope)
+
+#### Primary Goal — positions mirror 테스트
+같은 파일 또는 `tests/kis/test_positions_mirror.py`:
+- `test_positions_upsert_from_balance_holdings` (AC-029-12)
+- `test_avg_cost_taken_from_pchs_avg_pric_not_recomputed` (AC-029-12)
+- `test_unheld_ticker_zeroed_not_deleted` (AC-029-12)
+- `test_position_synced_audit_emitted`
+- `test_held_ticker_without_local_order_only_mirrors_positions` (EC-029-8)
+
+#### Secondary Goal — ticker name + pct 테스트
+- `tests/data/test_ticker_names.py` (NEW): pykrx mock → name 반환,
+  lru_cache 1 회 호출 (EC-029-9), 예외 시 TICKER_NAMES 폴백, 최종 None (AC-029-13)
+- `tests/kis/test_account_balance_basis.py` (NEW): `invest_basis` 필드 존재,
+  값 = cash_d2 + stock_eval, invest_basis=0 가드 (AC-029-15)
+- `tests/alerts/test_trade_briefing_pct.py` (NEW): cash_pct+equity_pct==100
+  (AC-029-14), name 이 메시지에 렌더링됨 (AC-029-13)
+
+### Validation
+- 전체 신규 테스트 RED. 기존 비관련 suite green 유지.
+
+### Risks
+- balance holdings 의 정확한 필드 (`hldg_qty`, `pchs_avg_pric`) 는 account.py
+  에서 이미 검증됨 (라이브 5 종목 반환) → v0.1.0 의 HIGH-risk 필드 미검증 문제
+  해소. `@MX:WARN` 불필요.
+
+---
+
+## Phase G — TDD GREEN (rewrite fills.py + helpers)
+
+### Scope
+`src/trading/kis/fills.py` **전면 재작성** + `account.py` invest_basis 추가 +
+`ticker_names.py` 신설. Phase F 테스트 전부 GREEN.
+
+### Milestones (priority-based)
+
+#### Primary Goal — `src/trading/kis/fills.py` REWRITE
+신규 구조 (제안):
+```
+def reconcile_from_balance(client, *, dry_run=False) -> dict:
+    """v0.2.0 orchestrator. balance() → FIFO orders transition + positions mirror.
+    Replaces v0.1.0 inquire_fills_today/apply_fill_to_order/apply_fill_to_position."""
+
+def _transition_orders_fifo(holdings, conn, *, dry_run) -> list[dict]:
+    """Per-ticker: newly_filled = max(0, held_qty - already_accounted);
+    allocate oldest-first to submitted BUY orders (FOR UPDATE)."""
+
+def _mirror_positions(holdings, conn, *, dry_run) -> int:
+    """UPSERT each held ticker (avg_cost=pchs_avg_pric); zero out unheld rows."""
+```
+- 기존 `fill_sync` 진입점 이름 유지 가능 (scheduler/CLI 호환) →
+  `fill_sync(client, *, dry_run)` 가 내부적으로 `reconcile_from_balance` 호출.
+  또는 scheduler/CLI 의 import 를 새 이름으로 갱신 (REFACTOR 단계 결정).
+- `inquire_fills_today` / `apply_fill_to_order` / `apply_fill_to_position` /
+  `FillRow` / `_FIRST_CALL` / inquire-daily-ccld 상수 **제거**.
+- `@MX:ANCHOR` on `reconcile_from_balance` (fan_in: cron + CLI + tests).
+- `@MX:NOTE` on FIFO attribution block (배분 규칙 = SPEC-029 v0.2.0 REQ-029-7).
+- v0.1.0 의 `@MX:WARN` (KIS 필드 provisional) **제거** — balance 필드는 검증됨.
+
+#### Primary Goal — `src/trading/kis/account.py`
+- `balance()` 반환 dict 에 `"invest_basis": cash_d2 + stock_eval` 추가.
+- `tot_evlu_amt` 의 의미 (미실현손익/ D+2 포함, basis 와 다름) 주석 보강.
+- 기존 필드 (`cash_d2`, `stock_eval`, `holdings[].name=prdt_name`,
+  `holdings[].avg_cost=pchs_avg_pric`, `holdings[].qty=hldg_qty`) 는 그대로 —
+  변경 없음, 검증만.
+
+#### Secondary Goal — `src/trading/data/ticker_names.py` (NEW)
+```
+@lru_cache(maxsize=2048)
+def ticker_name(ticker: str) -> str | None:
+    """pykrx → context.TICKER_NAMES → None. Lazy pykrx import."""
+```
+
+### Validation
+- Phase F 전부 GREEN. 기존 suite 회귀 없음.
+- `ruff check` + (가능 시) `pyright` clean.
+
+### Risks
+- `fill_sync` 이름 유지 vs 신규 이름: scheduler/CLI import 영향. GREEN 에서
+  내부 위임으로 호환, REFACTOR 에서 정리.
+
+---
+
+## Phase H — Wire callers (orchestrator + telegram) + CLI/cron update
+
+### Scope
+종목명 + 잔액 % fix 를 caller site 에 연결. cron/CLI 가 balance reconcile 호출.
+
+### Milestones (priority-based)
+
+#### Primary Goal — orchestrator 2 개 caller site
+`src/trading/personas/orchestrator.py` line ~1036, ~1460 의 `tg.trade_briefing(...)`:
+- `name=None` → `name=ticker_name(sig["ticker"])`
+- `ca_pct` / `eq_pct` 계산을 `total_assets` 분모 → `bal_after["invest_basis"]`
+  분모로 교체 (invest_basis=0 가드 포함)
+
+#### Primary Goal — `src/trading/alerts/telegram.py`
+- `trade_briefing` 시그니처는 **변경 없음** (이미 `name` + `cash_pct` +
+  `equity_pct` 수용/렌더). caller 가 일관된 값을 넘기도록 하는 것으로 충분.
+- (선택) 방어적으로 trade_briefing 내부에서 `cash_pct + equity_pct` 가 100 을
+  크게 벗어나면 경고 로그 — REFACTOR 판단.
+
+#### Primary Goal — `src/trading/personas/context.py`
+- `TICKER_NAMES` 를 "offline fallback only" 로 주석 강등. (resolver 가 1차 소스)
+- context 내 종목명 lookup 이 있으면 `ticker_name()` 경유로 변경.
+
+#### Secondary Goal — scheduler / CLI
+- `src/trading/scheduler/runner.py`: `fill_sync` cron 이 balance reconcile 를
+  호출하도록 유지/갱신 (cron 자체는 이미 등록됨 — 호출 대상만 검증).
+- `src/trading/cli.py`: `trading fill-sync [--dry-run] [--start]` 가 balance
+  reconcile 를 호출하도록 갱신. (`--start` 는 balance 에 의미 없으므로 deprecate
+  또는 no-op 처리 — balance 는 항상 현재 시점. REFACTOR 에서 결정.)
+
+### Validation
+- `tests/scheduler/test_fill_sync_cron.py` (UPDATE), `tests/cli/test_cli_fill_sync.py`
+  (UPDATE) GREEN.
+- `tests/alerts/test_trade_briefing_pct.py` GREEN.
+
+### Risks
+- `--start YYYYMMDD` flag 가 balance 모델에서 무의미해짐 → 사용자 혼동 방지 위해
+  명확한 deprecation 메시지.
+
+---
+
+## Phase I — REFACTOR + simplify
+
+### Scope
+중복 제거, 네이밍 정리 (`fill_sync` vs `reconcile_from_balance`), pct 계산
+헬퍼 추출 여부 검토.
+
+### Milestones
+- pct 계산이 2 caller site 에 중복되면 작은 헬퍼로 추출 (`invest_basis` 기반).
+- dead code (v0.1.0 잔재) 완전 제거 확인.
+- 전체 suite green 유지, coverage ≥ 85%.
+
+---
+
+## Phase J — Live verification (paper, real KIS balance)
+
+### Scope
+redeploy 후 첫 reconcile cycle 이 paper 모드 보유 5 종목으로 submitted orders 를
+실제 전이하고 positions 를 미러하는지 검증.
+
+### Milestones
+- 첫 cycle 후 `SELECT status, COUNT(*) FROM orders WHERE side='buy' AND
+  DATE(ts)=current_date GROUP BY 1` 가 submitted 감소 + filled/partial 증가
+- `SELECT * FROM positions WHERE qty > 0` 가 balance 5 종목과 일치
+- Telegram 매매 알림에 종목명 표시 + `현금 % + 주식 % = 100%` 확인
+- SPEC-022/023 universe expansion 이 positions 반영 (이전: 0 rows)
+
+### Validation
+- audit_log 에 ORDER_FILLED / ORDER_PARTIAL / POSITION_SYNCED event 발생
+- 회귀 0 건
+
+---
+
+## v0.2.0 EXACT File-Change List (for /moai:2-run)
+
+| File | Action | What |
+|---|---|---|
+| `src/trading/kis/fills.py` | **REWRITE** | balance reconcile + FIFO + positions mirror; remove inquire-daily-ccld, FillRow, weighted-avg, @MX:WARN |
+| `src/trading/kis/account.py` | **EDIT** | add `invest_basis` field; document `tot_evlu_amt`; verify hldg_qty/pchs_avg_pric (no behavior change) |
+| `src/trading/data/ticker_names.py` | **NEW** | `ticker_name()` pykrx + lru_cache + fallback chain |
+| `src/trading/personas/context.py` | **EDIT** | demote TICKER_NAMES to fallback; route name lookups through resolver |
+| `src/trading/alerts/telegram.py` | **EDIT (minimal)** | `trade_briefing` signature unchanged; optional defensive pct-sum log |
+| `src/trading/personas/orchestrator.py` | **EDIT** | both caller sites (~1036, ~1460): `name=ticker_name(...)`, pct denominator → `invest_basis` |
+| `src/trading/scheduler/runner.py` | **EDIT (verify)** | `fill_sync` cron now drives balance reconcile |
+| `src/trading/cli.py` | **EDIT** | `fill-sync` subcommand drives balance reconcile; handle/deprecate `--start` |
+| `src/trading/db/migrations/022_add_filled_at.sql` | **KEEP** | already applied — no change |
+| `tests/kis/test_fills_balance_reconcile.py` | **NEW** | REQ-029-6/7/8 |
+| `tests/kis/test_positions_mirror.py` | **NEW** (or fold into above) | REQ-029-8 |
+| `tests/kis/test_account_balance_basis.py` | **NEW** | REQ-029-10 |
+| `tests/data/test_ticker_names.py` | **NEW** | REQ-029-9 |
+| `tests/alerts/test_trade_briefing_pct.py` | **NEW** | REQ-029-10 + name render |
+| `tests/scheduler/test_fill_sync_cron.py` | **UPDATE** | cron → balance reconcile |
+| `tests/cli/test_cli_fill_sync.py` | **UPDATE** | `--dry-run` zero-write on balance reconcile |
+| `tests/kis/test_fills_inquiry.py` (v0.1.0) | **DELETE/REWRITE** | inquire-daily-ccld assumptions obsolete |
+| `tests/kis/test_fills_order_transition.py` (v0.1.0) | **DELETE/REWRITE** | replaced by balance reconcile tests |
+| `tests/db/test_positions_upsert.py` (v0.1.0) | **DELETE/REWRITE** | weighted-avg arithmetic removed |
+
+## v0.2.0 Research note — inquire-psbl-rvsecncl (정정취소가능주문조회)
+
+Context7 / GitHub `koreainvestment/open-trading-api` 조사 결과
+(`examples_llm/domestic_stock/inquire_psbl_rvsecncl/`):
+
+- Path: `/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl`, tr_id `TTTC0084R`
+  (live). 공식 예제에 **paper(V) tr_id 가 문서화되어 있지 않음**.
+- Response fields 확인: `odno`, `orgn_odno`, `pdno`, `ord_qty`, `tot_ccld_qty`,
+  `psbl_qty` (정정취소가능수량 = 사실상 미체결 잔량), `sll_buy_dvsn_cd`,
+  `ord_dvsn_cd` 등 — 정밀 partial/cancel 구분에 충분한 필드를 가짐.
+- **판단**: 이 엔드포인트는 inquire-daily-ccld 와 같은 "주문/체결 조회" 계열로,
+  paper 환경에서 동일하게 빈 응답일 위험이 매우 높다. 사용자 선호(단순
+  balance-only)에 따라 **현 시점 미도입 (deferred)**. 향후 미체결 stale order
+  정리 / 정밀 체결가가 필요해질 때 별도 SPEC 에서 paper 가용성 검증 후 재고.

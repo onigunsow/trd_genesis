@@ -232,9 +232,10 @@ def _cmd_fill_sync(rest: list[str]) -> int:
     Flags
     -----
     --dry-run         Preview intended transitions without DB writes.
-    --start YYYYMMDD  Accepted-but-not-yet-implemented in Phase C; warns and
-                      continues using today's date (KST). Reserved for a
-                      future iteration that needs multi-day historical sync.
+    --start YYYYMMDD  Accepted but ignored. SPEC-029 v0.2.0 reconciles against
+                      the current KIS inquire-balance snapshot, which has no
+                      historical date dimension, so --start has no effect; it
+                      warns and continues. Kept for forward CLI compatibility.
 
     Exit codes: 0 on success, 1 on KisError / RuntimeError. Any unknown flag
     emits a WARNING but does not fail the command (forward-compat with the
@@ -253,8 +254,8 @@ def _cmd_fill_sync(rest: list[str]) -> int:
         if arg == "--start":
             value = rest[i + 1] if i + 1 < len(rest) else "<missing>"
             logging.warning(
-                "trading fill-sync: --start %s flag not yet implemented in v1; "
-                "using today's KST date",
+                "trading fill-sync: --start %s ignored — v0.2.0 reconciles the "
+                "current KIS balance snapshot (no historical date dimension)",
                 value,
             )
             skip_next = True

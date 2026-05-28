@@ -22,6 +22,10 @@ LOG = logging.getLogger(__name__)
 # Current 5 tickers (005930, 000660, 035420, 035720, 373220) were seeded
 # 2026-05-04 as bootstrap defaults.
 DEFAULT_WATCHLIST = ["005930", "000660", "035420", "035720", "373220"]
+# SPEC-029 v0.2.0 (REQ-029-9): offline fallback ONLY. The primary ticker-name
+# source is trading.data.ticker_names.ticker_name() (pykrx, full KRX universe);
+# this static 5-entry dict is consulted only when pykrx is unavailable. The
+# dynamic universe (SPEC-022/023) makes a hardcoded dict insufficient on its own.
 TICKER_NAMES = {
     "005930": "삼성전자",
     "000660": "SK하이닉스",
