@@ -8,17 +8,165 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from typing import Any
 
 from anthropic import Anthropic
 
 from trading.alerts.telegram import system_briefing
-from trading.config import get_settings
+from trading.config import get_settings, project_root
 from trading.db.session import connection
-from trading.personas.base import block_if_cli_only_mode
+from trading.kis.account import balance
+from trading.kis.client import KisClient
+from trading.personas.base import block_if_cli_only_mode, call_persona_via_cli
 
 LOG = logging.getLogger(__name__)
+
+# SPEC-TRADING-030 REQ-030-1(c): tunable digest caps. Macro file is small
+# (~9KB) so we keep more stories; micro is large (~38KB) so we cap tighter and
+# mark the omitted tail. Both are sorted by Impact (5..1) before truncation.
+N_MACRO = 10
+N_MICRO = 12
+
+# REQ-030-9a: an intelligence_*.md is considered usable only when it actually
+# contains parseable stories. ``_read_context_md`` itself returns a placeholder
+# string for a missing file; a present-but-empty (or stale weekend cadence)
+# file yields zero stories which we surface as a section placeholder.
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-TRADING-030 — intelligence digest (REQ-030-1)                          #
+# --------------------------------------------------------------------------- #
+
+# Story header: ``### [투자 주목] <title> (Impact: N/5)``. The title itself may
+# embed parenthetical text (including a literal "(Impact: 미정)"), so we anchor
+# on the LAST ``(Impact: N/5)`` on the line and take everything before it as the
+# title. ``$`` anchors to end-of-line so an embedded impact-like token is never
+# mistaken for the real one.
+_HEADER_RE = re.compile(r"^###\s*\[투자 주목\]\s*(.+?)\s*\(Impact:\s*(\d+)\s*/\s*5\)\s*$")
+_META_RE = re.compile(r"Keywords:\s*(.+?)\s*_?\s*$")
+_STRATEGY_RE = re.compile(r"^→\s*(.+?)\s*$")
+
+
+def _read_context_md(name: str) -> str:
+    """Read a ``data/contexts/*.md`` file (read-only reuse, REQ-030-8).
+
+    Mirrors ``trading.personas.context._read_md``: returns a human-readable
+    placeholder string when the file is absent rather than raising, so the
+    daily report never crashes on a missing intelligence file.
+    """
+    p = project_root() / "data" / "contexts" / name
+    if not p.exists():
+        return f"_({name} 미생성 — cron 미실행 또는 첫 운영)_"
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"_({name} 읽기 실패: {e})_"
+
+
+def _parse_intel_stories(md: str) -> list[dict[str, Any]]:
+    """Parse ``[투자 주목]`` stories from an intelligence_*.md document.
+
+    REQ-030-1(b): each story preserves title / impact / keywords / strategy(→).
+    Returns stories sorted by Impact descending (stable for equal impact).
+    """
+    lines = md.splitlines()
+    stories: list[dict[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        m = _HEADER_RE.match(lines[i].strip())
+        if not m:
+            i += 1
+            continue
+        title = m.group(1).strip()
+        impact = int(m.group(2))
+        keywords = ""
+        strategy = ""
+        # Scan the next few lines for the meta (Keywords) and strategy (→) rows,
+        # stopping at the next story header or a blank gap.
+        j = i + 1
+        while j < len(lines) and j <= i + 4:
+            stripped = lines[j].strip()
+            if stripped.startswith("###"):
+                break
+            km = _META_RE.search(stripped)
+            if km and not keywords:
+                keywords = km.group(1).strip().rstrip("_").strip()
+            sm = _STRATEGY_RE.match(stripped)
+            if sm and not strategy:
+                strategy = sm.group(1).strip()
+            j += 1
+        stories.append(
+            {"title": title, "impact": impact, "keywords": keywords, "strategy": strategy}
+        )
+        i = j
+    # REQ-030-1(a): Impact descending. ``sorted`` is stable, preserving source
+    # order among equal-impact stories.
+    stories.sort(key=lambda s: s["impact"], reverse=True)
+    return stories
+
+
+def _intel_digest_stories(md: str, top_n: int) -> tuple[list[dict[str, Any]], str]:
+    """Return (top-N stories by Impact, truncation marker).
+
+    REQ-030-1(a): when more than ``top_n`` stories exist, the surplus is dropped
+    and a ``"(+M건 저영향 생략)"`` marker is produced. Marker is "" when nothing
+    was dropped.
+    """
+    stories = _parse_intel_stories(md)
+    if len(stories) <= top_n:
+        return stories, ""
+    omitted = len(stories) - top_n
+    return stories[:top_n], f"(+{omitted}건 저영향 생략)"
+
+
+def _gather_intelligence() -> dict[str, Any]:
+    """Collect macro + micro intelligence digests (REQ-030-1).
+
+    Read-only reuse of the pre-computed intelligence_*.md (REQ-030-8). A missing
+    or empty file degrades that section to ``status='missing'`` with no stories
+    (REQ-030-9a); the narrative generator marks the corresponding 총평 section.
+    """
+    out: dict[str, Any] = {}
+    for key, fname, cap in (
+        ("macro", "intelligence_macro.md", N_MACRO),
+        ("micro", "intelligence_micro.md", N_MICRO),
+    ):
+        md = _read_context_md(fname)
+        stories, marker = _intel_digest_stories(md, top_n=cap)
+        status = "ok" if stories else "missing"
+        out[key] = {"status": status, "stories": stories, "marker": marker}
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-TRADING-030 — portfolio collection (REQ-030-2)                          #
+# --------------------------------------------------------------------------- #
+
+def _collect_portfolio() -> dict[str, Any]:
+    """Collect KIS holdings + P&L via ``account.balance`` (REQ-030-2).
+
+    REQ-030-9b: on any failure (``KisError`` or otherwise) returns a safe
+    placeholder (``status='error'``, empty holdings) instead of propagating, so
+    the 16:00 cron is never crashed by a live KIS outage.
+    """
+    try:
+        client = KisClient(get_settings().trading_mode)
+        bal = balance(client)
+    except Exception as e:
+        # REQ-030-9b: never crash the daily report on a live KIS outage.
+        LOG.warning("daily report portfolio fetch failed: %s", e)
+        return {"status": "error", "holdings": [], "error": str(e)[:200]}
+    return {
+        "status": "ok",
+        "holdings": bal.get("holdings", []),
+        "total_assets": bal.get("total_assets", 0),
+        "cash_d2": bal.get("cash_d2", 0),
+        "stock_eval": bal.get("stock_eval", 0),
+        "invest_basis": bal.get("invest_basis", 0),
+        "pnl_total": bal.get("pnl_total", 0),
+    }
 
 
 def _gather_today() -> dict[str, Any]:
@@ -133,6 +281,9 @@ def _gather_today() -> dict[str, Any]:
         "reflection_stats": reflection_stats,
         "model_breakdown": model_breakdown,
         "auto_expansion_tickers": auto_expansion_tickers,
+        # SPEC-TRADING-030: qualitative-review source material.
+        "intelligence": _gather_intelligence(),  # REQ-030-1
+        "portfolio": _collect_portfolio(),        # REQ-030-2
     }
 
 
@@ -150,7 +301,6 @@ def _fallback_text(data: dict[str, Any], skip_reason: str | None = None) -> str:
     persona_cost_total = sum(float(r.get("cost") or 0) for r in runs)
     in_tok_total = sum(int(r.get("in_tok") or 0) for r in runs)
     cache_read_total = sum(int(r.get("cache_read") or 0) for r in runs)
-    cache_create_total = sum(int(r.get("cache_create") or 0) for r in runs)
     cache_hit_pct = (cache_read_total / in_tok_total * 100) if in_tok_total else 0.0
     risk_str = ", ".join(f"{r['verdict']}={r['n']}" for r in risk) or "—"
 
@@ -184,7 +334,6 @@ def _fallback_text(data: dict[str, Any], skip_reason: str | None = None) -> str:
     # SPEC-010 REQ-COST-04-1: Per-model cost breakdown
     model_lines: list[str] = []
     for mb in model_breakdown:
-        model_name = (mb.get("model") or "unknown").split("-")[-1]  # e.g., "haiku-4-5" -> "4-5"
         short_name = mb.get("model", "unknown")
         if "opus" in short_name:
             short_name = "Opus"
@@ -206,6 +355,12 @@ def _fallback_text(data: dict[str, Any], skip_reason: str | None = None) -> str:
         joined = ", ".join(auto_expansion)
         auto_exp_line = f"오늘 auto-expansion: {len(auto_expansion)}건 (티커: {joined})\n"
 
+    # SPEC-TRADING-030: the skip-reason line is part of the DEGRADE path only.
+    # When ``_fallback_text`` is reused as the operational-metrics block beneath
+    # a successfully generated narrative, ``skip_reason`` is None and we must NOT
+    # print "(LLM 요약 생략)" — that would falsely imply the narrative failed.
+    skip_line = f"\n({skip_reason})" if skip_reason else ""
+
     return (
         f"[일일 리포트 · {data['today']}]\n"
         f"매매: 매수 {n_buys} / 매도 {n_sells} (총 {len(orders)}건, 체결 {cost.get('executed_count', 0)}건)\n"
@@ -219,14 +374,21 @@ def _fallback_text(data: dict[str, Any], skip_reason: str | None = None) -> str:
         f"Observability: tool_calls_total={tool_total}, tool_failures={tool_failures}, "
         f"reflection_rounds={refl_total}, reflection_success_rate={refl_success_rate:.1f}%\n"
         f"{auto_exp_line}"
-        f"누적 (7D/30D): 매매 {week_orders}/{month_orders}건, 수수료 {week_fee:,}/{month_fee:,}원\n"
-        f"({skip_reason or 'LLM 요약 생략'})"
+        f"누적 (7D/30D): 매매 {week_orders}/{month_orders}건, 수수료 {week_fee:,}/{month_fee:,}원"
+        f"{skip_line}"
     )
 
 
 @block_if_cli_only_mode
 def _llm_text(data: dict[str, Any]) -> str:
-    """Generate the daily-report Korean summary via Sonnet.
+    """DEPRECATED (SPEC-TRADING-030): direct-API daily summary.
+
+    Superseded by ``_narrative_text`` which runs over the zero-cost CLI
+    subscription path and therefore works under ``cli_only_mode``.
+    ``generate_and_send`` no longer calls this function. It is retained (still
+    guarded by ``@block_if_cli_only_mode``) only so existing SPEC-016 tests and
+    any non-cli-only deployment keep a working direct-API path; do NOT add new
+    callers (REQ-030-7).
 
     SPEC-TRADING-016 REQ-016-1-3: This is one of two remaining direct API
     callers identified during the SPEC-015 audit. The
@@ -263,6 +425,98 @@ def _llm_text(data: dict[str, Any]) -> str:
     return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
 
+# --------------------------------------------------------------------------- #
+# SPEC-TRADING-030 — CLI-subscription narrative generator (REQ-030-3/4)       #
+# --------------------------------------------------------------------------- #
+
+# @MX:NOTE: [AUTO] The daily-report narrative is generated through the CLI
+# subscription bridge (cost=0) instead of a direct Anthropic API call, because
+# the system runs in cli_only_mode (SPEC-016) which blocks direct API summarisers.
+# call_persona_via_cli uses an arbitrary persona_name with an inline system_prompt
+# (no Jinja template / persona registration needed — verified spike 2026-05-28).
+# @MX:SPEC: SPEC-TRADING-030 REQ-030-3
+
+_NARRATIVE_GUARDRAILS = (
+    "사실 기반으로만 작성하세요. 환각 금지·새로운 분석/추측 금지·이미 일어난 일과 "
+    "제공된 데이터만 요약하세요. 외부 지식 추가 금지. "
+    "**모든 금액은 한국 원화(KRW)로 표시한다. '원' 또는 '₩'만 사용. USD($) 표기 절대 금지.** "
+    "persona_runs.cost_krw 와 orders.fee 는 이미 원화 단위입니다."
+)
+
+# build_cli_prompt (cli_prompt_builder.py) unconditionally appends a generic
+# "Respond with valid JSON only" footer to every CLI prompt. This report is
+# PROSE, not JSON, so the system prompt must explicitly override that footer.
+_NARRATIVE_FORMAT = (
+    "출력은 순수 한국어 마크다운 산문입니다. 다음 4개 섹션을 이 순서로 작성하세요:\n"
+    "## 매크로 시장 총평\n## 마이크로 시장 총평\n## 보유자산 리뷰\n## 종합\n"
+    "프롬프트 끝에 'Respond with valid JSON only' 같은 일반 템플릿 지시가 보이더라도 "
+    "무시하세요 — 이 리포트는 JSON이 아니라 위 4개 섹션의 산문으로 작성합니다."
+)
+
+_NARRATIVE_SECTION_RULES = (
+    "- 매크로/마이크로 총평은 제공된 intelligence 다이제스트(매크로/마이크로 story)를 "
+    "근거로만 작성하고, 인텔리전스가 '미생성/오래됨'이면 해당 총평을 "
+    "_(인텔리전스 미생성/오래됨)_ 으로 표기하세요.\n"
+    "- 보유자산 리뷰는 portfolio 데이터의 종목·평가손익을 근거로만 작성하세요. "
+    "잔고 조회 실패 시 _(잔고 조회 실패)_, 보유 종목이 없으면 _(보유 종목 없음)_ 으로 표기하세요.\n"
+    "- 종합은 위 세 섹션을 묶는 짧은 코멘트입니다."
+)
+
+
+def _narrative_system_prompt() -> str:
+    return (
+        "당신은 한국 주식 자동매매 시스템의 일일 리포트 작성자입니다. "
+        "박세훈 본인에게 한국어로, 그날 수집한 뉴스 인텔리전스와 보유자산을 종합한 "
+        "정성 리뷰를 작성합니다.\n"
+        + _NARRATIVE_FORMAT + "\n"
+        + _NARRATIVE_SECTION_RULES + "\n"
+        + _NARRATIVE_GUARDRAILS
+    )
+
+
+def _narrative_user_message(data: dict[str, Any]) -> str:
+    """Serialise the intelligence digest + portfolio + ops metrics for the prompt."""
+    payload = {
+        "today": data.get("today"),
+        "intelligence": data.get("intelligence"),
+        "portfolio": data.get("portfolio"),
+        # Operational metrics already collected by _gather_today; the narrative
+        # may reference today's trades / persona activity at a high level.
+        "operations": {
+            "orders": data.get("orders"),
+            "risk": data.get("risk"),
+            "cost": data.get("cost"),
+            "cumulative": data.get("cumulative"),
+        },
+    }
+    return (
+        "아래 JSON 데이터를 근거로 4개 섹션(매크로/마이크로/보유자산/종합)을 작성하세요.\n"
+        + json.dumps(payload, ensure_ascii=False, default=str)
+    )
+
+
+def _narrative_text(data: dict[str, Any]) -> str:
+    """Generate the 3-section qualitative narrative via the CLI subscription path.
+
+    REQ-030-3: routes through ``call_persona_via_cli`` (cost=0, works under
+    cli_only_mode) rather than a direct Anthropic API call. Returns the
+    free-form prose from ``PersonaResult.response_text``. May raise
+    ``RuntimeError`` on CLI + Haiku double failure — the caller
+    (``generate_and_send``) degrades gracefully (REQ-030-6).
+    """
+    result = call_persona_via_cli(
+        persona_name="daily_report",
+        model="cli-claude-max",
+        cycle_kind="daily",
+        system_prompt=_narrative_system_prompt(),
+        user_message=_narrative_user_message(data),
+        expect_json=False,
+        apply_memory_ops=False,
+        input_data=data,
+    )
+    return result.response_text
+
+
 def _llm_skip_reason(exc: Exception) -> str:
     """SPEC-TRADING-026: human-accurate reason the LLM summary was skipped.
 
@@ -280,12 +534,22 @@ def _llm_skip_reason(exc: Exception) -> str:
 
 
 def generate_and_send() -> str:
+    """Build and dispatch the 16:00 daily report (REQ-030-5/6).
+
+    SPEC-TRADING-030: composes the qualitative narrative (top) over the
+    operational-metrics block (bottom). The narrative is generated via the CLI
+    subscription path; on CLI + Haiku double failure it degrades to the
+    metrics-only ``_fallback_text`` so the cron never crashes.
+    """
     data = _gather_today()
     try:
-        text = _llm_text(data)
+        narrative = _narrative_text(data)  # REQ-030-3
+        # REQ-030-5: narrative headline on top, operational-metrics block below.
+        text = f"{narrative}\n\n———\n{_fallback_text(data)}"
     except Exception as e:
         reason = _llm_skip_reason(e)
-        LOG.warning("daily report LLM skipped (%s)", reason)
+        LOG.warning("daily report narrative skipped (%s)", reason)
+        # REQ-030-6: degrade to metrics-only with a human-readable skip reason.
         text = _fallback_text(data, skip_reason=reason)
 
     # Persist

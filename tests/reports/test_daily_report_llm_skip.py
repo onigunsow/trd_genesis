@@ -43,6 +43,10 @@ class TestFallbackUsesReason:
         # The misleading legacy phrasing must no longer appear for cli-only.
         assert "미구성" not in text
 
-    def test_default_when_no_reason(self):
+    def test_no_skip_line_when_no_reason(self):
+        # SPEC-TRADING-030: when _fallback_text is reused as the metrics block
+        # beneath a successful narrative, skip_reason is None and the misleading
+        # "(LLM 요약 생략)" line must be omitted entirely.
         text = dr._fallback_text(_min_data())
-        assert "LLM 요약 생략" in text
+        assert "LLM 요약 생략" not in text
+        assert "생략" not in text
