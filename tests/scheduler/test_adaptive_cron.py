@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 
 class TestAdaptiveCronRegistration:
-    """REQ-024-1: adaptive intraday cron registered alongside existing 4 crons."""
+    """REQ-024-1 v0.3.0: adaptive */15 is the single intraday source (legacy 4 slots removed in v0.3.0)."""
 
     def _capture_jobs(self):
         """Patch BlockingScheduler.add_job and capture (id, trigger) tuples."""
@@ -30,8 +30,12 @@ class TestAdaptiveCronRegistration:
 
         return captured, _FakeScheduler
 
-    def test_existing_four_intraday_crons_preserved(self):
-        """REQ-024-1 backward-compat (Q-8): original 09:30/11:00/13:30/14:30 retained."""
+    def test_legacy_four_intraday_crons_removed(self):
+        """REQ-024-1 v0.3.0: legacy 09:30/11:00/13:30/14:30 slots removed; adaptive is sole source.
+
+        These four slots double-fired run_intraday_cycle on */15 boundaries
+        (observed 2026-05-18 09:30 KST), so they were removed in v0.3.0.
+        """
         captured, fake_sched = self._capture_jobs()
         from trading.scheduler import runner
 
@@ -43,11 +47,13 @@ class TestAdaptiveCronRegistration:
             runner.main()
 
         ids = {j["id"] for j in captured}
-        # Original 4 intraday crons remain
-        assert "intraday_9_30" in ids
-        assert "intraday_11_0" in ids
-        assert "intraday_13_30" in ids
-        assert "intraday_14_30" in ids
+        # Legacy 4 intraday slots removed
+        assert "intraday_9_30" not in ids
+        assert "intraday_11_0" not in ids
+        assert "intraday_13_30" not in ids
+        assert "intraday_14_30" not in ids
+        # Adaptive */15 cron is the single intraday source
+        assert "intraday_adaptive" in ids
 
     def test_adaptive_cron_registered(self):
         """REQ-024-1: a new job id 'intraday_adaptive' is registered."""

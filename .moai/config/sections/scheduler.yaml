@@ -9,10 +9,12 @@
 #   Q-3 daily LLM budget: 10_000 KRW (soft warn in Stage 1)
 #   Q-4 price threshold: ATR-based, multiplier 1.5x ATR(14d)
 #   Q-7 circuit breaker: tier degradation (log-only in Stage 1)
-#   Q-8 existing 4 crons: keep in parallel
+#   Q-8 (revised v0.3.0): legacy 4 intraday slots (09:30/11:00/13:30/14:30)
+#     removed; adaptive */15 cron is the single intraday source
 
 scheduler:
-  # REQ-024-1 — adaptive cron cadence (additive to existing 09:30/11:00/13:30/14:30)
+  # REQ-024-1 v0.3.0 — adaptive cron cadence; sole intraday source after the
+  # legacy 09:30/11:00/13:30/14:30 slots were removed (they double-fired on */15)
   intraday_interval_minutes: 15
 
   # REQ-024-2/3/4 — watcher poll cadence (mon-fri 09:00-15:30 KST)

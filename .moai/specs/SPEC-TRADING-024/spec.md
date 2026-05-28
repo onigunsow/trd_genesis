@@ -1,9 +1,9 @@
 ---
 id: SPEC-TRADING-024
-version: 0.1.0
+version: 0.3.0
 status: draft
 created: 2026-05-15
-updated: 2026-05-15
+updated: 2026-05-18
 author: onigunsow
 priority: high
 issue_number: 0
@@ -27,6 +27,7 @@ related_specs:
 |---|---|---|---|
 | 2026-05-15 | 0.1.0 | Initial planning draft — 9 EARS requirements, 3-phase rollout (Stage 1: adaptive cron + threshold triggers, Stage 2: WebSocket stream + position watchdog, Stage 3: 1주 validation). 구현은 SPEC-022/023 의 4일 (5/15~5/19 KST) 연속 paper-trading 무사고 운영 게이트 통과 후 착수 | onigunsow |
 | 2026-05-15 | 0.2.0 | Stage 1 (REQ-024-1~4) 배포 완료 (main `31b0c83`, redeploy 16:07 KST). REQ-024-8 (Multi-tier persona) 에 **Hybrid Execution Mode** 결정 추가: Tier-1 Haiku watcher 는 직접 Anthropic API 호출 (subprocess overhead 회피 + 분단위 폴링 가능), Tier-2/Tier-3 Sonnet 페르소나는 기존 cli_only_mode 유지 (SPEC-015/016 호환). 사용자 의사결정 — 2026-05-15 16:12 KST | onigunsow |
+| 2026-05-18 | 0.3.0 | REQ-024-1 변경: legacy intraday cron 4슬롯 (09:30/11:00/13:30/14:30) 제거 후 adaptive */15 단일 소스 채택. 2026-05-18 09:30 KST 라이브 관측에서 dedup 미작동 (동일 시각 LLM 2회 발사 확인) 으로 인한 hotfix. Q-8 결정 reversal. | onigunsow |
 
 ---
 
@@ -43,7 +44,7 @@ related_specs:
 - **SPEC-022 / 023 (paper-trading 검증 중, gate 통과 시점 = 2026-05-19 KST 목표)**: dynamic universe discovery 및 auto-expansion — 본 SPEC 의 WebSocket 구독 대상 (top-N) 산출에 직접 사용
 - **SPEC-024 (본 SPEC, P0 strategic evolution)**: 시간 고정 cron → 이벤트 기반 적응형 cron + WebSocket stream + 다중 tier persona dispatch
 
-본 SPEC 은 SPEC-001 ~ SPEC-023 의 **모든 기존 동작과 완전히 직교 (additive only)** 한다: 기존 4개 intraday cron (09:30/11:00/13:30/14:30) 과 pre_market cron (07:30) 은 Phase 1~3 어느 시점에서도 그대로 유지되며, 본 SPEC 의 adaptive cron 및 watcher 는 추가 layer 로 동작한다.
+본 SPEC 은 SPEC-001 ~ SPEC-023 의 **모든 기존 동작과 완전히 직교 (additive only)** 한다: 기존 pre_market cron (07:30) 은 유지되며 (intraday 4 slot 은 v0.3.0 에서 제거), 본 SPEC 의 adaptive cron 및 watcher 는 추가 layer 로 동작한다.
 
 ### 비즈니스 임팩트 및 사용자 의도
 
@@ -90,7 +91,7 @@ related_specs:
 - A-2: 한 세션 (09:00 ~ 15:30 KST) 내 WebSocket 구독 대상 ticker 수는 ≤ 40 (KIS API 문서 기준; 초과 시 우선순위 회전 정책 적용 — Q-2 참조)
 - A-3: LLM 일일 예산 10,000 KRW (≈ $7) 가 paper trading 단계에서 적절 — 실측 후 Phase 3 에서 재조정 (Q-3)
 - A-4: 박세훈 페르소나의 mid-term horizon (수일 ~ 수주) 은 본 SPEC 후에도 유지. **본 SPEC 은 day-trading 으로의 전환이 아니며**, 단지 진입/청산 시점의 정밀도를 분 단위로 향상시키는 것
-- A-5: 기존 5 개 cron 은 backward compatibility 를 위해 유지 (Q-8 의 권장 옵션 채택). adaptive cron 은 기존 cron 의 **상위 집합** 으로 동작 (기존 시간대도 포함)
+- A-5: 기존 5 개 cron 중 4 개 intraday slot 은 SPEC-024 v0.3.0 에서 제거됨 (adaptive cron 에 흡수). pre_market 07:30 cron 은 유지.
 - A-6: paper 모드에서는 stop-loss / take-profit 자동 집행 허용. real 모드 (SPEC-017 이후) 에서는 notify-only 모드로 시작 (Q-6 참조)
 - A-7: 일일 매매 한도 (현재 10건/일) 는 본 SPEC 에서 변경하지 않음. threshold trigger 가 한도를 초과하는 신호를 발생시키면 큐잉 후 다음 날 처리 또는 무시
 

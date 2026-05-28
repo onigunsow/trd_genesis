@@ -256,22 +256,15 @@ def main() -> None:
         name="pre_market 07:30",
     )
 
-    # Intraday 09:30, 11:00, 13:30, 14:30
-    for h, m in [(9, 30), (11, 0), (13, 30), (14, 30)]:
-        sched.add_job(
-            lambda: _wrap("intraday", orchestrator.run_intraday_cycle),
-            CronTrigger(day_of_week="mon-fri", hour=h, minute=m, timezone=KST),
-            id=f"intraday_{h}_{m}",
-            name=f"intraday {h:02d}:{m:02d}",
-        )
-
-    # @MX:NOTE: SPEC-TRADING-024 REQ-024-1 — adaptive intraday cron.
-    # Backward-compat (resolved Q-8): the four hard-coded intraday slots above
-    # remain. The adaptive cron is *additive* — every 15 min between 09:00 and
-    # 15:30 KST (mon-fri). The :00/:15/:30/:45 cadence will overlap the
-    # existing 09:30/11:00/13:30/14:30 minute slots; orchestrator's own
-    # cached-micro reuse (SPEC-016 REQ-016-1-1) plus the watcher event_handler
-    # in-flight lock keep concurrent firings safe. Defaults configurable via
+    # @MX:NOTE: SPEC-TRADING-024 REQ-024-1 v0.3.0 — adaptive intraday cron.
+    # This adaptive */15 cron is the SOLE intraday cycle driver — every 15 min
+    # between 09:00 and 15:30 KST (mon-fri). The legacy hard-coded slots at
+    # 09:30/11:00/13:30/14:30 were REMOVED in v0.3.0: every one of those minutes
+    # lands on a */15 boundary (:00/:15/:30/:45), so run_intraday_cycle
+    # double-fired in the same minute (observed 2026-05-18 09:30 KST), causing
+    # duplicate LLM dispatch. Neither the orchestrator cached-micro reuse nor the
+    # watcher in-flight lock prevented the double LLM call, so the slots had to
+    # go. Cadence default configurable via
     # .moai/config/sections/scheduler.yaml (intraday_interval_minutes).
     # @MX:SPEC: SPEC-TRADING-024
     sched.add_job(
