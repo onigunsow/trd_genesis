@@ -33,3 +33,11 @@ scheduler:
 
   # Stage 1 soft LLM budget warning (Q-3). Hard enforcement is Stage 2.
   daily_llm_budget_krw: 10000
+
+  # SPEC-TRADING-031 — halt-cycle "매매 정지" 브리핑 쿨다운 (기본 6h).
+  # Like every other key in this file, this documents the code default; it is the
+  # mirror of circuit_breaker.HALT_NOTIFY_COOLDOWN_SECONDS. This file is NOT loaded
+  # at runtime (no YAML loader exists in src/trading/), so changing this value
+  # alone has no effect today — adjust the constant. The key is kept for ops
+  # documentation and to match the trigger_cooldown_seconds precedent.
+  halt_notify_cooldown_seconds: 21600

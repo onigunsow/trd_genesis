@@ -889,7 +889,16 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         return res
     s = get_settings()
     if state["halt_state"]:
-        tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
+        # SPEC-TRADING-031 REQ-031-1/2/4: throttle the per-cycle "매매 정지"
+        # briefing to once per cooldown (helper decides + sends), but log every
+        # halted cycle's skip so the operator log records all skips even when the
+        # Telegram message is throttled.
+        sent = circuit_breaker.maybe_notify_halt()
+        LOG.info(
+            "halt_state=true — skipping %s cycle (telegram briefing %s)",
+            res.cycle_kind,
+            "sent" if sent else "throttled",
+        )
         return res
 
     risk_model = resolve_model("risk")
@@ -1178,7 +1187,16 @@ def run_event_trigger_cycle(
         return res
 
     if state["halt_state"]:
-        tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
+        # SPEC-TRADING-031 REQ-031-1/2/4: throttle the per-cycle "매매 정지"
+        # briefing to once per cooldown (helper decides + sends), but log every
+        # halted cycle's skip so the operator log records all skips even when the
+        # Telegram message is throttled.
+        sent = circuit_breaker.maybe_notify_halt()
+        LOG.info(
+            "halt_state=true — skipping %s cycle (telegram briefing %s)",
+            res.cycle_kind,
+            "sent" if sent else "throttled",
+        )
         return res
 
     s = get_settings()
@@ -1327,7 +1345,16 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
     if not sig_ids:
         return res
     if state["halt_state"]:
-        tg.system_briefing("매매 정지", "halt_state=true 이므로 매매 차단됨")
+        # SPEC-TRADING-031 REQ-031-1/2/4: throttle the per-cycle "매매 정지"
+        # briefing to once per cooldown (helper decides + sends), but log every
+        # halted cycle's skip so the operator log records all skips even when the
+        # Telegram message is throttled.
+        sent = circuit_breaker.maybe_notify_halt()
+        LOG.info(
+            "halt_state=true — skipping %s cycle (telegram briefing %s)",
+            res.cycle_kind,
+            "sent" if sent else "throttled",
+        )
         return res
 
     s = get_settings()
