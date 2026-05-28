@@ -27,6 +27,7 @@ from trading.scheduler.calendar import is_trading_day, reason_if_closed
 from trading.screener import daily_screen
 from trading.scripts import refresh_market_data
 from trading.watchers import blocked_release as _watcher_blocked_release
+from trading.watchers import position_watchdog as _watcher_position_watchdog
 from trading.watchers import price_threshold as _watcher_price_threshold
 from trading.watchers import volume_anomaly as _watcher_volume_anomaly
 
@@ -319,6 +320,17 @@ def main() -> None:
         CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
         id="watcher_blocked_release",
         name="watcher_blocked_release */5 (09-15 KST)",
+    )
+
+    # SPEC-TRADING-033 REQ-033-1 — auto stop-loss / take-profit position watchdog.
+    sched.add_job(
+        lambda: _wrap(
+            "watcher_position_watchdog",
+            _watcher_position_watchdog.poll_position_watchdog,
+        ),
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        id="position_watchdog",
+        name="position_watchdog */5 (09-15 KST)",
     )
 
     # Daily report 16:00
