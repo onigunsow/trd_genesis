@@ -38,6 +38,7 @@ from trading.personas import decision as decision_persona
 from trading.personas import macro as macro_persona
 from trading.personas import micro as micro_persona
 from trading.personas import risk as risk_persona
+from trading.personas.portfolio_gate import _apply_portfolio_adjustment
 from trading.risk import circuit_breaker
 from trading.risk.blocked_cache import get_blocked_tickers, record_blocked_by_safety
 from trading.risk.limits import check_pre_order, record_breach
@@ -906,6 +907,17 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
     client = KisClient(s.trading_mode)
     signals = (dec_res.response_json or {}).get("signals", [])
     micro_summary_text = _summarize_persona("micro", micro_res.response_json)
+    # SPEC-TRADING-034: portfolio sizing gate (buy-only, binding) between decision
+    # and risk/execute. holdings<5 or no-buys -> no-op; failure -> unadjusted.
+    signals, sig_ids = _apply_portfolio_adjustment(
+        signals, sig_ids,
+        holdings=assets["holdings"],
+        holdings_count=len(assets["holdings"]),
+        total_assets=assets["total_assets"],
+        cash_pct=compute_balance_pcts(assets)[0],
+        today=today, cycle_kind=res.cycle_kind,
+        res_rejected=res.rejected,
+    )
     for sig, decision_id in zip(signals, sig_ids, strict=False):
         # Issue 3: Skip Risk for qty=0 signals (save API cost)
         qty_raw = int(sig.get("qty", 0) or 0)
@@ -1204,6 +1216,16 @@ def run_event_trigger_cycle(
     risk_tools = _get_persona_tools("risk", state)
     client = KisClient(s.trading_mode)
     signals = (dec_res.response_json or {}).get("signals", [])
+    # SPEC-TRADING-034: portfolio sizing gate (buy-only, binding) — event cycle.
+    signals, sig_ids = _apply_portfolio_adjustment(
+        signals, sig_ids,
+        holdings=assets["holdings"],
+        holdings_count=len(assets["holdings"]),
+        total_assets=assets["total_assets"],
+        cash_pct=compute_balance_pcts(assets)[0],
+        today=today, cycle_kind=res.cycle_kind,
+        res_rejected=res.rejected,
+    )
     for sig, decision_id in zip(signals, sig_ids, strict=False):
         rk_input = {
             "today": today,
@@ -1362,6 +1384,16 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
     risk_tools = _get_persona_tools("risk", state)
     client = KisClient(s.trading_mode)
     signals = (dec_res.response_json or {}).get("signals", [])
+    # SPEC-TRADING-034: portfolio sizing gate (buy-only, binding) — intraday cycle.
+    signals, sig_ids = _apply_portfolio_adjustment(
+        signals, sig_ids,
+        holdings=assets["holdings"],
+        holdings_count=len(assets["holdings"]),
+        total_assets=assets["total_assets"],
+        cash_pct=compute_balance_pcts(assets)[0],
+        today=today, cycle_kind=res.cycle_kind,
+        res_rejected=res.rejected,
+    )
 
     for sig, decision_id in zip(signals, sig_ids, strict=False):
         qty_raw = int(sig.get("qty", 0) or 0)
