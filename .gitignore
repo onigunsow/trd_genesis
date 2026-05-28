@@ -2,10 +2,11 @@
 .env
 .env.local
 
-# Data and logs (machine-specific)
-data/
-logs/
-backups/
+# Data and logs (machine-specific) — anchored to repo root so source
+# packages like src/trading/data/ and tests/data/ are NOT ignored.
+/data/
+/logs/
+/backups/
 
 # Python
 __pycache__/
