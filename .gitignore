@@ -41,3 +41,7 @@ pip-log.txt
 
 # Local jupyter
 *.local.ipynb
+
+# Claude Code — personal/machine-local state (settings.json is shared, tracked)
+.claude/settings.local.json
+.claude/agent-memory/
