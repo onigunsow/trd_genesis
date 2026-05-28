@@ -21,6 +21,7 @@ from trading.contexts import (
 from trading.monitoring import data_freshness
 from trading.personas import orchestrator, retrospective
 from trading.reports import daily_report
+from trading.risk.auto_resume import run_premarket_auto_resume
 from trading.risk.blocked_cache import refresh_blocked_tickers
 from trading.scheduler.calendar import is_trading_day, reason_if_closed
 from trading.screener import daily_screen
@@ -246,6 +247,18 @@ def main() -> None:
         CronTrigger(day_of_week="mon-fri", hour=6, minute=20, timezone=KST),
         id="blocked_cache",
         name="blocked_tickers 06:20",
+    )
+
+    # SPEC-TRADING-032 REQ-032-1: pre-market auto-resume 07:25 — runs BEFORE the
+    # 07:30 pre_market cycle so a benign automatic limit halt (daily_count etc.,
+    # but NOT daily_loss/manual) is cleared in time for the day's first trade.
+    # _wrap gives the KRX trading-day guard (Q-3: holidays auto-skip).
+    # @MX:SPEC: SPEC-TRADING-032
+    sched.add_job(
+        lambda: _wrap("premarket_auto_resume", run_premarket_auto_resume),
+        CronTrigger(day_of_week="mon-fri", hour=7, minute=25, timezone=KST),
+        id="premarket_auto_resume",
+        name="premarket_auto_resume 07:25",
     )
 
     # Pre-market 07:30
