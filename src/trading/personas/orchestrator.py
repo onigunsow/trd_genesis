@@ -285,6 +285,131 @@ def _gather_assets() -> dict[str, Any]:
     return balance(client)
 
 
+# SPEC-TRADING-037 REQ-037-5: a halt trip whose breaches are the daily-order
+# COUNT limit (and nothing worse) lets risk-reducing SELLs through. The literal
+# tokens mirror risk.limits (breach prefix "daily_count") and risk.auto_resume
+# (reason "pre-order limit breach", loss prefix "daily_loss", manual prefix
+# "manual"). Kept here so the persona sell path and auto_resume stay consistent.
+_AUTO_LIMIT_REASON = "pre-order limit breach"
+_DAILY_LOSS_PREFIX = "daily_loss"
+_DAILY_COUNT_PREFIX = "daily_count"
+_MANUAL_PREFIX = "manual"
+
+
+def _count_halt_allows_sells(active_trip: dict[str, Any] | None) -> bool:
+    """True iff a halt is a benign daily-order-COUNT trip that may pass SELLs.
+
+    Pure (no I/O). ``active_trip`` is the ``details`` dict of the active
+    ``CIRCUIT_BREAKER_TRIP`` audit row (see ``auto_resume._fetch_active_trip``).
+
+    fail-safe: blocks on manual halt, daily-LOSS halt (even mixed with a count
+    breach), any non-auto-limit reason, and any malformed / missing trip. Only an
+    automatic limit breach whose breaches contain a ``daily_count`` token AND no
+    ``daily_loss`` token returns True (REQ-037-5 b, S-3).
+    """
+    if not active_trip:
+        return False
+    reason = str(active_trip.get("reason", ""))
+    if reason.startswith(_MANUAL_PREFIX):
+        return False
+    if reason != _AUTO_LIMIT_REASON:
+        return False
+    breaches = active_trip.get("breaches")
+    if not isinstance(breaches, list) or not breaches:
+        return False
+    # Any real-loss breach -> capital-preservation hard gate, block even sells.
+    if any(str(b).startswith(_DAILY_LOSS_PREFIX) for b in breaches):
+        return False
+    # At least one breach must be the order-count limit (else it is some other
+    # benign limit we do not extend the sell bypass to — conservative).
+    return any(str(b).startswith(_DAILY_COUNT_PREFIX) for b in breaches)
+
+
+def _partition_signals_for_count_halt(
+    signals: list[dict[str, Any]],
+    sig_ids: list[int],
+    *,
+    holdings: list[dict[str, Any]],
+    active_trip: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Keep only risk-reducing SELLs on existing holdings during a count-halt.
+
+    Returns ``([], [])`` (full block) unless ``_count_halt_allows_sells`` is True,
+    in which case it keeps SELL signals whose ticker is currently held (a sell of
+    a non-held ticker is a short, not risk-reducing). BUYs are always dropped
+    (REQ-037-5 a). Pairs each kept signal with its ``sig_ids`` entry.
+    """
+    if not _count_halt_allows_sells(active_trip):
+        return ([], [])
+    held = {str(h.get("ticker")) for h in holdings or []}
+    kept_sig: list[dict[str, Any]] = []
+    kept_ids: list[int] = []
+    for sig, sid in zip(signals, sig_ids, strict=False):
+        if str(sig.get("side", "")).lower() != "sell":
+            continue
+        if str(sig.get("ticker", "")) not in held:
+            continue
+        kept_sig.append(sig)
+        kept_ids.append(sid)
+    return (kept_sig, kept_ids)
+
+
+def _maybe_count_halt_bypass(
+    signals: list[dict[str, Any]],
+    sig_ids: list[int],
+    *,
+    holdings: list[dict[str, Any]],
+    cycle_kind: str,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Halt-gate body shared by the cycle entry-points (REQ-037-5).
+
+    Reads the active trip (audit_log, defensive — reuses ``auto_resume``), then:
+      - count-halt + risk-reducing SELLs present -> log + Telegram + audit the
+        bypass and return ONLY those SELLs (BUYs dropped) so the caller's
+        risk/execute loop runs for them;
+      - otherwise -> SPEC-031 throttled "매매 정지" briefing + log, and return
+        ``([], [])`` so the caller skips the cycle as before.
+
+    Double-sell guard (REQ-037-5 c): the SPEC-033 watchdog also exits on a stop;
+    the per-signal ``_execute_signal`` re-reads live qty before ordering, so a
+    same-ticker double exit cannot over-sell.
+    """
+    from trading.risk.auto_resume import _fetch_active_trip
+
+    active_trip = _fetch_active_trip()
+    bypass_sig, bypass_ids = _partition_signals_for_count_halt(
+        signals, sig_ids, holdings=holdings, active_trip=active_trip
+    )
+    if bypass_ids:
+        tickers = ", ".join(f"{s.get('ticker')} {s.get('qty')}주" for s in bypass_sig)
+        LOG.info(
+            "COUNT-HALT BYPASS SELL — %s cycle: %d risk-reducing sell(s) proceed (%s)",
+            cycle_kind, len(bypass_ids), tickers,
+        )
+        try:
+            tg.system_briefing(
+                "COUNT-HALT BYPASS SELL",
+                f"일일 주문수 정지 중 위험 축소 매도 진행: {tickers}",
+            )
+        except Exception:
+            LOG.warning("count-halt bypass telegram briefing failed")
+        audit("COUNT_HALT_BYPASS_SELL", actor="orchestrator", details={
+            "cycle_kind": cycle_kind,
+            "sells": [{"ticker": s.get("ticker"), "qty": s.get("qty")} for s in bypass_sig],
+        })
+        return (bypass_sig, bypass_ids)
+
+    # Not eligible (loss / manual / unknown halt, or no risk-reducing sells):
+    # SPEC-TRADING-031 REQ-031-1/2/4 — throttled "매매 정지" briefing + log.
+    sent = circuit_breaker.maybe_notify_halt()
+    LOG.info(
+        "halt_state=true — skipping %s cycle (telegram briefing %s)",
+        cycle_kind,
+        "sent" if sent else "throttled",
+    )
+    return ([], [])
+
+
 # @MX:ANCHOR: Cycle-wide entry for micro persona context — fan_in >= 3
 # (run_pre_market_cycle, run_intraday_cycle, run_event_trigger_cycle reuse the
 # resulting watchlist semantics indirectly via Decision input).
@@ -889,23 +1014,20 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         _maybe_enter_silent_mode(0)
         return res
     s = get_settings()
+    signals = (dec_res.response_json or {}).get("signals", [])
     if state["halt_state"]:
-        # SPEC-TRADING-031 REQ-031-1/2/4: throttle the per-cycle "매매 정지"
-        # briefing to once per cooldown (helper decides + sends), but log every
-        # halted cycle's skip so the operator log records all skips even when the
-        # Telegram message is throttled.
-        sent = circuit_breaker.maybe_notify_halt()
-        LOG.info(
-            "halt_state=true — skipping %s cycle (telegram briefing %s)",
-            res.cycle_kind,
-            "sent" if sent else "throttled",
+        # SPEC-TRADING-037 REQ-037-5: a daily-order-COUNT halt still lets
+        # risk-reducing SELLs on existing holdings through (BUYs blocked). Any
+        # other halt (loss / manual / unknown) blocks the whole cycle.
+        signals, sig_ids = _maybe_count_halt_bypass(
+            signals, sig_ids, holdings=assets["holdings"], cycle_kind=res.cycle_kind
         )
-        return res
+        if not sig_ids:
+            return res
 
     risk_model = resolve_model("risk")
     risk_tools = _get_persona_tools("risk", state)
     client = KisClient(s.trading_mode)
-    signals = (dec_res.response_json or {}).get("signals", [])
     micro_summary_text = _summarize_persona("micro", micro_res.response_json)
     # SPEC-TRADING-034: portfolio sizing gate (buy-only, binding) between decision
     # and risk/execute. holdings<5 or no-buys -> no-op; failure -> unadjusted.
@@ -1366,24 +1488,20 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
     # 4. Risk + execute per signal — same gate pattern as pre_market
     if not sig_ids:
         return res
+    signals = (dec_res.response_json or {}).get("signals", [])
     if state["halt_state"]:
-        # SPEC-TRADING-031 REQ-031-1/2/4: throttle the per-cycle "매매 정지"
-        # briefing to once per cooldown (helper decides + sends), but log every
-        # halted cycle's skip so the operator log records all skips even when the
-        # Telegram message is throttled.
-        sent = circuit_breaker.maybe_notify_halt()
-        LOG.info(
-            "halt_state=true — skipping %s cycle (telegram briefing %s)",
-            res.cycle_kind,
-            "sent" if sent else "throttled",
+        # SPEC-TRADING-037 REQ-037-5: daily-order-COUNT halt lets risk-reducing
+        # SELLs through (BUYs blocked); any other halt skips the cycle.
+        signals, sig_ids = _maybe_count_halt_bypass(
+            signals, sig_ids, holdings=assets["holdings"], cycle_kind=res.cycle_kind
         )
-        return res
+        if not sig_ids:
+            return res
 
     s = get_settings()
     risk_model = resolve_model("risk")
     risk_tools = _get_persona_tools("risk", state)
     client = KisClient(s.trading_mode)
-    signals = (dec_res.response_json or {}).get("signals", [])
     # SPEC-TRADING-034: portfolio sizing gate (buy-only, binding) — intraday cycle.
     signals, sig_ids = _apply_portfolio_adjustment(
         signals, sig_ids,

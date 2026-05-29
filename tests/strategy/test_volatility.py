@@ -12,9 +12,9 @@ import pytest
 from trading.strategy.volatility.atr import MIN_DAYS_FOR_ATR, _ema, compute_atr
 from trading.strategy.volatility.regime import _classify_by_absolute, classify_regime
 from trading.strategy.volatility.thresholds import (
-    MAX_STOP_LOSS_PCT,
     MAX_TAKE_PROFIT_PCT,
     STOP_ATR_MULTIPLIER,
+    STOP_FLOOR_PCT,
     TAKE_ATR_MULTIPLIER,
     TRAIL_ATR_MULTIPLIER,
     get_dynamic_thresholds,
@@ -224,10 +224,12 @@ class TestGetDynamicThresholds:
         result = get_dynamic_thresholds("BIOTECH")
 
         assert result["ticker"] == "BIOTECH"
-        # Raw stop = -2 * 8.0 = -16.0, capped to -15.0
+        # Raw stop = -2 * 8.0 = -16.0, MAX_STOP_LOSS_PCT cap -15.0, then the
+        # SPEC-TRADING-037 REQ-037-3 hard FLOOR (-10%) clamps the wide side:
+        # effective_stop = max(-15.0, STOP_FLOOR_PCT=-10.0) = -10.0.
         assert result["stop_loss_pct"] == -16.0
-        assert result["effective_stop"] == -MAX_STOP_LOSS_PCT  # -15.0
-        # Raw take = 3 * 8.0 = 24.0, within 30.0 cap
+        assert result["effective_stop"] == STOP_FLOOR_PCT  # -10.0 (floor governs)
+        # Raw take = 3 * 8.0 = 24.0, within 30.0 cap (take unaffected by floor)
         assert result["take_profit_pct"] == 24.0
         assert result["effective_take"] == 24.0
         assert result["source"] == "dynamic"

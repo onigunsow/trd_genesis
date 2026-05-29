@@ -115,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "backtest":
         from trading.scripts.backtest_run import main as run
         return run(rest)
+    if cmd == "kospi200-backfill":
+        from trading.scripts.kospi200_backfill_run import main as run
+        return run(rest)
+    if cmd == "exit-backtest":
+        from trading.scripts.exit_backtest import main as run
+        return run(rest)
     if cmd == "run-personas":
         from trading.scripts.run_personas import main as run
         return run(rest)
@@ -391,6 +397,8 @@ def _print_help(file=sys.stdout) -> int:
         "  paper-buy         paper 1-share buy verification (M2)\n"
         "  fetch-data        cache OHLCV / macro / disclosures (M3)\n"
         "  backtest          run rule-based benchmark backtest (M3)\n"
+        "  kospi200-backfill 10y KOSPI200 OHLCV backfill (SPEC-037, one-shot)\n"
+        "  exit-backtest     deterministic exit-rule parameter sweep (SPEC-037)\n"
         "  run-personas      invoke a persona cycle (M4)\n"
         "  halt              set halt_state=true (M5)\n"
         "  resume            set halt_state=false (M5)\n"

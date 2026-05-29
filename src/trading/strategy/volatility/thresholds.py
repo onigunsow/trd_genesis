@@ -29,6 +29,14 @@ TRAIL_ATR_MULTIPLIER: float = float(os.environ.get("TRAIL_ATR_MULTIPLIER", "1.5"
 MAX_STOP_LOSS_PCT: float = float(os.environ.get("MAX_STOP_LOSS_PCT", "15.0"))
 MAX_TAKE_PROFIT_PCT: float = float(os.environ.get("MAX_TAKE_PROFIT_PCT", "30.0"))
 
+# SPEC-TRADING-037 REQ-037-3: hard stop FLOOR. Caps how WIDE the stop can be so a
+# single position can never lose more than this before exit. Backtest-derived:
+# the 10y KOSPI200 exit-rule sweep found best per-trade expectancy at
+# stop=2.0xATR / FLOOR=-10% / take=3.0xATR (wider floors hurt expectancy, so we
+# do NOT tighten beyond -10%). Applied via ``max(atr_stop, STOP_FLOOR_PCT)``:
+# only the wide side is clamped; a narrow ATR stop is left untouched.
+STOP_FLOOR_PCT: float = float(os.environ.get("STOP_FLOOR_PCT", "-10.0"))
+
 
 def get_dynamic_thresholds(ticker: str) -> dict[str, Any]:
     """Compute dynamic thresholds for a ticker.
@@ -56,13 +64,22 @@ def get_dynamic_thresholds(ticker: str) -> dict[str, Any]:
         # Compute fresh ATR
         atr_data = compute_atr(ticker)
         if atr_data is None:
-            # REQ-DYNTH-05-5: Fallback to fixed thresholds
-            result = DynamicThresholds(
-                ticker=ticker,
-                source="fixed_fallback",
+            # REQ-DYNTH-05-5: Fallback to fixed thresholds.
+            # SPEC-TRADING-037 REQ-037-4: populate NUMERIC effective_stop /
+            # effective_take from the fixed_fallback constants so the position
+            # watchdog can still auto-sell an ATR-unavailable holding. Leaving
+            # these as None caused a permanent never-sell skip (latent bug).
+            fb = DynamicThresholds(ticker=ticker, source="fixed_fallback")
+            result = fb.model_copy(
+                update={
+                    "effective_stop": fb.fixed_fallback_stop,
+                    "effective_take": fb.fixed_fallback_take_pct,
+                }
             )
             audit("DYNAMIC_THRESHOLD_FALLBACK", actor="thresholds", details={
                 "ticker": ticker, "reason": "ATR unavailable",
+                "effective_stop": result.effective_stop,
+                "effective_take": result.effective_take,
             })
             return result.model_dump()
 
@@ -77,7 +94,11 @@ def get_dynamic_thresholds(ticker: str) -> dict[str, Any]:
     trailing_stop_pct = -TRAIL_ATR_MULTIPLIER * atr_pct
 
     # REQ-DYNTH-05-4: Apply guardrails
-    effective_stop = max(stop_loss_pct, -MAX_STOP_LOSS_PCT)
+    atr_stop = max(stop_loss_pct, -MAX_STOP_LOSS_PCT)
+    # SPEC-TRADING-037 REQ-037-3: hard stop FLOOR — clamp the wide side only.
+    # ``max`` keeps the SHALLOWER (less negative) stop, so -14% -> -10% (faster
+    # exit) while -6% stays -6% (no over-sensitive whipsaw on calm names).
+    effective_stop = max(atr_stop, STOP_FLOOR_PCT)
     effective_take = min(take_profit_pct, MAX_TAKE_PROFIT_PCT)
 
     result = DynamicThresholds(
