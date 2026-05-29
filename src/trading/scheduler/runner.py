@@ -90,6 +90,24 @@ def _run_fill_sync() -> None:
     )
 
 
+def _run_equity_snapshot() -> None:
+    """Edge Validation Phase 0: record one daily equity snapshot at market close.
+
+    Deferred import keeps the heavy ``trading.kis`` stack out of scheduler
+    import (matches ``_run_fill_sync``). The 15:40 KST cron fires after the
+    15:30 close + fill_sync settle, so the snapshot reflects the day's final
+    balance. UPSERT keyed on trading_day makes re-runs idempotent.
+    """
+    from trading.edge.snapshot import record_snapshot
+
+    row = record_snapshot()
+    LOG.info(
+        "equity_snapshot recorded day=%s total_assets=%d",
+        row.get("trading_day"),
+        int(row.get("total_assets", 0)),
+    )
+
+
 def _run_fetch_market_funds() -> None:
     """SPEC-TRADING-036 REQ-036-1: refresh ECOS 901Y056 S23E/S23A (신용융자/예탁금).
 
@@ -267,6 +285,18 @@ def main() -> None:
         ),
         id="fill_sync",
         name="fill_sync 09:00-15:30 every 60s",
+    )
+
+    # Edge Validation Phase 0: daily equity snapshot at 15:40 KST — after the
+    # 15:30 close and the trailing fill_sync cycles settle, so the snapshot
+    # captures the day's final balance. KIS only exposes "today's balance", so
+    # missing a day is unrecoverable; this is the source of the time-weighted
+    # equity curve / Sharpe / MDD. _wrap gives the KRX trading-day guard.
+    sched.add_job(
+        lambda: _wrap("equity_snapshot", _run_equity_snapshot),
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=40, timezone=KST),
+        id="equity_snapshot",
+        name="equity_snapshot 15:40",
     )
 
     # SPEC-TRADING-026 (c-cron): refresh the blocked cache at 06:20 — BEFORE the

@@ -182,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
         text = generate_and_send()
         print(text)
         return 0
+    if cmd == "edge-report":
+        return _cmd_edge_report(rest)
+    if cmd == "edge-snapshot":
+        return _cmd_edge_snapshot(rest)
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     _print_help(file=sys.stderr)
@@ -288,6 +292,66 @@ def _cmd_fill_sync(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_edge_report(rest: list[str]) -> int:
+    """Edge Validation: 페이퍼 성적 → go/no-go 판정 리포트.
+
+    Flags
+    -----
+    --days N              최근 N일만 (미지정 시 전체 기간).
+    --telegram            텔레그램으로도 전송.
+    --include-unrealized  balance() 호출해 미실현 평가손익 병기 (KIS 접속 필요).
+
+    기본은 KIS 호출 없이 기존 DB 데이터만 사용한다.
+    """
+    days: int | None = None
+    telegram = False
+    include_unrealized = False
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--telegram":
+            telegram = True
+        elif arg == "--include-unrealized":
+            include_unrealized = True
+        elif arg == "--days":
+            value = rest[i + 1] if i + 1 < len(rest) else None
+            skip_next = True
+            try:
+                days = int(value) if value is not None else None
+            except ValueError:
+                print(f"trading edge-report: invalid --days {value!r}", file=sys.stderr)
+                return 2
+        else:
+            logging.warning("trading edge-report: ignoring unknown flag %s", arg)
+
+    from trading.edge.report import generate_and_send
+
+    text = generate_and_send(
+        days, telegram=telegram, include_unrealized=include_unrealized
+    )
+    print(text)
+    return 0
+
+
+def _cmd_edge_snapshot(rest: list[str]) -> int:
+    """Edge Validation: 오늘 자산 스냅샷 1회 기록(수동/백필). 멱등 UPSERT."""
+    from trading.edge.snapshot import record_snapshot
+
+    try:
+        row = record_snapshot()
+    except Exception as e:  # noqa: BLE001
+        print(f"trading edge-snapshot: error: {e}", file=sys.stderr)
+        return 1
+    print(
+        f"equity_snapshot {row['trading_day']}: "
+        f"total_assets={row['total_assets']:,} stock_eval={row['stock_eval']:,} "
+        f"cash={row['cash']:,} unrealized={row['unrealized_pnl']:,}"
+    )
+    return 0
+
+
 def _cmd_news_health(rest: list[str]) -> int:
     """SPEC-013: Display news source health status."""
     from trading.news.health import get_all_health_status
@@ -334,6 +398,8 @@ def _print_help(file=sys.stdout) -> int:
         "  bot               run Telegram command listener (M5)\n"
         "  scheduler         start APScheduler cron loop (M5)\n"
         "  daily-report      generate and send today's report (M5)\n"
+        "  edge-report       paper 성적 → go/no-go 판정 [--days N] [--telegram] [--include-unrealized]\n"
+        "  edge-snapshot     오늘 자산 스냅샷 1회 기록 (멱등 UPSERT)\n"
         "  fill-sync         sync KIS fill confirmations [--dry-run] [--start YYYYMMDD]\n"
         "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
         "  analyze-news      run intelligence analysis [--sector X] [--force]\n"
