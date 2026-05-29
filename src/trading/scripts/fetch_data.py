@@ -65,8 +65,17 @@ def main(argv: list[str] | None = None) -> int:
                 n = ecos_adapter.fetch_series(stat, cycle, item, label, start, end)
                 print(f"ECOS {label}: {n} rows")
                 total += n
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 print(f"ECOS {label}: ERROR {e}")
+        # SPEC-TRADING-036 REQ-036-1: also refresh the 901Y056 S23E/S23A market
+        # funds (신용융자/예탁금) so the late-cycle defense signals have data.
+        # Graceful — a funds failure must not abort the whole --ecos run.
+        try:
+            m = ecos_adapter.fetch_market_funds(start, end)
+            print(f"ECOS market funds (901Y056 S23E/S23A): {m} rows")
+            total += m
+        except Exception as e:
+            print(f"ECOS market funds: ERROR {e}")
         print(f"ECOS total: {total}")
         return 0
 

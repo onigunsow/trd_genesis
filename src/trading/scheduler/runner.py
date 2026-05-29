@@ -90,6 +90,25 @@ def _run_fill_sync() -> None:
     )
 
 
+def _run_fetch_market_funds() -> None:
+    """SPEC-TRADING-036 REQ-036-1: refresh ECOS 901Y056 S23E/S23A (신용융자/예탁금).
+
+    Caches the monthly market-funds series so the late-cycle defense signals
+    have fresh data. Fetches a wide ~400-day window so the monthly series is
+    complete (the reader takes MAX(ts)). Deferred import keeps the heavy data
+    stack out of scheduler import. Best-effort — the adapter is graceful and
+    the scheduler wrapper isolates any failure.
+    """
+    from datetime import date, timedelta
+
+    from trading.data import ecos_adapter
+
+    today = date.today()
+    start = today - timedelta(days=400)
+    n = ecos_adapter.fetch_market_funds(start, today)
+    LOG.info("fetch_market_funds: %d rows cached (901Y056 S23E/S23A)", int(n or 0))
+
+
 def _wrap(name: str, fn, *args, **kwargs):
     """Run `fn` only if today is a KRX trading day (Mon-Fri ∩ no public holidays)."""
     if not is_trading_day():
@@ -173,6 +192,19 @@ def main() -> None:
             id=f"news_import_{h:02d}{m:02d}",
             name=f"news_import {h:02d}:{m:02d}",
         )
+
+    # SPEC-TRADING-036 REQ-036-1: refresh ECOS 901Y056 S23E/S23A (신용융자/예탁금)
+    # at 05:50 KST — BEFORE the 06:00 ctx_macro build — so the macro context and
+    # the 16:05 late-cycle defense read fresh market-funds data. Monthly series,
+    # so a daily refresh is cheap/harmless. _wrap isolates fetch failures (the
+    # adapter is also graceful) so the scheduler never crashes.
+    # @MX:SPEC: SPEC-TRADING-036
+    sched.add_job(
+        lambda: _wrap("fetch_market_funds", _run_fetch_market_funds),
+        CronTrigger(day_of_week="mon-fri", hour=5, minute=50, timezone=KST),
+        id="fetch_market_funds",
+        name="fetch_market_funds 05:50",
+    )
 
     # SPEC-007 — Static context builders (run regardless of trading day; cheap)
     # macro_context 06:00 — every day (uses cached data)

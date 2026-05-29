@@ -36,41 +36,72 @@ class TestMarketFundsSeriesDefined:
 
 
 # ---------------------------------------------------------------------------
-# fetch_market_funds — caches both series, graceful on failure
+# fetch_market_funds — converts 원 -> 조원 BEFORE caching (NUMERIC(20,8) overflow
+# fix: raw 원 e.g. 3.57e13 exceeds the column's <1e12 max, so we store 35.7).
 # ---------------------------------------------------------------------------
 class TestFetchMarketFunds:
-    def test_fetches_each_series(self):
-        calls = []
+    def test_converts_won_to_jo_before_caching(self):
+        # Raw ECOS rows are in 원 (S23E margin ~3.57e13). The cached value must
+        # be the 조원-scaled value (/1e12), NOT the raw 원 (which overflows the
+        # NUMERIC(20,8) column).
+        raw_rows = [{"TIME": "202604", "DATA_VALUE": "35713079332408"}]  # ~3.57e13 원
+        captured = {}
 
-        def _fake_fetch_series(stat, cycle, item, label, start, end):
-            calls.append((stat, item, label))
-            return 12
+        def _fake_upsert(source, label, rows, *_a, **_k):
+            captured[label] = list(rows)
+            return len(captured[label])
 
-        with patch.object(ecos_adapter, "fetch_series", side_effect=_fake_fetch_series):
+        with (
+            patch.object(ecos_adapter, "_fetch_raw", return_value=raw_rows),
+            patch.object(ecos_adapter, "upsert_macro", side_effect=_fake_upsert),
+        ):
             total = ecos_adapter.fetch_market_funds(date(2024, 1, 1), date(2026, 5, 1))
-        assert total == 24  # 12 + 12
-        items = {c[1] for c in calls}
-        assert items == {"S23E", "S23A"}
+
+        # Both series upserted (S23E + S23A), 1 row each from the mock.
+        assert total == 2
+        assert set(captured) == {"S23E", "S23A"}
+        stored = captured["S23E"][0]["value"]
+        # Stored in 조원 (~35.71), NOT raw 원 (~3.57e13).
+        assert abs(stored - 35.713079332408) < 1e-6
+        assert stored < 1e12  # would not overflow NUMERIC(20,8)
+
+    def test_conversion_divides_by_1e12_exactly_once(self):
+        raw_rows = [{"TIME": "202604", "DATA_VALUE": "124800000000000"}]  # 124.8조 in 원
+        captured = {}
+
+        def _fake_upsert(source, label, rows, *_a, **_k):
+            captured[label] = list(rows)
+            return 1
+
+        with (
+            patch.object(ecos_adapter, "_fetch_raw", return_value=raw_rows),
+            patch.object(ecos_adapter, "upsert_macro", side_effect=_fake_upsert),
+        ):
+            ecos_adapter.fetch_market_funds(date(2024, 1, 1), date(2026, 5, 1))
+
+        assert abs(captured["S23A"][0]["value"] - 124.8) < 1e-6
 
     def test_graceful_on_fetch_error_returns_zero(self):
         def _boom(*_a, **_k):
             raise RuntimeError("ECOS down")
 
-        with patch.object(ecos_adapter, "fetch_series", side_effect=_boom):
+        with patch.object(ecos_adapter, "_fetch_raw", side_effect=_boom):
             # Must not raise — graceful (C-9).
             total = ecos_adapter.fetch_market_funds(date(2024, 1, 1), date(2026, 5, 1))
         assert total == 0
 
 
 # ---------------------------------------------------------------------------
-# latest_market_funds — reads cache, converts 원 -> 조원, staleness marker
+# latest_market_funds — cache now ALREADY holds 조원, so the reader returns it
+# directly (no /1e12 division — that happens at write time in fetch_market_funds).
 # ---------------------------------------------------------------------------
 class TestLatestMarketFunds:
     def test_returns_jo_won_values_from_cache(self):
-        # macro_indicators stores raw 원; reader divides by 1e12 -> 조원.
+        # macro_indicators now stores 조원 directly (e.g. 35.7), so the reader
+        # returns the stored value WITHOUT dividing again.
         rows = {
-            "S23E": {"value": 35.7e12, "ts": date(2026, 4, 1)},
-            "S23A": {"value": 124.8e12, "ts": date(2026, 4, 1)},
+            "S23E": {"value": 35.7, "ts": date(2026, 4, 1)},
+            "S23A": {"value": 124.8, "ts": date(2026, 4, 1)},
         }
 
         def _fake_latest(series_id):
@@ -82,6 +113,16 @@ class TestLatestMarketFunds:
         assert abs(funds["margin_jo"] - 35.7) < 0.01
         assert abs(funds["deposits_jo"] - 124.8) < 0.01
 
+    def test_stored_value_not_re_divided(self):
+        # Regression guard: a 조원-scale stored value (35.7) must NOT be divided
+        # again to ~3.57e-11. The reader returns it verbatim.
+        rows = {"S23E": {"value": 35.7, "ts": date(2026, 4, 1)}}
+
+        with patch.object(ecos_adapter, "_latest_macro_row", side_effect=rows.get):
+            funds = ecos_adapter.latest_market_funds(today=date(2026, 5, 29))
+
+        assert funds["margin_jo"] == 35.7  # not re-divided
+
     def test_missing_cache_yields_none(self):
         with patch.object(ecos_adapter, "_latest_macro_row", return_value=None):
             funds = ecos_adapter.latest_market_funds(today=date(2026, 5, 29))
@@ -90,7 +131,7 @@ class TestLatestMarketFunds:
 
     def test_stale_value_is_flagged(self):
         # A value older than the monthly tolerance is flagged stale.
-        old = {"value": 30.0e12, "ts": date(2025, 1, 1)}
+        old = {"value": 30.0, "ts": date(2025, 1, 1)}
 
         def _fake_latest(series_id):
             return old if series_id == "S23E" else None

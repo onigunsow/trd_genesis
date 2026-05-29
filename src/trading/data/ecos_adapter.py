@@ -99,21 +99,43 @@ def fetch_series(stat_code: str, cycle: str, item: str, label: str,
     return upsert_macro(SOURCE, label, rows)
 
 
+# Converts 원 -> 조원 (trillion won). The 901Y056 funds are reported in 원, so
+# 신용융자 ~3.57e13 and 예탁금 ~1.25e14 — both overflow macro_indicators.value
+# (NUMERIC(20,8), abs < 1e12). Storing in 조원 keeps the cached value small
+# (35.7 / 124.8) AND lets the reader return it directly without re-scaling.
+_WON_PER_JO = 1e12
+
+
 def fetch_market_funds(start: date, end: date) -> int:
     """SPEC-TRADING-036 REQ-036-1(b): cache 신용융자/예탁금 (901Y056 S23E/S23A).
 
     Fetches a wide window so the cache holds every monthly observation; the
     latest is read separately via :func:`latest_market_funds` (the ECOS API
     returns rows oldest-first, so caching the whole window and reading MAX(ts)
-    is what surfaces the most recent value). Best-effort per series — a failed
-    series is logged and skipped, never raised (C-9 graceful fetcher).
+    surfaces the most recent value).
 
-    Returns the total row count written across both series.
+    The raw ECOS values are in 원 (e.g. 신용융자 ~3.57e13) which OVERFLOW the
+    ``macro_indicators.value`` NUMERIC(20,8) column (must be < 1e12). So this
+    fetcher converts each observation 원 -> 조원 (``/1e12``) BEFORE upserting.
+    Unlike the shared :func:`fetch_series` (used by ``DEFAULT_SERIES``), this
+    does its own raw fetch + conversion + upsert so the shared path is unchanged.
+
+    Best-effort per series — a failed series is logged and skipped, never raised
+    (C-9 graceful fetcher). Returns the total row count written across series.
     """
     total = 0
     for stat_code, cycle, item, label in MARKET_FUNDS_SERIES:
         try:
-            total += fetch_series(stat_code, cycle, item, label, start, end)
+            raws = _fetch_raw(stat_code, cycle, item, start, end)
+            rows = []
+            for r in raws:
+                try:
+                    ts = _parse_time(r["TIME"], cycle)
+                    value_jo = float(r["DATA_VALUE"]) / _WON_PER_JO  # 원 -> 조원
+                except (KeyError, ValueError, TypeError):
+                    continue
+                rows.append({"ts": ts, "value": value_jo})
+            total += upsert_macro(SOURCE, label, rows)
         except Exception:
             LOG.info("ecos: market-funds fetch failed for %s (graceful skip)", item)
     return total
@@ -137,8 +159,10 @@ def _latest_macro_row(series_id: str) -> dict[str, Any] | None:
 def _one_fund(series_id: str, today: date) -> tuple[float | None, bool]:
     """Return ``(value_in_jo_won, is_stale)`` for one 901Y056 item.
 
-    원 -> 조원 by dividing by 1e12. Missing cache -> ``(None, False)``. Any DB
-    error is swallowed (graceful) and reported as missing.
+    The cache ALREADY holds 조원 (the 원 -> 조원 conversion happens at write time
+    in :func:`fetch_market_funds`), so the stored value is returned directly —
+    NOT re-divided. Missing cache -> ``(None, False)``. Any DB error is swallowed
+    (graceful) and reported as missing.
     """
     try:
         row = _latest_macro_row(series_id)
@@ -147,7 +171,7 @@ def _one_fund(series_id: str, today: date) -> tuple[float | None, bool]:
         return (None, False)
     if not row:
         return (None, False)
-    value_jo = float(row["value"]) / 1e12
+    value_jo = float(row["value"])  # already 조원 (converted at write time)
     ts = row["ts"]
     stale = (today - ts).days > _MARKET_FUNDS_STALE_DAYS if ts else False
     return (value_jo, stale)
