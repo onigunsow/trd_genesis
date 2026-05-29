@@ -6,12 +6,32 @@ Implements REQ-KIS-02-4 helpers (orders, audit_log writes).
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+
+LOG = logging.getLogger(__name__)
+
+# SPEC-TRADING-035 REQ-035-1: sentinel marking a field whose value is the SQL
+# ``NOW()`` function rather than a bound parameter. ``update_system_state``
+# renders these as ``col = NOW()`` (see _NOW_FIELDS).
+NOW = "NOW()"
+
+# Fields that must be substituted with the SQL NOW() function, never bound as a
+# parameter. ``updated_at`` is always stamped; ``regime_updated_at`` is stamped
+# only when the caller passes it (REQ-035-1b / R-4 / Q-2 resolution).
+_NOW_FIELDS = frozenset({"updated_at", "regime_updated_at"})
+
+# SPEC-TRADING-035 REQ-035-1: regime cache TTL + domain.
+REGIME_TTL_DAYS = 7
+VALID_REGIMES = ("bull", "neutral", "bear")
+VALID_RISK_APPETITES = ("risk-on", "neutral", "risk-off")
 
 
 def dsn() -> str:
@@ -72,18 +92,89 @@ def get_system_state() -> dict[str, Any]:
 
 
 def update_system_state(**fields: Any) -> None:
-    """Update system_state singleton. Caller specifies fields to change."""
+    """Update system_state singleton. Caller specifies fields to change.
+
+    Fields in ``_NOW_FIELDS`` (``updated_at``, ``regime_updated_at``) are rendered
+    as the SQL ``NOW()`` function instead of a bound parameter; their passed value
+    is ignored (pass ``regime_updated_at=session.NOW`` to stamp it — REQ-035-1b).
+    ``updated_at`` is always stamped on every update.
+    """
     if not fields:
         return
-    fields["updated_at"] = "NOW()"  # marker for SQL substitution
+    fields["updated_at"] = NOW  # always stamp the generic mtime
     set_parts = []
     params: list[Any] = []
     for k, v in fields.items():
-        if k == "updated_at":
-            set_parts.append("updated_at = NOW()")
+        if k in _NOW_FIELDS:
+            set_parts.append(f"{k} = NOW()")
         else:
             set_parts.append(f"{k} = %s")
             params.append(v)
     sql = f"UPDATE system_state SET {', '.join(set_parts)} WHERE id = 1"
     with connection() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
+
+
+def _notify_regime_stale(updated_at: datetime | None, age_days: float) -> None:
+    """REQ-035-1c: emit one Telegram warning when the regime cache is stale.
+
+    Lazy-imports the Telegram notifier (avoids a circular import at module load)
+    and swallows any send failure — a stale-read warning must never break the
+    read path or the cycle that triggered it.
+    """
+    try:
+        from trading.alerts.telegram import system_briefing
+
+        stamp = updated_at.isoformat() if updated_at else "(없음)"
+        system_briefing(
+            "Regime 신선도 경고",
+            f"매크로 regime 캐시가 {age_days:.1f}일 경과(>{REGIME_TTL_DAYS}일) — "
+            f"안전하게 'neutral' 로 폴백합니다. 마지막 갱신: {stamp}.",
+        )
+    except Exception:
+        LOG.warning("regime stale warning failed (swallowed)", exc_info=True)
+
+
+# @MX:ANCHOR: SPEC-TRADING-035 REQ-035-1(e) — single regime-read path.
+# @MX:REASON: fan_in == 3 (decision.run / risk.run / portfolio_gate all read
+#             current_regime through this helper). The 7-day TTL safe-fallback to
+#             'neutral' and the domain guard are the load-bearing invariants;
+#             bypassing this helper would let a stale or out-of-domain regime drive
+#             live buy sizing, violating the capital-preservation policy.
+# @MX:SPEC: SPEC-TRADING-035
+def get_effective_regime(
+    now_provider: Callable[[], datetime] | None = None,
+) -> tuple[str, str]:
+    """Return ``(regime, risk_appetite)`` with a read-time TTL safe fallback.
+
+    Reads the cached values from ``system_state`` (REQ-035-1a). If the cache is
+    older than ``REGIME_TTL_DAYS`` (or the timestamp is missing, or the stored
+    regime is out of domain) the read result falls back to ``('neutral',
+    'neutral')`` — the *stored* columns are never mutated — and a single Telegram
+    warning is emitted (REQ-035-1c).
+
+    Args:
+        now_provider: Test seam returning the current tz-aware datetime.
+    """
+    now = (now_provider or (lambda: datetime.now(UTC)))()
+    state = get_system_state()
+    regime = state.get("current_regime") or "neutral"
+    risk = state.get("current_risk_appetite") or "neutral"
+    updated_at = state.get("regime_updated_at")
+
+    # Defensive: missing timestamp -> treat as stale (safe neutral fallback).
+    if updated_at is None:
+        return ("neutral", "neutral")
+
+    age = now - updated_at
+    if age > timedelta(days=REGIME_TTL_DAYS):
+        _notify_regime_stale(updated_at, age.total_seconds() / 86400.0)
+        return ("neutral", "neutral")
+
+    # Domain guard: an out-of-domain stored value (should be impossible given the
+    # DB CHECK, but defensive against pre-migration rows) also falls back.
+    if regime not in VALID_REGIMES:
+        regime = "neutral"
+    if risk not in VALID_RISK_APPETITES:
+        risk = "neutral"
+    return (regime, risk)

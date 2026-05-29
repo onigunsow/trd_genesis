@@ -25,6 +25,13 @@
   ]
 }
 
+{% if current_regime is defined and current_regime %}
+# 시장 체제 기반 현금 타깃 (Regime Awareness — SPEC-035, 보수 분기)
+현재 시장 regime: {{ current_regime }}, risk_appetite: {{ current_risk_appetite | default('neutral') }}.
+- 현금 타깃 가이드(30~50%) 내에서 시프트: {% if regime_cash_target_shift == 'low' %}하단(현금 축소·매수 여력 확대) — 단 현금 바닥 {{ regime_cash_floor_pct | default(20.0) }}% 미만 금지.{% elif regime_cash_target_shift == 'high' %}상단(현금 확대·방어).{% else %}기존 가이드 유지.{% endif %}
+- 모든 시프트는 자본 보전 경계 안에서만 허용(bull 이라도 현금 {{ regime_cash_floor_pct | default(20.0) }}% 미만 불가).
+{% endif %}
+
 # 입력
 오늘 날짜: {{ today }}
 [결정 페르소나 시그널]

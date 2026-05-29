@@ -26,7 +26,7 @@ from typing import Any, Literal
 from trading.alerts import telegram as tg
 from trading.config import get_settings
 from trading.data.ticker_names import ticker_name
-from trading.db.session import audit, connection, get_system_state, update_system_state
+from trading.db.session import NOW, audit, connection, get_system_state, update_system_state
 from trading.kis.account import balance
 from trading.kis.client import KisClient
 from trading.kis.market import OVERHEAT_STAT_CLS
@@ -1545,14 +1545,59 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
     return res
 
 
+def persist_macro_regime(res: Any) -> None:
+    """SPEC-TRADING-035 REQ-035-1(b/d): cache Macro's regime/risk_appetite.
+
+    On a successful macro run, extract ``regime`` and ``risk_appetite`` from the
+    response JSON and promote them to the ``system_state`` regime columns
+    (``regime_updated_at = NOW()``, ``regime_source_run_id`` = this run id), so
+    Decision/Risk/Portfolio can branch off a structured value instead of parsing
+    the 500-char text blob.
+
+    If either key is missing (or the response is empty), this is a schema
+    regression — both keys are already emitted by ``macro.jinja`` — so the cache
+    is left UNCHANGED (previous value preserved) and the operator is notified via
+    Telegram. The notify failure is swallowed so a macro run never crashes here.
+    """
+    pj = getattr(res, "response_json", None)
+    regime = (pj or {}).get("regime") if isinstance(pj, dict) else None
+    risk = (pj or {}).get("risk_appetite") if isinstance(pj, dict) else None
+    if not regime or not risk:
+        # REQ-035-1d: schema guard — do NOT update the cache; notify.
+        try:
+            tg.system_error(
+                "Macro regime cache",
+                ValueError("macro response missing regime/risk_appetite"),
+                context="cache not updated (previous value preserved)",
+            )
+        except Exception:
+            LOG.warning("regime schema-error notify failed (swallowed)", exc_info=True)
+        LOG.warning(
+            "macro regime cache skipped — missing keys (regime=%r risk_appetite=%r)",
+            regime, risk,
+        )
+        return
+
+    update_system_state(
+        current_regime=regime,
+        current_risk_appetite=risk,
+        regime_source_run_id=getattr(res, "persona_run_id", None),
+        regime_updated_at=NOW,
+        updated_by="macro",
+    )
+
+
 def run_weekly_macro(today: str | None = None) -> int:
-    """Friday 17:00 KST: invoke Macro persona. Returns persona_run_id."""
+    """Friday 17:00 KST (+ weekday 06:10 KST, SPEC-035 REQ-035-3): invoke Macro
+    persona. Returns persona_run_id."""
     today_str = today or date.today().isoformat()
     state = get_system_state()
     macro_model = resolve_model("macro")
     macro_tools = _get_persona_tools("macro", state)
     macro_input = ctx.assemble_macro_input()
     res = macro_persona.run(macro_input, cycle_kind="weekly", tools=macro_tools, model=macro_model)
+    # SPEC-TRADING-035 REQ-035-1(b): promote regime/risk_appetite to system_state.
+    persist_macro_regime(res)
     tg.persona_briefing(
         persona="Macro",
         model=macro_model,

@@ -12,11 +12,23 @@ import json
 from datetime import date
 from typing import Any
 
-from trading.db.session import connection
+from trading.db.session import connection, get_effective_regime
+from trading.personas import regime_branch
 from trading.personas.base import call_persona, call_persona_via_cli, is_cli_mode_active, render_prompt
 
 MODEL = "claude-sonnet-4-6"
 PERSONA = "decision"
+
+
+def _stamp_regime_at_decision(persona_run_id: int | None, regime: str) -> None:
+    """SPEC-TRADING-035 REQ-035-2(f): snapshot the regime onto persona_runs."""
+    if persona_run_id is None:
+        return
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE persona_runs SET regime_at_decision = %s WHERE id = %s",
+            (regime, persona_run_id),
+        )
 
 
 def run(input_data: dict[str, Any],
@@ -35,8 +47,18 @@ def run(input_data: dict[str, Any],
         tools: Optional tool definitions for tool-calling mode (SPEC-009).
     """
     today = input_data.get("today") or date.today().isoformat()
+    # SPEC-TRADING-035 REQ-035-2: resolve the macro regime (explicit input wins;
+    # else the single TTL-aware read helper). Inject the conservative adjusted
+    # numbers into the prompt context so the LLM sees the branch.
+    if input_data.get("current_regime"):
+        regime = regime_branch.regime_branch_applied(input_data.get("current_regime"))
+        risk_appetite = input_data.get("current_risk_appetite") or "neutral"
+    else:
+        regime, risk_appetite = get_effective_regime()
+    regime_ctx = regime_branch.prompt_context(regime, risk_appetite)
     system_prompt = render_prompt("decision.jinja", **{
         **input_data,
+        **regime_ctx,
         "today": today,
         "cycle_kind": cycle_kind,
     })
@@ -91,6 +113,12 @@ def run(input_data: dict[str, Any],
             expect_json=True,
             tools=tools,
         )
+
+    # SPEC-TRADING-035 REQ-035-2(f): tag the regime branch onto the response JSON
+    # and snapshot it on persona_runs for audit.
+    if res.response_json is not None:
+        res.response_json["regime_branch_applied"] = regime
+    _stamp_regime_at_decision(res.persona_run_id, regime)
 
     # Persist each signal as a row in persona_decisions.
     sig_ids: list[int] = []

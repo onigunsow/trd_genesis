@@ -115,6 +115,15 @@
 오늘 날짜: {{ today }}
 사이클: {{ cycle_kind }}
 
+{% if current_regime is defined and current_regime %}
+[시장 체제 (Regime Awareness — SPEC-035, 보수 분기)]
+현재 시장 regime: {{ current_regime }}, risk_appetite: {{ current_risk_appetite | default('neutral') }}. 보수적 분기 적용.
+- 적용 현금 바닥: {{ regime_cash_floor_pct | default(30.0) }}% (이 미만으로는 신규 매수 금지 — 코드 가드가 강제)
+- confidence 임계 조정: {{ regime_confidence_delta | default(0.0) }} (bull 은 완만한 완화 −0.05, bear 은 긴축 +0.1)
+- 섹터 집중 한도: {{ regime_sector_cap_pct | default(40.0) }}%
+{% if regime_block_leverage | default(false) %}- bear 긴축: 레버리지/신용(margin) 매수 차단.{% endif %}
+{% endif %}
+
 [매크로 페르소나 최신 가이드 (주간 캐시)]
 {{ macro_guide | default('(없음)') }}
 

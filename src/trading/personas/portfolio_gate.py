@@ -28,10 +28,24 @@ import logging
 from typing import Any
 
 from trading.alerts import telegram as tg
-from trading.db.session import audit
-from trading.personas import portfolio
+from trading.db.session import audit, get_effective_regime
+from trading.personas import portfolio, regime_branch
 
 LOG = logging.getLogger(__name__)
+
+
+def _read_regime() -> tuple[str, str]:
+    """SPEC-TRADING-035 REQ-035-4(d): fail-safe regime read.
+
+    Any failure (DB down, TTL fallback path raising, etc.) degrades to
+    ('neutral', 'neutral') so the gate never blocks the cycle — consistent with
+    the SPEC-034 fail-safe contract.
+    """
+    try:
+        return get_effective_regime()
+    except Exception:
+        LOG.warning("portfolio gate: regime read failed — using neutral", exc_info=True)
+        return ("neutral", "neutral")
 
 _REQUIRED_KEYS = ("adjusted_signals", "rejected")
 
@@ -119,6 +133,26 @@ def _apply_portfolio_adjustment(
     if not portfolio.is_active(holdings_count):
         return signals, sig_ids
 
+    # SPEC-TRADING-035 REQ-035-4: read the macro regime (fail-safe -> neutral) and
+    # apply the hard cash-floor guard (R-1) BEFORE the persona call. The guard
+    # drops NEW buys when cash is below the regime floor (bull 20%, else 30%);
+    # sells/holds are never touched (SPEC-033/034 — exits always pass).
+    regime, risk_appetite = _read_regime()
+    kept_after_floor: list[dict[str, Any]] = []
+    kept_sids_after_floor: list[int] = []
+    floor_dropped: list[int] = []
+    floor = regime_branch.adjust_for_regime(regime).cash_floor_pct
+    below_floor = cash_pct < floor
+    for sig, sid in zip(signals, sig_ids, strict=False):
+        if below_floor and sig.get("side") == "buy":
+            floor_dropped.append(sid)
+            continue
+        kept_after_floor.append(sig)
+        kept_sids_after_floor.append(sid)
+    if floor_dropped and res_rejected is not None:
+        res_rejected.extend(floor_dropped)
+    signals, sig_ids = kept_after_floor, kept_sids_after_floor
+
     # Split buy vs non-buy; non-buy preserved untouched (REQ-034-4).
     pairs = list(zip(signals, sig_ids, strict=False))
     buys = [(s, sid) for s, sid in pairs if s.get("side") == "buy"]
@@ -128,7 +162,9 @@ def _apply_portfolio_adjustment(
     if not buys:
         return signals, sig_ids
 
-    # REQ-034-1/9: run the portfolio persona on buy signals only.
+    # REQ-034-1/9 + REQ-035-4(b): run the portfolio persona on buy signals only,
+    # injecting the regime + regime-shifted cash guide into its input.
+    regime_adj = regime_branch.adjust_for_regime(regime)
     try:
         pres = portfolio.run(
             {
@@ -138,6 +174,10 @@ def _apply_portfolio_adjustment(
                 "holdings_count": holdings_count,
                 "total_assets": total_assets,
                 "cash_pct": cash_pct,
+                "current_regime": regime_adj.regime,
+                "current_risk_appetite": risk_appetite,
+                "regime_cash_target_shift": regime_adj.cash_target_shift,
+                "regime_cash_floor_pct": regime_adj.cash_floor_pct,
             },
             cycle_kind,
         )

@@ -349,6 +349,19 @@ def main() -> None:
         name="weekly_macro 17:00",
     )
 
+    # SPEC-TRADING-035 REQ-035-3: daily macro persona — weekday 06:10 KST.
+    # The macro persona is the regime producer; running it only on Friday left
+    # the cached regime up to 7 days stale. This reuses run_weekly_macro's
+    # existing CLI path (cli_only_mode -> zero added cost) and refreshes the
+    # system_state regime columns (REQ-035-1b). 06:10 (Q-4) runs AFTER the 06:00
+    # build_macro_context data job so the persona reads fresh data.
+    sched.add_job(
+        lambda: _wrap("daily_macro", orchestrator.run_weekly_macro),
+        CronTrigger(day_of_week="mon-fri", hour=6, minute=10, timezone=KST),
+        id="daily_macro",
+        name="daily_macro 06:10",
+    )
+
     # Retrospective: Sunday 18:00
     sched.add_job(
         lambda: _wrap("retrospective", retrospective.run),
