@@ -58,6 +58,26 @@ def _fake_client(payload, status_code=200):
     return _FakeClient(_FakeResponse(payload, status_code=status_code))
 
 
+class _SequencedClient:
+    """Returns a different response per ``basDd`` (keyed by the param)."""
+
+    def __init__(self, by_day):
+        # by_day: dict[str basDd -> _FakeResponse]; missing day -> empty 200.
+        self._by_day = by_day
+        self.queried_days: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get(self, _url, *, headers=None, params=None):
+        day = (params or {}).get("basDd", "")
+        self.queried_days.append(day)
+        return self._by_day.get(day, _FakeResponse({"OutBlock_1": []}))
+
+
 # ---------------------------------------------------------------------------
 # Post-approval happy path
 # ---------------------------------------------------------------------------
@@ -136,3 +156,80 @@ class TestVkospiGraceful:
             patch.object(krx_openapi.httpx, "Client", return_value=_fake_client(payload)),
         ):
             assert krx_openapi.fetch_vkospi() is None
+
+    def test_marker_wording_is_neutral_not_401(self):
+        # The cause may be intraday-no-data / timeout / approval — not specifically
+        # 401, so the marker must NOT hardcode "401" / "승인 대기".
+        with (
+            patch.object(krx_openapi, "get_settings", return_value=_settings_with_key("KEY")),
+            patch.object(krx_openapi.httpx, "Client", return_value=_fake_client({}, 401)),
+        ):
+            marker = krx_openapi.vkospi_marker()
+        assert "401" not in marker
+        assert "승인" not in marker
+        assert "V-KOSPI" in marker
+
+
+# ---------------------------------------------------------------------------
+# REQ (date-default fix): no-arg fetch walks back to the most recent published
+# trading day; explicit date queries exactly one day (unchanged behaviour).
+# ---------------------------------------------------------------------------
+class TestVkospiDateFallback:
+    def test_no_arg_falls_back_to_previous_published_day(self):
+        from datetime import date
+
+        today = date(2026, 5, 29)
+        yday = date(2026, 5, 28)
+        # today (5/29) -> empty (EOD not published intraday); 5/28 -> value 71.6.
+        by_day = {
+            yday.strftime("%Y%m%d"): _FakeResponse(
+                {"OutBlock_1": [{"IDX_NM": "코스피 200 변동성지수", "CLSPRC_IDX": "71.60"}]}
+            ),
+            today.strftime("%Y%m%d"): _FakeResponse({"OutBlock_1": []}),
+        }
+        seq = _SequencedClient(by_day)
+        with (
+            patch.object(krx_openapi, "get_settings", return_value=_settings_with_key("KEY")),
+            patch.object(krx_openapi.httpx, "Client", return_value=seq),
+            patch.object(krx_openapi, "_today", return_value=today),
+        ):
+            val = krx_openapi.fetch_vkospi()
+        assert val == 71.6
+        # Queried today first, then walked back to 5/28.
+        assert seq.queried_days[0] == today.strftime("%Y%m%d")
+        assert yday.strftime("%Y%m%d") in seq.queried_days
+
+    def test_explicit_date_queries_only_that_day(self):
+        from datetime import date
+
+        target = date(2026, 5, 28)
+        by_day = {
+            target.strftime("%Y%m%d"): _FakeResponse(
+                {"OutBlock_1": [{"IDX_NM": "코스피 200 변동성지수", "CLSPRC_IDX": "71.60"}]}
+            ),
+        }
+        seq = _SequencedClient(by_day)
+        with (
+            patch.object(krx_openapi, "get_settings", return_value=_settings_with_key("KEY")),
+            patch.object(krx_openapi.httpx, "Client", return_value=seq),
+        ):
+            val = krx_openapi.fetch_vkospi(target)
+        assert val == 71.6
+        # Exactly one day queried (no fallback walk for explicit date).
+        assert seq.queried_days == [target.strftime("%Y%m%d")]
+
+    def test_lookback_is_bounded_when_service_dead(self):
+        from datetime import date
+
+        today = date(2026, 5, 29)
+        # Every day returns empty -> must give up after the bounded lookback.
+        seq = _SequencedClient({})
+        with (
+            patch.object(krx_openapi, "get_settings", return_value=_settings_with_key("KEY")),
+            patch.object(krx_openapi.httpx, "Client", return_value=seq),
+            patch.object(krx_openapi, "_today", return_value=today),
+        ):
+            val = krx_openapi.fetch_vkospi()
+        assert val is None
+        # Bounded: at most ~8 days probed (today + 7 lookback), never unbounded.
+        assert 1 <= len(seq.queried_days) <= 8

@@ -21,7 +21,7 @@ the macro context build or the late-cycle evaluation that reads it.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 
@@ -71,25 +71,26 @@ def _first(row: dict, keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def fetch_vkospi(bas_dd: date | None = None) -> float | None:
-    """Return the latest V-KOSPI value, or ``None`` on any failure (graceful).
+# Maximum calendar-day lookback when no explicit date is given. Caps the walk
+# so a dead service (every day empty/error) can never loop forever — a long
+# weekend + holiday is at most ~4 days, so 7 comfortably covers it.
+_MAX_LOOKBACK_DAYS = 7
 
-    Args:
-        bas_dd: Business day to query. Defaults to today (KRX returns the most
-            recent trading day's snapshot for the supplied date).
+
+def _today() -> date:
+    """Current calendar date (test seam — patch to fix 'today')."""
+    return date.today()
+
+
+def _fetch_vkospi_for_day(secret_value: str, bas_dd: date) -> float | None:
+    """Query exactly one business day. Returns the V-KOSPI value or ``None``.
+
+    Never raises — a 401 / timeout / parse error / empty response all yield
+    ``None`` (C-9). The caller decides whether to walk back to an earlier day.
     """
-    settings = get_settings()
-    secret = settings.data_apis.krx_openapi_key
-    if secret is None:
-        # No key wired yet -> graceful (unavailable). Mirrors ecos_adapter's
-        # missing-key handling but never raises (build must not crash).
-        LOG.info("krx_openapi: KRX_OPENAPI_KEY missing — V-KOSPI unavailable")
-        return None
-
-    day = (bas_dd or date.today()).strftime("%Y%m%d")
     url = f"{BASE}/{VKOSPI_ENDPOINT}"
-    headers = {"AUTH_KEY": secret.get_secret_value()}
-
+    headers = {"AUTH_KEY": secret_value}
+    day = bas_dd.strftime("%Y%m%d")
     try:
         with httpx.Client(timeout=20.0) as client:
             resp = client.get(url, headers=headers, params={"basDd": day})
@@ -101,15 +102,53 @@ def fetch_vkospi(bas_dd: date | None = None) -> float | None:
                 raw = _first(row, _CLOSE_KEYS)
                 return float(str(raw).replace(",", ""))
     except Exception:
-        # 401 (approval pending), timeout, parse error — all swallowed (C-9).
-        LOG.info("krx_openapi: V-KOSPI fetch failed (graceful unavailable)")
+        LOG.info("krx_openapi: V-KOSPI fetch failed for %s (graceful)", day)
         return None
     return None
 
 
+def fetch_vkospi(bas_dd: date | None = None) -> float | None:
+    """Return the latest published V-KOSPI value, or ``None`` (graceful).
+
+    Args:
+        bas_dd: When given, queries exactly that business day (no fallback —
+            callers and tests rely on the single-day behaviour). When ``None``,
+            walks backwards from today over up to ``_MAX_LOOKBACK_DAYS`` calendar
+            days and returns the first day that yields a value. This is needed
+            because the derivatives-index EOD snapshot is not published intraday,
+            so ``today`` is empty until the close — the walk lands on the most
+            recent published trading day (skipping weekends/holidays/today).
+
+    Never raises; returns ``None`` after the bounded lookback is exhausted.
+    """
+    secret = get_settings().data_apis.krx_openapi_key
+    if secret is None:
+        # No key wired -> graceful (unavailable). Never raises (build must not crash).
+        LOG.info("krx_openapi: KRX_OPENAPI_KEY missing — V-KOSPI unavailable")
+        return None
+    secret_value = secret.get_secret_value()
+
+    # Explicit date: query just that one day (current/expected behaviour).
+    if bas_dd is not None:
+        return _fetch_vkospi_for_day(secret_value, bas_dd)
+
+    # No date: walk back from today to the most recent published trading day,
+    # bounded by _MAX_LOOKBACK_DAYS so a dead service can't loop forever.
+    today = _today()
+    for offset in range(_MAX_LOOKBACK_DAYS + 1):
+        value = _fetch_vkospi_for_day(secret_value, today - timedelta(days=offset))
+        if value is not None:
+            return value
+    return None
+
+
 def vkospi_marker(bas_dd: date | None = None) -> str:
-    """Return the V-KOSPI value as a display string, or an (unavailable) marker."""
+    """Return the V-KOSPI value as a display string, or an (unavailable) marker.
+
+    The marker is intentionally neutral: an unavailable V-KOSPI may be due to
+    intraday-no-data, a timeout, or pending approval — not specifically 401.
+    """
     val = fetch_vkospi(bas_dd)
     if val is None:
-        return "(unavailable: KRX OpenAPI 401 — 파생상품지수 서비스 승인 대기)"
+        return "(unavailable: V-KOSPI)"
     return f"{val:.2f}"

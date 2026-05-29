@@ -51,9 +51,13 @@ class TestEvaluateThresholds:
         res = lc.evaluate(_snap(deposits_jo=141.0))
         assert res.level == "top"
 
-    def test_vkospi_immediate(self):
-        res = lc.evaluate(_snap(vkospi=30.0))
-        assert res.level == "immediate"
+    def test_vkospi_does_not_trigger_in_observation_mode(self):
+        # SPEC-036 observation mode (VKOSPI_TRIGGER_ENABLED=False default): a
+        # V-KOSPI >= 30 must NOT trigger — the value is collected/logged only.
+        assert lc.VKOSPI_TRIGGER_ENABLED is False
+        res = lc.evaluate(_snap(vkospi=71.0))
+        assert res.triggered is False
+        assert res.level is None
 
     def test_kospi_flash(self):
         res = lc.evaluate(_snap(kospi_daily_pct=-3.0))
@@ -84,10 +88,44 @@ class TestGoverningLevel:
         assert res.forced_sell_pct == pytest.approx(0.30)
         assert res.block_new_entry is True
 
-    def test_multiple_triggers_recorded(self):
+    def test_multiple_triggers_recorded_vkospi_gated_out(self):
+        # vkospi=31 is above its (disabled) threshold but must NOT appear — the
+        # other two breaches still record.
         res = lc.evaluate(_snap(margin_jo=41.0, vkospi=31.0, kospi_daily_pct=-3.5))
         names = {t.signal_name for t in res.triggers}
-        assert names == {"margin", "vkospi", "kospi_daily"}
+        assert names == {"margin", "kospi_daily"}
+        assert "vkospi" not in names
+
+
+# ---------------------------------------------------------------------------
+# SPEC-036 observation mode: V-KOSPI trigger gate (collect/log only until
+# recalibrated; the other 3 signals stay active).
+# ---------------------------------------------------------------------------
+class TestVkospiTriggerGate:
+    def test_vkospi_alone_does_not_trigger_when_disabled(self):
+        res = lc.evaluate(_snap(vkospi=71.0))
+        assert res.triggered is False
+
+    def test_vkospi_never_in_triggers_alongside_margin_breach(self):
+        res = lc.evaluate(_snap(margin_jo=41.0, vkospi=71.0))
+        names = {t.signal_name for t in res.triggers}
+        assert names == {"margin"}
+        assert "vkospi" not in names
+
+    def test_recalibration_path_enabling_flag_restores_immediate_trigger(self, monkeypatch):
+        # Flipping VKOSPI_TRIGGER_ENABLED=True (the future recalibrated state)
+        # makes V-KOSPI >= VKOSPI_IMMEDIATE produce the immediate-level trigger.
+        monkeypatch.setattr(lc, "VKOSPI_TRIGGER_ENABLED", True)
+        res = lc.evaluate(_snap(vkospi=30.0))
+        assert res.triggered is True
+        assert res.level == "immediate"
+        names = {t.signal_name for t in res.triggers}
+        assert "vkospi" in names
+
+    def test_enabled_but_below_threshold_does_not_trigger(self, monkeypatch):
+        monkeypatch.setattr(lc, "VKOSPI_TRIGGER_ENABLED", True)
+        res = lc.evaluate(_snap(vkospi=29.0))
+        assert res.triggered is False
 
 
 # ---------------------------------------------------------------------------

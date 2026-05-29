@@ -49,6 +49,14 @@ DEPOSITS_TOP_JO = 140.0
 VKOSPI_IMMEDIATE = 30.0
 KOSPI_FLASH_PCT = -3.0
 
+# SPEC-036 observation mode: V-KOSPI reads ~71 on this data feed (KOSPI is also
+# ~3x real scale), so the threshold 30 would put the system into permanent
+# "immediate de-risk" (block all new buys). Decision (risk owner): collect/log
+# V-KOSPI but do NOT let it trigger the defense yet — recalibrate after 1-2
+# weeks of paper observation. The other 3 signals (margin, deposits, KOSPI -3%)
+# stay active. When calibrated, flip this to True and adjust VKOSPI_IMMEDIATE.
+VKOSPI_TRIGGER_ENABLED = False
+
 # REQ-036-3 b — per-stage enforcement (cash floor %; severe also forces a sell).
 STAGE_CASH_FLOOR = {
     "moderate": 30.0,
@@ -102,7 +110,13 @@ def _detect(signals: DefenseInput) -> list[SignalTrigger]:
             out.append(SignalTrigger("margin", "moderate", signals.margin_jo, "조원"))
     if signals.deposits_jo is not None and signals.deposits_jo > DEPOSITS_TOP_JO:
         out.append(SignalTrigger("deposits", "top", signals.deposits_jo, "조원"))
-    if signals.vkospi is not None and signals.vkospi >= VKOSPI_IMMEDIATE:
+    # SPEC-036 observation mode: V-KOSPI is collected/logged elsewhere but is
+    # gated out of triggering until recalibrated (VKOSPI_TRIGGER_ENABLED).
+    if (
+        VKOSPI_TRIGGER_ENABLED
+        and signals.vkospi is not None
+        and signals.vkospi >= VKOSPI_IMMEDIATE
+    ):
         out.append(SignalTrigger("vkospi", "immediate", signals.vkospi, ""))
     if signals.kospi_daily_pct is not None and signals.kospi_daily_pct <= KOSPI_FLASH_PCT:
         out.append(SignalTrigger("kospi_daily", "flash", signals.kospi_daily_pct, "%"))
