@@ -10,9 +10,14 @@ import logging
 from datetime import date
 from typing import Any
 
-from trading.db.session import audit, connection, get_effective_regime
+from trading.db.session import audit, connection, get_effective_regime, get_system_state
 from trading.personas import regime_branch
-from trading.personas.base import call_persona, call_persona_via_cli, is_cli_mode_active, render_prompt
+from trading.personas.base import (
+    call_persona,
+    call_persona_via_cli,
+    is_cli_mode_active,
+    render_prompt,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -29,6 +34,26 @@ def _stamp_regime_at_decision(persona_run_id: int | None, regime: str) -> None:
             "UPDATE persona_runs SET regime_at_decision = %s WHERE id = %s",
             (regime, persona_run_id),
         )
+
+
+def _bull_mode_context(regime: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    """SPEC-TRADING-036 REQ-036-2: derive bull-mode ctx via the 3-AND gate (S-4).
+
+    Fails SAFE (bull OFF) on a system_state read error so a DB hiccup can never
+    enable the aggressive profile in the independent risk verifier.
+    """
+    try:
+        if "trading_mode" in input_data or "late_cycle_defense_active" in input_data:
+            trading_mode = input_data.get("trading_mode", "paper")
+            late_cycle = bool(input_data.get("late_cycle_defense_active", False))
+        else:
+            state = get_system_state()
+            trading_mode = state.get("trading_mode", "paper")
+            late_cycle = bool(state.get("late_cycle_defense_active", False))
+    except Exception:
+        trading_mode, late_cycle = "live", True  # fail safe -> bull OFF
+    active = regime_branch.bull_mode_active(regime, late_cycle, trading_mode)
+    return regime_branch.bull_prompt_context(active)
 
 
 def run(
@@ -54,9 +79,14 @@ def run(
     else:
         regime, risk_appetite = get_effective_regime()
     regime_ctx = regime_branch.prompt_context(regime, risk_appetite)
+    # SPEC-TRADING-036 REQ-036-2: bull-mode ctx (3-AND gate). The risk verifier
+    # sees the same aggressive thresholds the decision persona used so its SoD
+    # check is mode-aware. No transition alert here — decision.run owns it.
+    bull_ctx = _bull_mode_context(regime, input_data)
     system_prompt = render_prompt("risk.jinja", **{
         **input_data,
         **regime_ctx,
+        **bull_ctx,
         "today": today,
         "cycle_kind": cycle_kind,
     })

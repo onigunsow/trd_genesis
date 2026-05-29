@@ -21,6 +21,7 @@ from trading.contexts import (
 from trading.monitoring import data_freshness
 from trading.personas import orchestrator, retrospective
 from trading.reports import daily_report
+from trading.risk import late_cycle as _late_cycle
 from trading.risk.auto_resume import run_premarket_auto_resume
 from trading.risk.blocked_cache import refresh_blocked_tickers
 from trading.scheduler.calendar import is_trading_day, reason_if_closed
@@ -339,6 +340,20 @@ def main() -> None:
         CronTrigger(day_of_week="mon-fri", hour=16, minute=0, timezone=KST),
         id="daily_report",
         name="daily_report 16:00",
+    )
+
+    # SPEC-TRADING-036 REQ-036-3(h): late-cycle ceiling-defence evaluation —
+    # weekday 16:05 KST, AFTER the 16:00 daily_report so the post-market data
+    # (06:00 momentum + EOD index) is the freshest available (Q-3 resolved to
+    # 16:05). Evaluates the 5 late-cycle signals and, on breach, enforces the
+    # stage cash floor / entry block / severe forced deleverage. _wrap gives the
+    # KRX trading-day guard (no eval on holidays).
+    # @MX:SPEC: SPEC-TRADING-036
+    sched.add_job(
+        lambda: _wrap("late_cycle", _late_cycle.run_late_cycle_evaluation),
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=5, timezone=KST),
+        id="late_cycle",
+        name="late_cycle 16:05",
     )
 
     # Weekly macro: Friday 17:00

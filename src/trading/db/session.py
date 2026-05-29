@@ -115,6 +115,43 @@ def update_system_state(**fields: Any) -> None:
         cur.execute(sql, params)
 
 
+def set_late_cycle_defense(
+    *,
+    active: bool,
+    level: str | None,
+    entered_at: datetime | None,
+) -> None:
+    """SPEC-TRADING-036 REQ-036-3: write the late-cycle defence flag.
+
+    On activation pass ``active=True`` with the governing ``level`` and the
+    ``entered_at`` timestamp (used for the 24h clearance cooldown). On clearance
+    pass ``active=False, level=None, entered_at=None``. ``entered_at`` is bound
+    as a normal parameter (not NOW()) so the same helper can NULL it on clear.
+    """
+    update_system_state(
+        late_cycle_defense_active=active,
+        late_cycle_level=level,
+        late_cycle_entered_at=entered_at,
+    )
+
+
+def log_late_cycle_event(
+    *,
+    event_type: str,
+    signal_name: str,
+    value: float | None,
+    unit: str | None,
+    level: str | None,
+) -> None:
+    """SPEC-TRADING-036 REQ-036-3(g): append a late_cycle_events trigger/clear row."""
+    sql = """
+        INSERT INTO late_cycle_events (event_type, signal_name, value, unit, level)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (event_type, signal_name, value, unit, level))
+
+
 def _notify_regime_stale(updated_at: datetime | None, age_days: float) -> None:
     """REQ-035-1c: emit one Telegram warning when the regime cache is stale.
 

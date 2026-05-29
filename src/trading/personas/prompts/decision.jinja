@@ -124,6 +124,17 @@
 {% if regime_block_leverage | default(false) %}- bear 긴축: 레버리지/신용(margin) 매수 차단.{% endif %}
 {% endif %}
 
+{% if bull_mode_active | default(false) %}
+[불장 모드 (Bull Mode — SPEC-016 Phase 3, 공격 프로필 · paper 한정)]
+지금은 강세장(불장)입니다. 보수 모드를 해제하고 불장을 적극 활용하세요. 단 후기 사이클 신호 시 즉시 방어 전환합니다.
+- 동시 보유 종목: {{ bull_target_holdings_min | default(1) }}~{{ bull_target_holdings_max | default(2) }}개로 집중 (선택과 집중)
+- 현금 바닥(목표): {{ bull_cash_target_min | default(10) }}~{{ bull_cash_target_max | default(20) }}% (현금 {{ bull_cash_floor_pct | default(10.0) }}% 미만은 코드 가드가 신규 매수 차단)
+- 보유 기간 가이드: {{ bull_holding_days_min | default(4) }}~{{ bull_holding_days_max | default(10) }}일
+- event-CAR 임계 강화: |{{ bull_event_car_threshold | default(1.0) }}%| (기존 |1.5%| 보다 민감)
+- 섹터 집중 한도 +{{ bull_sector_cap_uplift_pct | default(10.0) }}%pt, 단일 종목 max +{{ bull_single_stock_uplift_pct | default(10.0) }}%pt 상향(paper 한정)
+주의: 이 공격 파라미터는 모의(paper)에서만 적용됩니다. 실거래/후기 사이클 방어 시 자동 해제됩니다.
+{% endif %}
+
 [매크로 페르소나 최신 가이드 (주간 캐시)]
 {{ macro_guide | default('(없음)') }}
 

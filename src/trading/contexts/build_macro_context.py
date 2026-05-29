@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date
 
 from trading.contexts.utils import contexts_dir, guarded_build, now_kst_str
+from trading.data.korea_momentum import gather_momentum, render_section
 from trading.db.session import connection
 
 
@@ -120,6 +121,24 @@ def _korea_market_table() -> str:
     return "\n".join(out)
 
 
+def _korea_momentum_section(today: date) -> str:
+    """SPEC-TRADING-036 REQ-036-1: ``## 한국 시장 모멘텀`` section (graceful).
+
+    Robust signals (index %, flows, VIX) fill from pykrx/yfinance; external
+    signals (신용융자/예탁금 via ECOS, V-KOSPI via KRX OpenAPI) fill or render
+    ``(unavailable)``. A momentum-gather failure NEVER aborts the build (C-9):
+    the section header is always emitted so downstream greps (AC) succeed.
+    """
+    try:
+        snap = gather_momentum(today)
+        return render_section(snap, today)
+    except Exception:
+        return (
+            f"## 한국 시장 모멘텀 (as of {today.isoformat()} KST)\n"
+            "_(unavailable: 모멘텀 수집 실패 — 빌드는 계속)_"
+        )
+
+
 def build() -> str:
     today = date.today()
     parts = [
@@ -137,8 +156,10 @@ def build() -> str:
         "## 한국 대형주 흐름 (워치리스트)",
         _korea_market_table(),
         "",
+        _korea_momentum_section(today),
+        "",
         "---",
-        "_데이터 소스: FRED, ECOS (한국은행), yfinance, pykrx · 캐시: Postgres_",
+        "_데이터 소스: FRED, ECOS (한국은행), yfinance, pykrx, KRX OpenAPI · 캐시: Postgres_",
     ]
     return "\n".join(parts)
 

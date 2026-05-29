@@ -138,6 +138,10 @@ class DataApiSecrets(BaseSettings):
     fred_api_key: SecretStr | None = Field(default=None, alias="FRED_API_KEY")
     ecos_api_key: SecretStr | None = Field(default=None, alias="ECOS_API_KEY")
     dart_api_key: SecretStr | None = Field(default=None, alias="DART_API_KEY")
+    # SPEC-TRADING-036 REQ-036-1(c): KRX OpenAPI key for the V-KOSPI (파생상품
+    # 지수) fetch. Optional — when missing the fetcher returns (unavailable)
+    # gracefully and never crashes the macro context build.
+    krx_openapi_key: SecretStr | None = Field(default=None, alias="KRX_OPENAPI_KEY")
 
 
 class AnthropicSecrets(BaseSettings):
