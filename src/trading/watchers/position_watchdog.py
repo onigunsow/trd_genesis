@@ -33,7 +33,7 @@ from typing import Any
 import pytz
 
 from trading.alerts.telegram import system_briefing
-from trading.db.session import audit
+from trading.db.session import audit, connection
 from trading.kis.account import balance
 from trading.kis.order import sell as kis_sell
 from trading.strategy.volatility.thresholds import get_dynamic_thresholds
@@ -41,11 +41,12 @@ from trading.strategy.volatility.thresholds import get_dynamic_thresholds
 LOG = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
 
-# In-memory per-ticker take-profit guard: ticker -> KST date the ticker was last
-# taken. A new KST day naturally clears the guard (stored date != today).
-# Single-scheduler process makes this sufficient (A-3); a container restart
-# resets it, an accepted same-day limitation (SPEC-024 TickerThrottle precedent).
-_TOOK_PROFIT: dict[str, date] = {}
+# SPEC-TRADING-038 REQ-038-2: the per-ticker take-profit guard is persisted to the
+# ``position_action_markers`` table (action='take_profit') instead of an in-memory
+# dict. The DB is the single source of truth, so the "already took profit today"
+# marker survives a container restart and cannot drive a double half-sell. The
+# marker is keyed by the KST trading day, so a new day is naturally a fresh state.
+_TAKE_PROFIT_ACTION = "take_profit"
 
 
 def _today_kst() -> date:
@@ -54,19 +55,34 @@ def _today_kst() -> date:
 
 
 def _took_profit_today(ticker: str) -> bool:
-    """True if `ticker` was already take-profit-exited on the current KST day."""
-    marked = _TOOK_PROFIT.get(ticker)
-    return marked is not None and marked == _today_kst()
+    """True if `ticker` was already take-profit-exited on the current KST day.
+
+    SPEC-TRADING-038 REQ-038-2: backed by ``position_action_markers`` so the guard
+    survives a restart. Signature unchanged (REQ-038-2b). A read failure is
+    propagated to the caller's per-ticker try/except (graceful isolation).
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM position_action_markers "
+            "WHERE trading_day = %s AND ticker = %s AND action = %s LIMIT 1",
+            (_today_kst(), ticker, _TAKE_PROFIT_ACTION),
+        )
+        return cur.fetchone() is not None
 
 
 def _mark_took_profit(ticker: str) -> None:
-    """Mark `ticker` as take-profit-exited for the current KST day."""
-    _TOOK_PROFIT[ticker] = _today_kst()
+    """Mark `ticker` as take-profit-exited for the current KST day.
 
-
-def _reset_took_profit() -> None:
-    """Clear the in-memory take-profit guard (test seam)."""
-    _TOOK_PROFIT.clear()
+    SPEC-TRADING-038 REQ-038-2: idempotent DB insert (``ON CONFLICT DO NOTHING``)
+    so re-marking the same (trading_day, ticker, action) never errors and keeps a
+    single row. Signature unchanged (REQ-038-2b).
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO position_action_markers (trading_day, ticker, action) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (_today_kst(), ticker, _TAKE_PROFIT_ACTION),
+        )
 
 
 def _build_client() -> Any:

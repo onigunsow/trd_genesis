@@ -10,6 +10,7 @@ separation via TRADING_MODE).
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -27,7 +28,15 @@ class TradingMode(str, Enum):
 # REQ-RISK-05-1 — Five hard limits, expressed as fractions of capital.
 # These are NOT modified by any persona output. The circuit breaker
 # (src/trading/risk/limits.py, M5) enforces them before every order.
-RISK_DAILY_MAX_LOSS: Final[float] = -0.01           # -1.0%
+#
+# SPEC-TRADING-038 REQ-038-1: the daily-loss limit is widened -1.0% -> -2.5%
+# (risk owner decision) so normal multi-position intraday swings — bounded by the
+# SPEC-037 per-position stop floor (-10%) — are not misread as a real daily loss.
+# It is a persona-invariant hard limit, so it stays a module constant; the env
+# fallback only lets the operator re-tune the floor without a code change. A real
+# loss still trips and stays NON-auto-resumable (SPEC-032, keyed on the
+# "daily_loss" breach prefix, independent of this value).
+RISK_DAILY_MAX_LOSS: Final[float] = float(os.getenv("RISK_DAILY_MAX_LOSS", "-0.025"))  # -2.5%
 RISK_PER_TICKER_MAX_POSITION: Final[float] = 0.20    # 20.0%
 RISK_TOTAL_INVESTED_MAX: Final[float] = 0.80         # 80.0%
 RISK_SINGLE_ORDER_MAX: Final[float] = 0.10           # 10.0%

@@ -8,10 +8,75 @@ no network, no DB.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date
+from typing import Any
 from unittest.mock import patch
 
 import pytest
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-TRADING-038 REQ-038-2: the take-profit guard is now DB-backed
+# (position_action_markers). A stateful in-memory double (a set of
+# (trading_day, ticker, action)) stands in for the table so inserts in one poll
+# are visible to later polls/reads within a test — the cross-restart semantics.
+# --------------------------------------------------------------------------- #
+class _MarkerCursor:
+    def __init__(self, store: set[tuple[date, str, str]]) -> None:
+        self._store = store
+        self._result: Any = None
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        text = sql.strip().upper()
+        day, ticker = params[0], params[1]
+        if text.startswith("SELECT"):
+            self._result = (1,) if (day, ticker, "take_profit") in self._store else None
+        elif "INSERT" in text:
+            self._store.add((day, ticker, "take_profit"))
+
+    def fetchone(self) -> Any:
+        return self._result
+
+    def __enter__(self) -> _MarkerCursor:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+
+class _MarkerConn:
+    def __init__(self, store: set[tuple[date, str, str]]) -> None:
+        self._store = store
+
+    def cursor(self) -> _MarkerCursor:
+        return _MarkerCursor(self._store)
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> _MarkerConn:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+
+def _patch_markers(store: set[tuple[date, str, str]]):
+    """Patch position_watchdog.connection with a set-backed marker double."""
+    from trading.watchers import position_watchdog
+
+    @contextmanager
+    def _factory(*_a: Any, **_k: Any):
+        yield _MarkerConn(store)
+
+    return patch.object(position_watchdog, "connection", side_effect=_factory)
 
 
 def _holding(ticker: str, qty: int, pnl_pct: float) -> dict:
@@ -39,13 +104,23 @@ def _thresholds(eff_stop: float | None, eff_take: float | None, source: str = "d
 
 
 @pytest.fixture(autouse=True)
-def _reset_take_profit_marker():
-    """Reset the in-memory per-ticker take-profit guard between tests."""
+def _marker_store():
+    """Provide a fresh set-backed position_action_markers double per test.
+
+    SPEC-TRADING-038 REQ-038-2: the take-profit guard is DB-backed. Every test
+    gets an empty store and a patched ``connection`` so the watchdog's marker
+    reads/writes stay offline yet stateful within the test.
+    """
     from trading.watchers import position_watchdog
 
-    position_watchdog._reset_took_profit()
-    yield
-    position_watchdog._reset_took_profit()
+    store: set[tuple[date, str, str]] = set()
+
+    @contextmanager
+    def _factory(*_a: Any, **_k: Any):
+        yield _MarkerConn(store)
+
+    with patch.object(position_watchdog, "connection", side_effect=_factory):
+        yield store
 
 
 # --------------------------------------------------------------------------- #
