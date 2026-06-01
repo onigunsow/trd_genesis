@@ -481,6 +481,38 @@ class TestDryRun:
         assert result["dry_run"] is True
 
 
+class TestSyntheticExclusion:
+    def test_fifo_selects_exclude_synthetic_orders(self):
+        """SPEC-039: reconcile FIFO SELECTs filter `synthetic = false` (double-count guard).
+
+        A paper order already filled synthetically must not be re-attributed
+        against KIS balance holdings.
+        """
+        from trading.kis import fills
+
+        client = MagicMock()
+        bal = _bal([_holding("005930", qty=1, avg_cost=70_000)])
+        cursor = ScriptedCursor(
+            fetchone_queue=[{"accounted": 0}],
+            fetchall_queue=[[_order(10, qty=1)], []],
+        )
+
+        with (
+            patch.object(fills, "balance", return_value=bal),
+            patch.object(
+                fills, "connection",
+                side_effect=lambda *a, **k: _conn_factory(cursor),
+            ),
+        ):
+            fills.reconcile_from_balance(client, dry_run=False)
+
+        # Both the already_accounted SELECT and the open-orders SELECT must carry
+        # the synthetic exclusion so synthetic fills are never double-counted.
+        select_sqls = [s for s, _ in cursor.calls if s.strip().upper().startswith("SELECT")]
+        guarded = [s for s in select_sqls if "synthetic = false" in s.lower()]
+        assert len(guarded) >= 2, "expected synthetic-exclusion on both FIFO SELECTs"
+
+
 class TestErrorIsolation:
     def test_db_error_counted_not_raised(self):
         """A DB failure mid-cycle is logged + counted, never crashes the cron."""

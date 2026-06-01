@@ -52,32 +52,34 @@ def daily_order_count_today() -> int:
         return int(row["n"] or 0)
 
 
+# @MX:ANCHOR: daily_pnl_pct is the daily-loss circuit-breaker input.
+# fan_in: check_pre_order (the pre-order hard-limit gate) and the briefing
+# prompts both consume it.
+# @MX:REASON: SPEC-039 — this MUST be *realized* P&L (completed round-trips that
+# exit today), NOT net trade cash flow. The old cash-flow formula counted buy
+# cash-outflow as loss, so a net-buy day reported a phantom loss (2026-06-01:
+# -3.34% false daily_loss halt while the day's realized P&L was +24,283). A buy
+# still held contributes nothing — only completed round-trips do. Mode-agnostic:
+# correct for both paper and live.
 def daily_pnl_pct(initial_capital: int) -> float:
-    """Approximate daily PnL as a fraction of initial_capital.
+    """Today's *realized* P&L as a fraction of initial_capital.
 
-    For paper M2/M3, KIS fill price is not always populated; we use a coarse
-    estimate from filled orders. Production would inspect KIS balance delta.
+    Realized P&L is the sum of net P&L over FIFO-matched round-trips that exit
+    today (reuses ``edge.roundtrips`` — the same pure cost-matching used by the
+    edge scorecard). Open buy lots (still held) contribute zero, so a net-buy
+    day is never mistaken for a loss.
     """
-    sql = """
-        SELECT COALESCE(SUM(
-            CASE
-              WHEN side='buy'  AND status IN ('filled','partial')
-                THEN -COALESCE(fill_price, 0) * COALESCE(fill_qty, qty)
-              WHEN side='sell' AND status IN ('filled','partial')
-                THEN  COALESCE(fill_price, 0) * COALESCE(fill_qty, qty)
-              ELSE 0
-            END
-        ), 0) AS pnl
-        FROM orders
-        WHERE ts::date = CURRENT_DATE
-    """
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(sql)
-        row = cur.fetchone()
-        pnl = float(row["pnl"] or 0)
     if initial_capital <= 0:
         return 0.0
-    return pnl / initial_capital
+    # Imported lazily to avoid a circular import (edge.roundtrips -> db.session).
+    from trading.edge import roundtrips
+
+    today = date.today()
+    result = roundtrips.build_roundtrips(roundtrips.load_fill_rows())
+    realized = sum(
+        rt.net_pnl for rt in result.roundtrips if rt.exit_date == today
+    )
+    return realized / initial_capital
 
 
 def check_pre_order(

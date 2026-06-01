@@ -81,6 +81,7 @@ def _transition_orders_fifo(
                   FROM orders
                  WHERE ticker = %s AND side = 'buy'
                    AND status IN ('filled', 'partial')
+                   AND synthetic = false
                 """,
                 (ticker,),
             )
@@ -98,6 +99,7 @@ def _transition_orders_fifo(
                  WHERE ticker = %s AND side = 'buy'
                    AND kis_order_no IS NOT NULL
                    AND status IN ('submitted', 'partial')
+                   AND synthetic = false
                  ORDER BY ts ASC
                  FOR UPDATE
                 """,
@@ -265,7 +267,9 @@ def _mirror_positions(
 # fill_sync alias).
 # @MX:REASON: routing every fill reconcile through one chokepoint keeps the
 # balance->FIFO->positions sequence transactional and audit_log emission
-# consistent regardless of trigger.
+# consistent regardless of trigger. SPEC-039: the FIFO SELECTs now exclude
+# `synthetic = false` so a paper order already filled by the synthetic-fill
+# layer is never re-attributed against KIS balance (double-count guard).
 def reconcile_from_balance(
     client: KisClient,
     *,
