@@ -36,6 +36,7 @@ from trading.config import project_root
 from trading.db.session import connection
 from trading.kis.market import OVERHEAT_STAT_CLS
 from trading.personas.context import DEFAULT_WATCHLIST
+from trading.strategy.volatility.rsi import rsi_from_closes
 
 LOG = logging.getLogger(__name__)
 SCREEN_FILE = project_root() / "data" / "screened_tickers.json"
@@ -245,16 +246,12 @@ def _screen_ticker(ticker: str) -> dict[str, Any] | None:
     if avg_value < 10e9:
         return None
 
-    # Calculate RSI(14)
+    # Calculate RSI(14) — SPEC-TRADING-040: shared with position_watchdog via the
+    # extracted rsi_from_closes (single implementation, no duplicate formula).
     all_closes = [float(r["close"]) for r in reversed(ohlcv)]
-    diffs = [all_closes[i] - all_closes[i - 1] for i in range(1, len(all_closes))]
-    gains = [d for d in diffs[-14:] if d > 0]
-    losses = [-d for d in diffs[-14:] if d < 0]
-    avg_gain = sum(gains) / 14 if gains else 0.0
-    avg_loss = sum(losses) / 14 if losses else 0.0
-    rsi = 100.0 - (100.0 / (1 + (avg_gain / avg_loss))) if avg_loss > 0 else (
-        100.0 if avg_gain > 0 else 50.0
-    )
+    rsi = rsi_from_closes(all_closes)
+    if rsi is None:  # < 15 closes (guarded above by len(ohlcv) >= 20, defensive)
+        rsi = 50.0
 
     # PER
     per = float(fund["per"]) if fund and fund.get("per") else None

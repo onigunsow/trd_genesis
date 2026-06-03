@@ -1166,6 +1166,11 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
                 f"지정가 {ref_price:,}원 (단일가매매 대응)",
             )
 
+        # SPEC-TRADING-040 M3/M4: pass 단기과열 + the held P&L so check_pre_order can
+        # apply the sell-budget separation, the 단기과열 1-buy/day cap, and the
+        # no-averaging-down-on-a-loss guard. Buy-affecting only; a SELL is never
+        # newly blocked (risk-reducing exits always allowed).
+        _held = next((h for h in assets["holdings"] if h.get("ticker") == ticker), None)
         chk = check_pre_order(
             side=side_str,
             ticker=ticker,
@@ -1175,6 +1180,8 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             holdings=assets["holdings"],
             mode=client.mode.value,
             market="KOSPI",
+            overheated=bool(getattr(safety, "overheated", False)),
+            held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
         )
         if not chk.passed:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
@@ -1615,6 +1622,9 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
                 f"지정가 {ref_price:,}원 (단일가매매 대응)",
             )
 
+        # SPEC-TRADING-040 M3/M4: 단기과열 + held P&L for sell-budget separation,
+        # the 1-buy/day cap and the no-averaging-down guard (buy-affecting only).
+        _held = next((h for h in assets["holdings"] if h.get("ticker") == ticker), None)
         chk = check_pre_order(
             side=side_str,
             ticker=ticker or "",
@@ -1624,6 +1634,8 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             holdings=assets["holdings"],
             mode=client.mode.value,
             market="KOSPI",
+            overheated=bool(getattr(safety, "overheated", False)),
+            held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
         )
         if not chk.passed:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})

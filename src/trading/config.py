@@ -42,6 +42,45 @@ RISK_TOTAL_INVESTED_MAX: Final[float] = 0.80         # 80.0%
 RISK_SINGLE_ORDER_MAX: Final[float] = 0.10           # 10.0%
 RISK_DAILY_ORDER_COUNT_MAX: Final[int] = 10
 
+# SPEC-TRADING-040 M2 (REQ-040-2): single-ticker concentration cap. When a held
+# ticker exceeds this fraction of the total portfolio value the position watchdog
+# auto-trims (code-enforced — the decision persona effectively never sells). The
+# normal cap is wider than RISK_PER_TICKER_MAX_POSITION (the buy-side entry cap,
+# 20%): the buy cap stops a *new* over-weight entry while this cap *unwinds* an
+# already-accumulated over-weight. Under late-cycle defence the cap tightens to
+# RISK_CONCENTRATION_CAP_LATE_CYCLE so trims align with the defence (synergy).
+RISK_CONCENTRATION_CAP_PCT: Final[float] = float(
+    os.getenv("RISK_CONCENTRATION_CAP_PCT", "0.25")
+)  # 25%
+RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT: Final[float] = float(
+    os.getenv("RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT", "0.20")
+)  # 20% when late-cycle defence is active
+
+# SPEC-TRADING-040 M3 (REQ-040-3): daily_count sell-budget reserve K. Buys are
+# capped at RISK_DAILY_ORDER_COUNT_MAX - K so K order slots are always reserved
+# for risk-reducing exits — buys can never starve a pending sell before a halt
+# trips. Sells are excluded from the count entirely (never blocked, never
+# increment), so this reserve is a *preventive* belt to SPEC-037's post-halt
+# SELL bypass (the suspenders).
+RISK_SELL_BUDGET_RESERVE: Final[int] = int(
+    os.getenv("RISK_SELL_BUDGET_RESERVE", "2")
+)
+
+# SPEC-TRADING-040 M1c (REQ-040-1c): stagnation-rotation trim thresholds. A
+# holding parked for STAGNATION_DAYS+ with a flat P&L (|pnl| < band) and a
+# neutral RSI is rotated out (partial trim). Risk/rebalance-motivated → EV-exempt
+# (SPEC ADR-1). Distinct from the extreme stop/take rules.
+STAGNATION_DAYS: Final[int] = int(os.getenv("STAGNATION_DAYS", "20"))
+STAGNATION_PNL_BAND_PCT: Final[float] = float(
+    os.getenv("STAGNATION_PNL_BAND_PCT", "3.0")
+)
+STAGNATION_RSI_LOW: Final[float] = float(os.getenv("STAGNATION_RSI_LOW", "40.0"))
+STAGNATION_RSI_HIGH: Final[float] = float(os.getenv("STAGNATION_RSI_HIGH", "60.0"))
+# Fraction of the position rotated out when stagnant (partial trim, not full).
+STAGNATION_TRIM_FRACTION: Final[float] = float(
+    os.getenv("STAGNATION_TRIM_FRACTION", "0.5")
+)
+
 # REQ-INFRA-01-3 — Healthcheck SLA
 HEALTHCHECK_TIMEOUT_SECONDS: Final[int] = 60
 

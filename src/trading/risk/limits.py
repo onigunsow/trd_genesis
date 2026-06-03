@@ -15,6 +15,7 @@ from trading.config import (
     RISK_DAILY_MAX_LOSS,
     RISK_DAILY_ORDER_COUNT_MAX,
     RISK_PER_TICKER_MAX_POSITION,
+    RISK_SELL_BUDGET_RESERVE,
     RISK_SINGLE_ORDER_MAX,
     RISK_TOTAL_INVESTED_MAX,
     estimate_fee,
@@ -22,6 +23,11 @@ from trading.config import (
 from trading.db.session import audit, connection
 
 LOG = logging.getLogger(__name__)
+
+# SPEC-TRADING-040 M3 (REQ-040-3a): the per-day sell-budget reserve. Buys are
+# capped at RISK_DAILY_ORDER_COUNT_MAX - SELL_BUDGET_RESERVE; the reserved slots
+# are sell-only. Sells are excluded from the count entirely (REQ-040-3b).
+SELL_BUDGET_RESERVE = RISK_SELL_BUDGET_RESERVE
 
 LimitName = Literal[
     "daily_loss",
@@ -82,6 +88,39 @@ def daily_pnl_pct(initial_capital: int) -> float:
     return realized / initial_capital
 
 
+def buy_count_today(ticker: str) -> int:
+    """Number of BUY orders for `ticker` today (mode-agnostic).
+
+    SPEC-TRADING-040 M4 (REQ-040-4a): backs the 단기과열 1-buy-per-day cap. Counts
+    submitted/filled/partial BUY orders so a same-day repeat is detectable before
+    it is submitted. Reuses the ``orders`` table (no new column — SPEC Q-6).
+    """
+    sql = """
+        SELECT COUNT(*) AS n FROM orders
+         WHERE ts::date = CURRENT_DATE
+           AND ticker = %s
+           AND side = 'buy'
+           AND status IN ('submitted','filled','partial')
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (ticker,))
+        row = cur.fetchone()
+        return int(row["n"] or 0)
+
+
+# SPEC-TRADING-040 M4: at most one BUY per KST day for a 단기과열 ticker.
+_OVERHEAT_MAX_BUYS_PER_DAY = 1
+
+
+# @MX:ANCHOR: SPEC-TRADING-040 — the pre-order hard-limit gate. fan_in: every
+# orchestrator buy/sell path (pre_market / intraday / event) calls it before
+# submitting. The SPEC-040 additions (sell-budget separation, 단기과열 repeat-buy
+# block) are ADDITIVE: a SELL is never newly blocked, and a BUY only gains the
+# preventive sell-budget reserve + overheat repeat/avg-down guards. The live
+# count semantics (``daily_order_count_today``) are unchanged (REQ-040-3c).
+# @MX:REASON: money/risk gate on the live order path — a regression here lets a
+# bad order through or starves a risk-reducing exit.
+# @MX:SPEC: SPEC-TRADING-040
 def check_pre_order(
     *,
     side: Literal["buy", "sell"],
@@ -92,8 +131,20 @@ def check_pre_order(
     holdings: list[dict],
     mode: str = "paper",
     market: str = "KOSPI",
+    overheated: bool = False,
+    held_pnl_pct: float | None = None,
 ) -> LimitCheck:
-    """Run all five hard-limit checks (수수료 포함 차감). Returns LimitCheck."""
+    """Run all hard-limit checks (수수료 포함 차감). Returns LimitCheck.
+
+    SPEC-TRADING-040 additions (additive, buy-affecting only):
+    - ``overheated``: the ticker is 단기과열(stat_cls=55). When True a BUY is
+      capped at one per KST day (REQ-040-4a) and refused while the position is at
+      an unrealised loss (no averaging down — REQ-040-4b).
+    - ``held_pnl_pct``: the current holding's P&L% (for the avg-down guard).
+    - daily_count is now SIDE-AWARE (REQ-040-3): buys are capped at
+      ``RISK_DAILY_ORDER_COUNT_MAX - SELL_BUDGET_RESERVE`` so K slots survive for
+      risk-reducing exits; a SELL is never blocked by the count.
+    """
     chk = LimitCheck(passed=True)
     if total_assets <= 0:
         chk.passed = False
@@ -112,10 +163,31 @@ def check_pre_order(
             f"{int(total_assets * RISK_SINGLE_ORDER_MAX):,}"
         )
 
-    # 2. daily order count
-    cnt = daily_order_count_today()
-    if cnt + 1 > RISK_DAILY_ORDER_COUNT_MAX:
-        chk.breaches.append(f"daily_count: 오늘 주문 {cnt} → 한도 {RISK_DAILY_ORDER_COUNT_MAX}")
+    # 2. daily order count — SPEC-040 M3: side-aware sell-budget separation.
+    # A SELL is risk-reducing and NEVER blocked by (or counted against) the
+    # daily order count (REQ-040-3b). A BUY is capped at MAX - K so K slots are
+    # always reserved for pending exits (REQ-040-3a). The underlying count query
+    # (``daily_order_count_today``) is unchanged — live semantics preserved.
+    if side == "buy":
+        cnt = daily_order_count_today()
+        buy_limit = RISK_DAILY_ORDER_COUNT_MAX - SELL_BUDGET_RESERVE
+        if cnt + 1 > buy_limit:
+            chk.breaches.append(
+                f"daily_count: 오늘 주문 {cnt} → 매수 한도 {buy_limit} "
+                f"(전체 {RISK_DAILY_ORDER_COUNT_MAX}, 매도예산 {SELL_BUDGET_RESERVE} 확보)"
+            )
+
+    # 2b. SPEC-040 M4: 단기과열 repeat-buy block + no averaging down on a loss.
+    # Buy-only — a SELL is never subject to these gates (exits always allowed).
+    if side == "buy" and overheated:
+        if buy_count_today(ticker) >= _OVERHEAT_MAX_BUYS_PER_DAY:
+            chk.breaches.append(
+                f"repeat_buy: {ticker} 단기과열 당일 매수 {_OVERHEAT_MAX_BUYS_PER_DAY}회 초과 차단"
+            )
+        if held_pnl_pct is not None and held_pnl_pct < 0:
+            chk.breaches.append(
+                f"avg_down: {ticker} 단기과열·손실({held_pnl_pct:+.2f}%) 물타기 매수 거부"
+            )
 
     # 3. daily loss (only blocks NEW orders, not the current loss-recovery sell)
     pnl_pct = daily_pnl_pct(total_assets)
