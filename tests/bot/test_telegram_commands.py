@@ -97,9 +97,11 @@ class TestHelpIncludesNewCommands:
     """Verify /help output includes new commands."""
 
     def test_help_lists_tool_calling(self):
+        # Help now displays the menu-valid underscore form (the hyphen form
+        # still works as an alias in the dispatcher).
         from trading.risk.emergency import _help
         text = _help()
-        assert "/tool-calling" in text
+        assert "/tool_calling" in text
 
     def test_help_lists_reflection(self):
         from trading.risk.emergency import _help

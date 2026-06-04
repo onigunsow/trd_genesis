@@ -97,9 +97,11 @@ class TestHelpIncludesNewCommands:
     @patch("trading.risk.emergency.get_system_state")
     @patch("trading.risk.emergency.connection")
     def test_help_lists_car_filter(self, mock_conn, mock_state):
+        # Help now displays the menu-valid underscore forms (hyphen forms
+        # still work as aliases in the dispatcher).
         reply = handle("/help", actor="test")
-        assert "/car-filter" in reply
-        assert "/dyn-threshold" in reply
+        assert "/car_filter" in reply
+        assert "/dyn_threshold" in reply
 
 
 class TestFixedRulesAlwaysPresent:

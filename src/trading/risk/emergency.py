@@ -8,11 +8,13 @@ Commands honoured (REQ-RISK-05-4):
 - /pnl     print today's PnL (best-effort estimate)
 - /verbose exit silent_mode (REQ-FATIGUE-05-10)
 - /silent  enter silent_mode manually
-- /tool-calling on|off  toggle tool-calling mode (REQ-COMPAT-04-7)
+- /tool_calling on|off (alias /tool-calling)  toggle tool-calling mode (REQ-COMPAT-04-7)
 - /reflection on|off    toggle reflection loop (REQ-COMPAT-04-7)
+- /car_filter on|off (alias /car-filter)      toggle Event-CAR filter (SPEC-012 REQ-MIGR-07-3)
+- /dyn_threshold on|off (alias /dyn-threshold)  toggle dynamic thresholds (SPEC-012 REQ-MIGR-07-3)
 - /jit on|off|ws|dart|news  toggle JIT pipeline (SPEC-011 REQ-MIGR-06-3)
 - /prototype on|off     toggle prototype risk (SPEC-011 REQ-MIGR-06-3)
-- /prototype-status     show ProtoHedge status (SPEC-011 REQ-DYNRISK-04-10)
+- /prototype_status (alias /prototype-status)  show ProtoHedge status (SPEC-011 REQ-DYNRISK-04-10)
 - /cli on|off           toggle CLI persona mode (SPEC-015 REQ-FALLBACK-06-5)
 - /help    list commands
 """
@@ -69,22 +71,24 @@ def handle(text: str, actor: str = "telegram") -> str:
         update_system_state(verbose_briefing=False, updated_by=actor)
         audit("VERBOSE_BRIEFING_OFF", actor=actor, details={})
         return "✓ verbose_briefing=false. 사이클 요약(통합)만 발송."
-    # SPEC-009 REQ-COMPAT-04-7: Tool-calling and reflection toggle commands
-    if cmd == "/tool-calling":
+    # SPEC-009 REQ-COMPAT-04-7: Tool-calling and reflection toggle commands.
+    # Underscore aliases let these be registered in Telegram's command menu
+    # (which requires [a-z0-9_]); the hyphen forms remain valid (non-breaking).
+    if cmd in ("/tool-calling", "/tool_calling"):
         return _handle_tool_calling(text, actor)
     if cmd == "/reflection":
         return _handle_reflection(text, actor)
     # SPEC-012 REQ-MIGR-07-3: CAR filter and dynamic thresholds toggle commands
-    if cmd == "/car-filter":
+    if cmd in ("/car-filter", "/car_filter"):
         return _handle_car_filter(text, actor)
-    if cmd == "/dyn-threshold":
+    if cmd in ("/dyn-threshold", "/dyn_threshold"):
         return _handle_dyn_threshold(text, actor)
     # SPEC-011 REQ-MIGR-06-3: JIT pipeline and prototype toggle commands
     if cmd == "/jit":
         return _handle_jit(text, actor)
     if cmd == "/prototype":
         return _handle_prototype(text, actor)
-    if cmd == "/prototype-status":
+    if cmd in ("/prototype-status", "/prototype_status"):
         return _handle_prototype_status()
     # SPEC-015 REQ-FALLBACK-06-5: CLI persona mode toggle
     if cmd == "/cli":
@@ -98,7 +102,7 @@ def _handle_car_filter(text: str, actor: str) -> str:
     """Toggle CAR filter feature flag (SPEC-012 REQ-MIGR-07-3)."""
     parts = text.strip().split()
     if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
-        return "사용법: /car-filter on|off"
+        return "사용법: /car_filter on|off"
     enable = parts[1].lower() == "on"
     update_system_state(car_filter_enabled=enable, updated_by=actor)
     event = "CAR_FILTER_ENABLED" if enable else "CAR_FILTER_DISABLED"
@@ -111,7 +115,7 @@ def _handle_dyn_threshold(text: str, actor: str) -> str:
     """Toggle dynamic thresholds feature flag (SPEC-012 REQ-MIGR-07-3)."""
     parts = text.strip().split()
     if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
-        return "사용법: /dyn-threshold on|off"
+        return "사용법: /dyn_threshold on|off"
     enable = parts[1].lower() == "on"
     update_system_state(dynamic_thresholds_enabled=enable, updated_by=actor)
     event = "DYNAMIC_THRESHOLDS_ENABLED" if enable else "DYNAMIC_THRESHOLDS_DISABLED"
@@ -124,7 +128,7 @@ def _handle_tool_calling(text: str, actor: str) -> str:
     """Toggle tool-calling feature flag (REQ-COMPAT-04-7)."""
     parts = text.strip().split()
     if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
-        return "사용법: /tool-calling on|off"
+        return "사용법: /tool_calling on|off"
     enable = parts[1].lower() == "on"
     update_system_state(tool_calling_enabled=enable, updated_by=actor)
     event = "TOOL_CALLING_ACTIVATED" if enable else "TOOL_CALLING_DEACTIVATED"
@@ -270,14 +274,14 @@ def _help() -> str:
         "/holdings      보유 현황·평가손익\n"
         "/verbose       풀 브리핑 모드\n"
         "/silent        침묵 모드\n"
-        "/tool-calling on|off  Tool-calling 전환\n"
+        "/tool_calling on|off  Tool-calling 전환\n"
         "/reflection on|off    Reflection Loop 전환\n"
-        "/car-filter on|off    Event-CAR Filter 전환\n"
-        "/dyn-threshold on|off Dynamic Thresholds 전환\n"
+        "/car_filter on|off    Event-CAR Filter 전환\n"
+        "/dyn_threshold on|off Dynamic Thresholds 전환\n"
         "/jit on|off           JIT Pipeline 전환\n"
         "/jit ws|dart|news on|off  개별 소스 전환\n"
         "/prototype on|off     ProtoHedge 전환\n"
-        "/prototype-status     ProtoHedge 현황\n"
+        "/prototype_status     ProtoHedge 현황\n"
         "/cli on|off           CLI Persona 전환\n"
         "/help          이 메시지"
     )
@@ -316,12 +320,27 @@ def _pnl_summary() -> str:
     )
 
 
-def _format_holdings(holdings: list[dict[str, Any]]) -> str:
+def _format_holdings(
+    holdings: list[dict[str, Any]],
+    *,
+    stock_eval: int | None = None,
+    cash: int | None = None,
+    total: int | None = None,
+) -> str:
     """SPEC-TRADING-041 REQ-041-3a: render KIS holdings + TOTAL eval P&L.
 
     Pure (no I/O) so the format is unit-testable independent of KIS. Each line:
     name (or ticker fallback), qty, avg_cost, current_price, signed eval P&L (KRW
     and %). Empty holdings → '보유 종목 없음'.
+
+    SPEC-041 follow-on: when ``stock_eval`` / ``cash`` / ``total`` are provided
+    (from ``balance()``), append an asset-summary block after the TOTAL line:
+    주식 평가금 (stock_eval), 보유 현금 (cash_d2), 합산(총자산) (invest_basis =
+    cash_d2 + stock_eval, the consistent system-wide denominator). Each summary
+    value is omitted gracefully when None, preserving backward behavior for
+    callers that pass holdings only. ``invest_basis`` is used for 합산 rather than
+    ``total_assets``/``tot_evlu_amt`` (which does not equal cash+stock due to D+2
+    settlement timing).
     """
     if not holdings:
         return "보유 종목 없음"
@@ -340,6 +359,19 @@ def _format_holdings(holdings: list[dict[str, Any]]) -> str:
             f"평가손익 {pnl_amt:+,}원 ({pnl_pct:+.1f}%)"
         )
     lines.append(f"TOTAL 평가손익: {total_pnl:+,}원")
+
+    # Asset summary block (each value optional → omit gracefully when None).
+    summary: list[str] = []
+    if stock_eval is not None:
+        summary.append(f"주식 평가금: {int(stock_eval):,}원")
+    if cash is not None:
+        summary.append(f"보유 현금: {int(cash):,}원")
+    if total is not None:
+        summary.append(f"합산(총자산): {int(total):,}원")
+    if summary:
+        lines.append("─────")
+        lines.extend(summary)
+
     return "\n".join(lines)
 
 
@@ -356,4 +388,9 @@ def _holdings_summary() -> str:
     except Exception as e:
         LOG.warning("/holdings balance fetch failed: %s", e)
         return "잔고 조회 실패 — 잠시 후 다시 시도해 주세요."
-    return _format_holdings(bal.get("holdings", []))
+    return _format_holdings(
+        bal.get("holdings", []),
+        stock_eval=bal.get("stock_eval"),
+        cash=bal.get("cash_d2"),
+        total=bal.get("invest_basis"),
+    )
