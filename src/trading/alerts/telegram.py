@@ -137,6 +137,33 @@ def cycle_briefing(cycle_kind: str, chain: str) -> None:
     _send_raw(text)
 
 
+def compute_sell_pnl(
+    *,
+    fill_price: int | float | None,
+    avg_cost: int | float | None,
+    qty: int,
+    fee: int,
+) -> tuple[int, float] | None:
+    """SPEC-TRADING-041 REQ-041-2a: average-cost realized P&L for a sell.
+
+    Returns ``(amount_krw, pct)`` where
+    ``amount = (fill_price - avg_cost) * qty - fee`` and
+    ``pct = (fill_price - avg_cost) / avg_cost * 100``.
+
+    Returns ``None`` (omit the line, REQ-041-4b) when the basis is unknowable:
+    ``avg_cost`` missing / non-positive, or ``fill_price`` missing. The amount is
+    rounded to whole KRW; the percentage is the net realized return on the cost
+    basis (``amount / (avg_cost * qty)``), so the sign/magnitude of money and
+    percent agree (matches AC-2.1: +49,340원 → +4.9%).
+    """
+    if fill_price is None or avg_cost is None or avg_cost <= 0:
+        return None
+    amount = int(round((fill_price - avg_cost) * qty - fee))
+    basis = avg_cost * qty
+    pct = (amount / basis * 100) if basis else 0.0
+    return amount, pct
+
+
 def trade_briefing(
     *,
     side: str,
@@ -150,16 +177,30 @@ def trade_briefing(
     cash_pct: float,
     equity_pct: float,
     note: str = "",
+    avg_cost: int | float | None = None,
 ) -> None:
-    """REQ-BRIEF-04-8 trade briefing — sent after a KIS order, includes asset status."""
+    """REQ-BRIEF-04-8 trade briefing — sent after a KIS order, includes asset status.
+
+    SPEC-TRADING-041 REQ-041-2: for ``side='sell'`` with a valid ``avg_cost`` and a
+    known ``fill_price``, append a realized-P&L line (sign + pct). Buy alerts and
+    sells without an avg_cost basis are unchanged (additive-only).
+    """
     side_label = "매수" if side == "buy" else "매도"
     px = f"{fill_price:,}원" if fill_price else "(시장가)"
     name_str = f" {_escape_html(name)}" if name else ""
     note_line = f"\n{_escape_html(note)}" if note else ""
+    pnl_line = ""
+    if side == "sell":
+        pnl = compute_sell_pnl(
+            fill_price=fill_price, avg_cost=avg_cost, qty=qty, fee=fee
+        )
+        if pnl is not None:
+            amount, pct = pnl
+            pnl_line = f"\n실현손익 {amount:+,}원 ({pct:+.1f}%)"
     text = (
         f"<b>[매매 · {mode} · {_now_kst()}]</b>\n"
         f"{ticker}{name_str} {qty}주 {side_label} @ {px}\n"
-        f"수수료 {fee}원{note_line}\n"
+        f"수수료 {fee}원{note_line}{pnl_line}\n"
         f"자산: {total_assets:,}원 (현금 {cash_pct:.1f}% / 주식 {equity_pct:.1f}%)"
     )
     _send_raw(text)

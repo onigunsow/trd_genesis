@@ -19,10 +19,17 @@ Commands honoured (REQ-RISK-05-4):
 
 from __future__ import annotations
 
+import logging
 from datetime import date
+from typing import Any
 
+from trading.config import get_settings
 from trading.db.session import audit, connection, get_system_state, update_system_state
+from trading.kis.account import balance
+from trading.kis.client import KisClient
 from trading.risk import circuit_breaker as cb
+
+LOG = logging.getLogger(__name__)
 
 
 def handle(text: str, actor: str = "telegram") -> str:
@@ -43,6 +50,8 @@ def handle(text: str, actor: str = "telegram") -> str:
         )
     if cmd == "/pnl":
         return _pnl_summary()
+    if cmd == "/holdings":
+        return _holdings_summary()
     if cmd == "/verbose":
         update_system_state(silent_mode=False, updated_by=actor)
         audit("SILENT_MODE_OFF", actor=actor, details={})
@@ -258,6 +267,7 @@ def _help() -> str:
         "/resume        매매 재개\n"
         "/status        현재 시스템 상태\n"
         "/pnl           오늘 손익\n"
+        "/holdings      보유 현황·평가손익\n"
         "/verbose       풀 브리핑 모드\n"
         "/silent        침묵 모드\n"
         "/tool-calling on|off  Tool-calling 전환\n"
@@ -274,20 +284,76 @@ def _help() -> str:
 
 
 def _pnl_summary() -> str:
+    """SPEC-TRADING-041 REQ-041-3b: same-day cash-flow gross, NET of fees.
+
+    ``gross`` = sell amount − buy amount (filled/partial, CURRENT_DATE); the
+    reported figure subtracts ``SUM(fee)`` so it is net of execution fees. This
+    is a fast same-day-flow estimate, NOT a precise FIFO per-lot realized P&L —
+    the label says so to avoid misreading.
+    """
     sql = """
         SELECT
             COUNT(*) FILTER (WHERE side='buy')  AS buys,
             COUNT(*) FILTER (WHERE side='sell') AS sells,
             COALESCE(SUM(CASE WHEN side='sell' AND status IN ('filled','partial')
-                               THEN COALESCE(fill_price,0)*COALESCE(fill_qty,qty) ELSE 0 END), 0)
+                      THEN COALESCE(fill_price,0)*COALESCE(fill_qty,qty) ELSE 0 END), 0)
           - COALESCE(SUM(CASE WHEN side='buy'  AND status IN ('filled','partial')
-                               THEN COALESCE(fill_price,0)*COALESCE(fill_qty,qty) ELSE 0 END), 0) AS pnl
+                      THEN COALESCE(fill_price,0)*COALESCE(fill_qty,qty) ELSE 0 END), 0) AS gross,
+            COALESCE(SUM(CASE WHEN status IN ('filled','partial')
+                      THEN COALESCE(fee,0) ELSE 0 END), 0) AS fee
           FROM orders WHERE ts::date = CURRENT_DATE
     """
     with connection() as conn, conn.cursor() as cur:
         cur.execute(sql)
         row = cur.fetchone()
+    gross = int(row["gross"] or 0)
+    fee = int(row["fee"] or 0)
+    net = gross - fee
     return (
         f"오늘({date.today()}) 매매: 매수 {row['buys']} / 매도 {row['sells']}\n"
-        f"실현 손익(추정): {int(row['pnl'] or 0):,}원"
+        f"실현 손익(추정·당일 현금흐름, 수수료 차감): {net:+,}원\n"
+        f"(gross {gross:+,}원 − 수수료 {fee:,}원 / FIFO 정밀 손익 아님)"
     )
+
+
+def _format_holdings(holdings: list[dict[str, Any]]) -> str:
+    """SPEC-TRADING-041 REQ-041-3a: render KIS holdings + TOTAL eval P&L.
+
+    Pure (no I/O) so the format is unit-testable independent of KIS. Each line:
+    name (or ticker fallback), qty, avg_cost, current_price, signed eval P&L (KRW
+    and %). Empty holdings → '보유 종목 없음'.
+    """
+    if not holdings:
+        return "보유 종목 없음"
+    lines = ["보유 현황:"]
+    total_pnl = 0
+    for h in holdings:
+        name = h.get("name") or h.get("ticker", "")
+        qty = int(h.get("qty", 0) or 0)
+        avg_cost = int(h.get("avg_cost", 0) or 0)
+        cur = int(h.get("current_price", 0) or 0)
+        pnl_amt = int(h.get("pnl_amount", 0) or 0)
+        pnl_pct = float(h.get("pnl_pct", 0) or 0)
+        total_pnl += pnl_amt
+        lines.append(
+            f"· {name} {qty}주 | 평단 {avg_cost:,} → 현재 {cur:,} | "
+            f"평가손익 {pnl_amt:+,}원 ({pnl_pct:+.1f}%)"
+        )
+    lines.append(f"TOTAL 평가손익: {total_pnl:+,}원")
+    return "\n".join(lines)
+
+
+def _holdings_summary() -> str:
+    """REQ-041-3a / REQ-041-4c: /holdings via the daily_report client wiring.
+
+    Reuses ``KisClient(get_settings().trading_mode)`` → ``balance`` → render,
+    with the same try/except safe-degrade pattern as
+    ``daily_report._collect_portfolio`` so a KIS outage never crashes the bot.
+    """
+    try:
+        client = KisClient(get_settings().trading_mode)
+        bal = balance(client)
+    except Exception as e:
+        LOG.warning("/holdings balance fetch failed: %s", e)
+        return "잔고 조회 실패 — 잠시 후 다시 시도해 주세요."
+    return _format_holdings(bal.get("holdings", []))

@@ -74,6 +74,21 @@ def compute_balance_pcts(bal: dict[str, Any]) -> tuple[float, float]:
     return (cash_pct, equity_pct)
 
 
+def _ticker_label(ticker: str) -> str:
+    """SPEC-TRADING-041 REQ-041-1: '코드 이름' display label for system alerts.
+
+    Presentation-layer name enrichment so the 한도 위반 차단 / 단기과열 비중 축소
+    alerts read consistently with trade alerts. Degrades to the bare code when
+    ``ticker_name`` returns None/empty or raises (REQ-041-4a) — never renders
+    the literal "None".
+    """
+    try:
+        name = ticker_name(ticker)
+    except Exception:
+        name = None
+    return f"{ticker} {name}" if name else ticker
+
+
 # ---------------------------------------------------------------------------
 # SPEC-023: universe auto-expansion hook (micro -> decision)
 # ---------------------------------------------------------------------------
@@ -1162,7 +1177,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         if _capped:
             tg.system_briefing(
                 "단기과열 비중 축소",
-                f"{ticker} 단기과열(55) — 수량 {_orig_qty}→{qty}, "
+                f"{_ticker_label(ticker)} 단기과열(55) — 수량 {_orig_qty}→{qty}, "
                 f"지정가 {ref_price:,}원 (단일가매매 대응)",
             )
 
@@ -1187,7 +1202,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
             tg.system_briefing(
                 "한도 위반 차단",
-                f"종목 {ticker} 매매 차단\n위반: {', '.join(chk.breaches)}",
+                f"종목 {_ticker_label(ticker)} 매매 차단\n위반: {', '.join(chk.breaches)}",
             )
             circuit_breaker.trip(reason="pre-order limit breach", details={"breaches": chk.breaches})
             res.rejected.append(decision_id)
@@ -1200,18 +1215,27 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             try:
                 bal_after = balance(client)
                 ca_pct, eq_pct = compute_balance_pcts(bal_after)
+                # SPEC-TRADING-041 REQ-041-2: for a SELL, surface the realized
+                # P&L. The fill price is the executed ref (paper synthetic fills
+                # at ref_price; KIS market BUY price still arrives via a separate
+                # inquiry so buys keep fill_price=None, unchanged).
+                _sell_fill = ref_price if sig["side"] == "sell" else None
                 tg.trade_briefing(
                     side=sig["side"],
                     ticker=sig["ticker"],
                     name=ticker_name(sig["ticker"]),
                     qty=int(sig.get("qty", 0)),
-                    fill_price=None,    # KIS fill price arrives via separate inquiry
+                    fill_price=_sell_fill,
                     fee=0,
                     mode=client.mode.value,
                     total_assets=bal_after["total_assets"],
                     cash_pct=ca_pct,
                     equity_pct=eq_pct,
                     note=f"Decision {decision_id} → orders {order_id}",
+                    # SPEC-TRADING-041 OQ#1: capture avg_cost from the PRE-sell
+                    # holdings snapshot — a FULL sell drops the ticker from the
+                    # POST-fill balance, so it must come from _held (pre-order).
+                    avg_cost=(_held.get("avg_cost") if _held else None),
                 )
             except Exception as e:
                 LOG.warning("post-trade briefing failed: %s", e)
@@ -1618,7 +1642,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
         if _capped:
             tg.system_briefing(
                 "단기과열 비중 축소",
-                f"{ticker} 단기과열(55) — 수량 {_orig_qty}→{qty}, "
+                f"{_ticker_label(ticker)} 단기과열(55) — 수량 {_orig_qty}→{qty}, "
                 f"지정가 {ref_price:,}원 (단일가매매 대응)",
             )
 
@@ -1641,7 +1665,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
             tg.system_briefing(
                 "한도 위반 차단",
-                f"종목 {ticker} 매매 차단\n위반: {', '.join(chk.breaches)}",
+                f"종목 {_ticker_label(ticker)} 매매 차단\n위반: {', '.join(chk.breaches)}",
             )
             circuit_breaker.trip(
                 reason="pre-order limit breach",
@@ -1656,18 +1680,23 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             try:
                 bal_after = balance(client)
                 ca_pct, eq_pct = compute_balance_pcts(bal_after)
+                # SPEC-TRADING-041 REQ-041-2: realized P&L for SELLs (see
+                # pre_market site for the rationale; buys keep fill_price=None).
+                _sell_fill = ref_price if sig["side"] == "sell" else None
                 tg.trade_briefing(
                     side=sig["side"],
                     ticker=sig["ticker"],
                     name=ticker_name(sig["ticker"]),
                     qty=int(sig.get("qty", 0)),
-                    fill_price=None,
+                    fill_price=_sell_fill,
                     fee=0,
                     mode=client.mode.value,
                     total_assets=bal_after["total_assets"],
                     cash_pct=ca_pct,
                     equity_pct=eq_pct,
                     note=f"Decision {decision_id} → orders {order_id} (intraday)",
+                    # SPEC-TRADING-041 OQ#1: pre-sell avg_cost from _held snapshot.
+                    avg_cost=(_held.get("avg_cost") if _held else None),
                 )
             except Exception as e:
                 LOG.warning("post-trade briefing failed: %s", e)
