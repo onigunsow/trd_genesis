@@ -335,12 +335,17 @@ def _format_holdings(
 
     SPEC-041 follow-on: when ``stock_eval`` / ``cash`` / ``total`` are provided
     (from ``balance()``), append an asset-summary block after the TOTAL line:
-    주식 평가금 (stock_eval), 보유 현금 (cash_d2), 합산(총자산) (invest_basis =
-    cash_d2 + stock_eval, the consistent system-wide denominator). Each summary
-    value is omitted gracefully when None, preserving backward behavior for
-    callers that pass holdings only. ``invest_basis`` is used for 합산 rather than
-    ``total_assets``/``tot_evlu_amt`` (which does not equal cash+stock due to D+2
-    settlement timing).
+    주식 평가금 (stock_eval), 보유 현금(D+2) (cash), 합산(총자산) (total). Each
+    summary value is omitted gracefully when None, preserving backward behavior
+    for callers that pass holdings only.
+
+    SPEC-041 follow-on #3: the summary now uses the D+2 settlement basis so the
+    numbers reconcile with the 자산 shown in trade alerts / daily report. The
+    caller passes cash = ``buyable`` (nxdy_excc_amt, D+2 settlement cash) and
+    total = ``total_assets`` (tot_evlu_amt, the KIS headline). On the D+2 basis
+    stock_eval + cash == total exactly, so 합산(총자산) is now honest. (The old
+    current-deposit basis — dnca_tot_amt / invest_basis — did NOT reconcile, off
+    by the pending sell settlement.)
     """
     if not holdings:
         return "보유 종목 없음"
@@ -365,7 +370,7 @@ def _format_holdings(
     if stock_eval is not None:
         summary.append(f"주식 평가금: {int(stock_eval):,}원")
     if cash is not None:
-        summary.append(f"보유 현금: {int(cash):,}원")
+        summary.append(f"보유 현금(D+2): {int(cash):,}원")
     if total is not None:
         summary.append(f"합산(총자산): {int(total):,}원")
     if summary:
@@ -391,6 +396,6 @@ def _holdings_summary() -> str:
     return _format_holdings(
         bal.get("holdings", []),
         stock_eval=bal.get("stock_eval"),
-        cash=bal.get("cash_d2"),
-        total=bal.get("invest_basis"),
+        cash=bal.get("buyable"),         # nxdy_excc_amt — D+2 settlement cash
+        total=bal.get("total_assets"),   # tot_evlu_amt — KIS headline (reconciles)
     )

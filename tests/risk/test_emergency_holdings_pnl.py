@@ -70,26 +70,30 @@ class TestFormatHoldingsSummaryBlock:
         ]
 
     def test_summary_block_renders_three_lines(self):
-        """Summary params append 주식 평가금 / 보유 현금 / 합산(총자산)."""
+        """Summary params append 주식 평가금 / 보유 현금(D+2) / 합산(총자산)."""
         from trading.risk.emergency import _format_holdings
 
         text = _format_holdings(
             self._holdings(),
-            stock_eval=3_128_400, cash=6_750_000, total=9_878_400,
+            stock_eval=3_154_900, cash=6_747_716, total=9_902_616,
         )
         # per-position list + TOTAL still present
         assert "현대로템" in text
         assert "TOTAL 평가손익" in text
-        # three new summary lines with thousands separators
-        assert "주식 평가금: 3,128,400원" in text
-        assert "보유 현금: 6,750,000원" in text
-        assert "합산(총자산): 9,878,400원" in text
+        # three new summary lines with thousands separators (D+2 basis)
+        assert "주식 평가금: 3,154,900원" in text
+        assert "보유 현금(D+2): 6,747,716원" in text
+        assert "합산(총자산): 9,902,616원" in text
 
     def test_summary_total_equals_provided_total(self):
-        """합산 line uses the provided total verbatim (= cash + stock)."""
+        """합산 line uses the provided total verbatim (= cash + stock).
+
+        With the D+2 basis (cash = nxdy_excc_amt, total = tot_evlu_amt) the
+        headline total now reconciles exactly: stock_eval + cash == total.
+        """
         from trading.risk.emergency import _format_holdings
 
-        stock_eval, cash, total = 3_128_400, 6_750_000, 9_878_400
+        stock_eval, cash, total = 3_154_900, 6_747_716, 9_902_616
         assert total == stock_eval + cash  # guard the fixture itself
         text = _format_holdings(
             self._holdings(), stock_eval=stock_eval, cash=cash, total=total,
@@ -104,7 +108,7 @@ class TestFormatHoldingsSummaryBlock:
         assert "현대로템" in text
         assert "TOTAL 평가손익" in text
         assert "주식 평가금" not in text
-        assert "보유 현금" not in text
+        assert "보유 현금(D+2)" not in text
         assert "합산(총자산)" not in text
 
     def test_empty_holdings_with_summary_still_safe(self):
@@ -112,7 +116,7 @@ class TestFormatHoldingsSummaryBlock:
         from trading.risk.emergency import _format_holdings
 
         text = _format_holdings(
-            [], stock_eval=0, cash=6_750_000, total=6_750_000,
+            [], stock_eval=0, cash=6_747_716, total=6_747_716,
         )
         assert "보유 종목 없음" in text
 
@@ -141,18 +145,28 @@ class TestHoldingsCommand:
         assert "+49,340" in reply
 
     def test_holdings_dispatch_renders_summary_block(self):
-        """_holdings_summary passes stock_eval/cash_d2/invest_basis through."""
+        """_holdings_summary passes stock_eval/buyable/total_assets through.
+
+        Switched to the D+2 settlement basis so the summary reconciles with
+        the 자산 in trade alerts / daily report: cash = buyable (nxdy_excc_amt),
+        total = total_assets (tot_evlu_amt), and stock_eval + cash == total.
+        """
         from trading.risk import emergency
 
+        stock_eval, cash, total = 3_154_900, 6_747_716, 9_902_616
+        assert total == stock_eval + cash  # D+2 basis reconciles exactly
         bal = {
             "holdings": [
                 {"name": "현대로템", "ticker": "064350", "qty": 10,
                  "avg_cost": 100_000, "current_price": 105_000,
                  "pnl_amount": 49_340, "pnl_pct": 4.9},
             ],
-            "stock_eval": 3_128_400,
-            "cash_d2": 6_750_000,
-            "invest_basis": 9_878_400,
+            "stock_eval": stock_eval,
+            "buyable": cash,            # nxdy_excc_amt (D+2 settlement cash)
+            "total_assets": total,      # tot_evlu_amt (KIS headline)
+            # legacy keys still present in the real dict — must NOT be used:
+            "cash_d2": 5_385_788,       # dnca_tot_amt (current deposit)
+            "invest_basis": 8_540_688,  # cash_d2 + stock_eval (does not reconcile)
         }
         with (
             patch("trading.risk.emergency.KisClient"),
@@ -161,9 +175,14 @@ class TestHoldingsCommand:
                   return_value=MagicMock(trading_mode="paper")),
         ):
             reply = emergency.handle("/holdings", actor="telegram")
-        assert "주식 평가금: 3,128,400원" in reply
-        assert "보유 현금: 6,750,000원" in reply
-        assert "합산(총자산): 9,878,400원" in reply
+        assert "주식 평가금: 3,154,900원" in reply
+        assert "보유 현금(D+2): 6,747,716원" in reply
+        assert "합산(총자산): 9,902,616원" in reply
+        # rendered total must equal stock_eval + cash and match total_assets
+        assert f"합산(총자산): {stock_eval + cash:,}원" in reply
+        # legacy current-deposit basis must NOT leak into the output
+        assert "5,385,788" not in reply
+        assert "8,540,688" not in reply
 
     def test_holdings_kis_failure_degrades_safely(self):
         """AC-3.2 / REQ-041-4c: KIS error → safe message, never raises."""
