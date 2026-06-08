@@ -6,7 +6,7 @@
 
 help:
 	@echo "Trading project Makefile targets:"
-	@echo "  make redeploy   - Rebuild app image with current git commit and restart services"
+	@echo "  make redeploy   - Rebuild app image with current git commit, restart services, prune stale cache"
 	@echo "  make logs       - Tail scheduler logs (Ctrl+C to exit)"
 	@echo "  make ps         - Show container status"
 	@echo "  make stop       - Stop scheduler/bot/app containers (postgres stays up)"
@@ -20,6 +20,9 @@ redeploy:
 	echo "Building with commit=$$COMMIT"; \
 	HOST_BUILD_COMMIT=$$COMMIT docker compose build --no-cache --build-arg BUILD_COMMIT=$$COMMIT app; \
 	HOST_BUILD_COMMIT=$$COMMIT docker compose up -d --force-recreate scheduler bot app; \
+	echo "Pruning stale build cache + dangling images (volumes untouched)..."; \
+	docker builder prune -f >/dev/null 2>&1 || true; \
+	docker image prune -f >/dev/null 2>&1 || true; \
 	docker compose ps; \
 	echo ""; \
 	echo "Tail logs: make logs"
