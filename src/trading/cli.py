@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_news_health(rest)
     if cmd == "calendar":
         from datetime import date, timedelta
+
         from trading.scheduler.calendar import is_trading_day, reason_if_closed
         target = date.fromisoformat(rest[0]) if rest else date.today()
         for i in range(14):
@@ -170,6 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if cmd == "fill-sync":
         return _cmd_fill_sync(rest)
+    if cmd == "resolve-orders":
+        return _cmd_resolve_orders(rest)
+    if cmd == "aggregate-pnl":
+        return _cmd_aggregate_pnl(rest)
     if cmd == "status":
         from trading.db.session import get_system_state
         state = get_system_state()
@@ -298,6 +303,144 @@ def _cmd_fill_sync(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_resolve_orders(rest: list[str]) -> int:
+    """SPEC-TRADING-042 Module B REQ-042-B1/B2: order-state resolver / cleanup.
+
+    Resolves orders stuck in ``submitted`` to a deterministic terminal state
+    (``filled`` when KIS/balance confirms; ``expired`` when the bounded window
+    elapsed and the fill could not be confirmed — never fabricated). Reuses the
+    Module-A ``confirm_fills`` seam; never POSTs a KIS order.
+
+    Flags
+    -----
+    --cleanup     One-time cleanup mode (REQ-042-B2): resolve every stuck
+                  ``submitted`` order regardless of age (window=0). Idempotent.
+    --dry-run     Preview intended transitions without DB writes.
+    --window N    Resolve window in seconds (default 900). Ignored with --cleanup.
+
+    Exit codes: 0 on success, 1 on KisError / RuntimeError.
+    """
+    cleanup = "--cleanup" in rest
+    dry_run = "--dry-run" in rest
+    window: float | None = None
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--window":
+            value = rest[i + 1] if i + 1 < len(rest) else None
+            skip_next = True
+            try:
+                window = float(value) if value is not None else None
+            except ValueError:
+                print(f"trading resolve-orders: invalid --window {value!r}",
+                      file=sys.stderr)
+                return 2
+        elif arg not in {"--cleanup", "--dry-run"}:
+            logging.warning("trading resolve-orders: ignoring unknown flag %s", arg)
+
+    from trading.config import get_settings
+    from trading.kis.client import KisClient, KisError
+    from trading.kis.order_resolver import (
+        SUBMITTED_RESOLVE_WINDOW_SECONDS,
+        cleanup_stuck_orders,
+        resolve_stuck_orders,
+    )
+
+    try:
+        client = KisClient(get_settings().trading_mode)
+        if cleanup:
+            result = cleanup_stuck_orders(client, dry_run=dry_run)
+        else:
+            result = resolve_stuck_orders(
+                client,
+                window_seconds=window if window is not None
+                else SUBMITTED_RESOLVE_WINDOW_SECONDS,
+                dry_run=dry_run,
+            )
+    except KisError as e:
+        print(f"trading resolve-orders: KIS error: {e}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"trading resolve-orders: runtime error: {e}", file=sys.stderr)
+        return 1
+
+    print(
+        f"resolve-orders: scanned={result.get('scanned', 0)} "
+        f"filled={result.get('resolved_filled', 0)} "
+        f"expired={result.get('resolved_expired', 0)} "
+        f"skipped={result.get('skipped', 0)} "
+        f"errors={result.get('errors', 0)} "
+        f"dry_run={result.get('dry_run', dry_run)}"
+    )
+    return 0
+
+
+def _cmd_aggregate_pnl(rest: list[str]) -> int:
+    """SPEC-TRADING-042 Module D REQ-042-D1: backfill realized_pnl_cum.
+
+    Populates ``daily_equity_snapshot.realized_pnl_cum`` for existing snapshot
+    rows from confirmed sell fills, using the single FIFO round-trip net_pnl
+    source (fees deducted). Idempotent — safe to re-run (recomputes the same
+    cumulative value per day). Read/aggregate over ``orders`` + write to the
+    snapshot only; it never POSTs a KIS order and never touches the order path.
+
+    Flags
+    -----
+    --dry-run     Compute and report would-be updates without writing.
+    --days N      Restrict the round-trip source to the last N days of fills
+                  (default: full history).
+
+    Honesty caveat: in PAPER mode a round-trip exit can be a synthetic fill
+    (SPEC-039) — an estimate, NOT a live execution price. The output reports the
+    synthetic sell-fill count so the realized figure's paper imprecision is explicit.
+
+    Exit codes: 0 on success, 1 on RuntimeError.
+    """
+    dry_run = "--dry-run" in rest
+    days: int | None = None
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--days":
+            value = rest[i + 1] if i + 1 < len(rest) else None
+            skip_next = True
+            try:
+                days = int(value) if value is not None else None
+            except ValueError:
+                print(f"trading aggregate-pnl: invalid --days {value!r}",
+                      file=sys.stderr)
+                return 2
+        elif arg != "--dry-run":
+            logging.warning("trading aggregate-pnl: ignoring unknown flag %s", arg)
+
+    from trading.edge.realized_pnl import aggregate_realized_pnl_cum
+
+    try:
+        result = aggregate_realized_pnl_cum(days=days, dry_run=dry_run)
+    except RuntimeError as e:
+        print(f"trading aggregate-pnl: runtime error: {e}", file=sys.stderr)
+        return 1
+
+    print(
+        f"aggregate-pnl: rows_updated={result.get('rows_updated', 0)} "
+        f"roundtrips={result.get('roundtrips', 0)} "
+        f"cumulative_total={result.get('cumulative_total', 0)} "
+        f"synthetic_sell_fills={result.get('synthetic_sell_fills', 0)} "
+        f"dry_run={result.get('dry_run', dry_run)}"
+    )
+    if result.get("synthetic_present"):
+        print(
+            "  caveat: paper synthetic fill prices are estimates, not live "
+            "executions — realized_pnl_cum carries paper-fill imprecision.",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _cmd_edge_report(rest: list[str]) -> int:
     """Edge Validation: 페이퍼 성적 → go/no-go 판정 리포트.
 
@@ -347,7 +490,7 @@ def _cmd_edge_snapshot(rest: list[str]) -> int:
 
     try:
         row = record_snapshot()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"trading edge-snapshot: error: {e}", file=sys.stderr)
         return 1
     print(
@@ -409,6 +552,8 @@ def _print_help(file=sys.stdout) -> int:
         "  edge-report       paper 성적 → go/no-go 판정 [--days N] [--telegram] [--include-unrealized]\n"
         "  edge-snapshot     오늘 자산 스냅샷 1회 기록 (멱등 UPSERT)\n"
         "  fill-sync         sync KIS fill confirmations [--dry-run] [--start YYYYMMDD]\n"
+        "  resolve-orders    resolve stuck 'submitted' orders [--cleanup] [--dry-run] [--window N]\n"
+        "  aggregate-pnl     backfill realized_pnl_cum from fills [--dry-run] [--days N]\n"
         "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
         "  analyze-news      run intelligence analysis [--sector X] [--force]\n"
         "  news-health       show news source health status table\n",

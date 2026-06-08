@@ -46,6 +46,7 @@ from trading.config import (
 from trading.db.session import audit, connection
 from trading.kis.account import balance
 from trading.kis.order import sell as kis_sell
+from trading.kis.sell_lock import guard_sell, set_sell_inflight
 from trading.strategy.volatility.rsi import compute_rsi
 from trading.strategy.volatility.thresholds import get_dynamic_thresholds
 
@@ -354,6 +355,12 @@ def _execute_trim(
         return False
     sell_qty = min(trim_qty, live_qty)  # over-sell clamp (never short)
 
+    # SPEC-TRADING-042 REQ-042-C1: respect the SHARED sell in-flight lock — a trim
+    # must not double-sell a ticker whose stop/take/persona exit is already in
+    # flight (the lock is keyed per ticker, not per exit kind). Suppress on lock.
+    if not guard_sell(ticker, actor="position_watchdog"):
+        return False
+
     kis_sell(
         client,
         ticker=ticker,
@@ -361,6 +368,7 @@ def _execute_trim(
         order_type="market",
         persona_decision_id=None,
     )
+    set_sell_inflight(ticker)  # take the shared in-flight lock (REQ-042-C1)
     _mark_action(ticker, _TRIM_ACTION)  # shared marker — one trim per ticker/day
     # threshold field reused to carry the cap% that drove a concentration trim
     # (0.0 for a stagnation rotation, which is not cap-driven).
@@ -481,6 +489,15 @@ def poll_position_watchdog() -> dict[str, Any]:
                 continue
             sell_qty = min(sell_qty, live_qty) if action == "take" else live_qty
 
+            # SPEC-TRADING-042 REQ-042-C1 (in-flight lock): the watchdog (*/5) and
+            # the persona orchestrator both evaluate the same stop/take; without a
+            # shared lock 033780 fired 4 sells in 5 min (RC-3, 2026-06-08). Suppress
+            # a duplicate while a sell for this ticker is pending/in-flight. Fails
+            # OPEN (allows) on any error so a genuine stop-loss is never blocked.
+            if not guard_sell(ticker, actor="position_watchdog"):
+                metrics["skipped"] += 1
+                continue
+
             threshold = float(eff_stop if action == "stop" else eff_take)
 
             # Direct kis_sell — bypasses the orchestrator cycle halt gate and
@@ -493,6 +510,7 @@ def poll_position_watchdog() -> dict[str, Any]:
                 order_type="market",
                 persona_decision_id=None,
             )
+            set_sell_inflight(ticker)  # take the shared in-flight lock (REQ-042-C1)
 
             if action == "take":
                 _mark_took_profit(ticker)

@@ -107,6 +107,24 @@ def _run_equity_snapshot() -> None:
         int(row.get("total_assets", 0)),
     )
 
+    # SPEC-TRADING-042 Module D (REQ-042-D1): populate realized_pnl_cum for the
+    # day's snapshot from confirmed sell fills (single round-trip source, fees
+    # deducted). Best-effort — a round-trip aggregation failure must never break
+    # the balance snapshot above. Aggregating only_day keeps the cron cheap.
+    try:
+        from datetime import date as _date
+
+        from trading.edge.realized_pnl import aggregate_realized_pnl_cum
+
+        day = row.get("trading_day")
+        agg = aggregate_realized_pnl_cum(only_day=day if isinstance(day, _date) else None)
+        LOG.info(
+            "realized_pnl_cum aggregated day=%s cumulative_total=%d synthetic_fills=%d",
+            day, int(agg.get("cumulative_total", 0)), int(agg.get("synthetic_sell_fills", 0)),
+        )
+    except Exception:
+        LOG.exception("SPEC-042 realized_pnl_cum aggregation failed (snapshot kept)")
+
 
 def _run_fetch_market_funds() -> None:
     """SPEC-TRADING-036 REQ-036-1: refresh ECOS 901Y056 S23E/S23A (신용융자/예탁금).

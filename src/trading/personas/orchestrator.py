@@ -28,10 +28,16 @@ from trading.config import get_settings
 from trading.data.ticker_names import ticker_name
 from trading.db.session import NOW, audit, connection, get_system_state, update_system_state
 from trading.kis.account import balance
+from trading.kis.broker_truth import (
+    clamp_sell_to_confirmed,
+    intraday_reconcile,
+)
 from trading.kis.client import KisClient
 from trading.kis.market import OVERHEAT_STAT_CLS
 from trading.kis.order import buy as kis_buy
 from trading.kis.order import sell as kis_sell
+from trading.kis.order_resolver import resolve_stuck_orders
+from trading.kis.sell_lock import guard_sell, set_sell_inflight
 from trading.models.router import resolve_model
 from trading.personas import context as ctx
 from trading.personas import decision as decision_persona
@@ -893,6 +899,55 @@ def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) ->
     qty = int(sig.get("qty", 0) or 0)
     if not ticker or qty <= 0:
         return None
+
+    # SPEC-TRADING-042 REQ-042-A1/A2/A5 (broker-truth): immediately before a sell
+    # is submitted, reconcile the local cache to the KIS account and clamp the
+    # sell qty to the KIS-confirmed held qty. A phantom position (a local row
+    # absent from the KIS account) clamps to 0 so a real KIS sell that KIS would
+    # reject '잔고내역이 없습니다' (RC-1, 2026-06-08) is never POSTed. Buys are never
+    # clamped. This is a READ-ONLY guard; the live order path is unchanged.
+    #
+    # Capital-preservation hard rule: if the KIS confirm itself FAILS (transient
+    # quote/balance hiccup), we must NOT block a genuine stop-loss — fall through
+    # with the original qty and let the downstream guards (SPEC-039 synthetic
+    # over-sell clamp / SPEC-033 watchdog _confirm_qty) absorb any over-sell.
+    if side == "sell":
+        # SPEC-TRADING-042 REQ-042-B1 (resolver): before a fresh sell cycle, unstick
+        # any order left in 'submitted' beyond its bounded window (RC-2 leak). This
+        # converges the order-state ledger so a stale phantom 'submitted' cannot
+        # block the in-flight lock or skew realized-P&L. Best-effort: a resolver
+        # failure must never block a genuine exit.
+        try:
+            resolve_stuck_orders(client)
+        except Exception:
+            LOG.exception("SPEC-042 pre-sell resolve_stuck_orders failed")
+
+        # SPEC-TRADING-042 REQ-042-C1 (in-flight lock): the persona path and the
+        # SPEC-033 watchdog (*/5) both evaluate the same stop-loss; without a
+        # shared lock 033780 fired 4 sells in 5 min (RC-3, 2026-06-08). The lock
+        # is taken right after the resolver above (which converges any stale
+        # 'submitted' so the submitted leg is accurate). guard_sell SUPPRESSES a
+        # duplicate while a sell is pending/in-flight; it fails OPEN (allows) on
+        # any error so a genuine exit is never wrongly blocked (REQ-042-C2). A
+        # NEW exit after the order resolves + cooldown is allowed through.
+        if not guard_sell(ticker, actor="orchestrator"):
+            return None
+
+        try:
+            intraday_reconcile(client, reason="pre_sell")
+            confirmed_qty = clamp_sell_to_confirmed(client, ticker, qty)
+        except Exception:
+            LOG.exception(
+                "SPEC-042 pre-sell confirm failed (%s); proceeding with "
+                "original qty to preserve the exit", ticker
+            )
+        else:
+            if confirmed_qty <= 0:
+                return None
+            if confirmed_qty != qty:
+                qty = confirmed_qty
+                sig["qty"] = confirmed_qty
+
     fn = kis_buy if side == "buy" else kis_sell
     # SPEC-026: honour a per-signal order_type / limit_price so the orchestrator
     # can force a limit order on 단기과열(55) entries (single-price auction).
@@ -904,7 +959,25 @@ def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) ->
                     order_type=order_type,
                     limit_price=limit_price,
                     persona_decision_id=decision_id)
-        return int(result["order_id"])
+        order_id = int(result["order_id"])
+        # SPEC-TRADING-042 REQ-042-C1: a sell was just submitted — take/refresh the
+        # shared in-flight lock so the watchdog (and a later persona cycle) suppress
+        # a duplicate exit for this ticker while it is in flight. Best-effort: a
+        # marker write failure never affects the (successful) order.
+        if side == "sell":
+            set_sell_inflight(ticker)
+        # SPEC-TRADING-042 REQ-042-A2: immediately after an order submission the
+        # book has changed — force a reconcile (bypassing the TTL) so the local
+        # cache reconverges before the next decision and no stale phantom lingers.
+        # Best-effort: the submission already succeeded, so a reconcile failure
+        # must never turn a good order into EXEC_FAILED.
+        try:
+            intraday_reconcile(client, reason="post_submit", force=True)
+        except Exception:
+            LOG.exception(
+                "SPEC-042 post-submit reconcile failed (order_id=%s)", order_id
+            )
+        return order_id
     except Exception as e:
         LOG.exception("execute signal failed: %s", sig)
         audit("EXEC_FAILED", actor="orchestrator",
