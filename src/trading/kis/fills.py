@@ -292,7 +292,9 @@ def reconcile_from_balance(
     (orders advanced), ``positions_synced`` (rows mirrored/zeroed), ``errors``,
     and ``dry_run``.
     """
-    bal = balance(client)
+    # SPEC-TRADING-043 REQ-043-B2: reconcile runs right after fills land, so it
+    # must never read a stale cached balance — bypass the read-through cache.
+    bal = balance(client, force_fresh=True)
     holdings = bal.get("holdings", []) or []
 
     summary: dict[str, Any] = {

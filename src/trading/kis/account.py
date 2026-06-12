@@ -4,15 +4,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from trading.kis.balance_cache import _CACHE
 from trading.kis.client import KisClient, KisError
 
 
-def balance(client: KisClient) -> dict[str, Any]:
+def balance(client: KisClient, *, force_fresh: bool = False) -> dict[str, Any]:
     """Fetch domestic stock balance summary + per-ticker holdings.
 
     KIS endpoint: GET /uapi/domestic-stock/v1/trading/inquire-balance
     tr_id: VTTC8434R (paper) / TTTC8434R (live)
+
+    Transparently read-through cached per SPEC-TRADING-043 REQ-043-B2 (see
+    :mod:`trading.kis.balance_cache` for the rationale). ``force_fresh=True``
+    bypasses and refreshes the cache — used on the reconcile-after-fill path so
+    post-fill reconciliation never reads stale holdings.
     """
+    return _CACHE.get_or_fetch(
+        client.cache_key, lambda: _fetch_balance(client), force_fresh=force_fresh
+    )
+
+
+def _fetch_balance(client: KisClient) -> dict[str, Any]:
+    """Underlying ``inquire-balance`` fetch (uncached). See :func:`balance`."""
     resp = client.get(
         "/uapi/domestic-stock/v1/trading/inquire-balance",
         tr_id=client.tr_id(paper_id="VTTC8434R", live_id="TTTC8434R"),

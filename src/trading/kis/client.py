@@ -11,7 +11,9 @@ Provides a thin wrapper that:
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +29,54 @@ RATE_LIMIT_RETRIES = 4
 RATE_LIMIT_BACKOFF_SECONDS = 1.0
 # KIS error codes that signal "wait and retry"
 RATE_LIMIT_MSG_CODES = {"EGW00201"}     # 초당 거래건수 초과
+
+# SPEC-TRADING-043 REQ-043-B1: proactive process-wide pacing. Minimum interval
+# between *inquiry* (GET) requests, named so it is easy to tune. 0.4s ≈ 2.5
+# req/s aggregate, comfortably below the broker per-second cap while leaving
+# headroom for the reactive retry (REQ-043-B3) as a residual-burst safety net.
+KIS_MIN_REQUEST_INTERVAL_SECONDS = 0.4
+
+
+class _RateGate:
+    """Process-wide minimum-interval pacing gate for KIS inquiry requests.
+
+    SPEC-TRADING-043 REQ-043-B1/B6. Serializes concurrent callers so the
+    aggregate request rate stays below ``1 / min_interval``. The clock and sleep
+    are injectable so behaviour is deterministically testable with a fake clock
+    and a sleep-counter (no live broker, no wall-clock).
+
+    The gate reserves the next grant slot under a lock, then releases the lock
+    BEFORE sleeping and BEFORE the HTTP call — it never holds the lock across the
+    network, and order-submission TRs (``post``) are not gated at all.
+    """
+
+    def __init__(
+        self,
+        min_interval: float,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._min_interval = min_interval
+        self._now = now
+        self._sleep = sleep
+        self._lock = threading.Lock()
+        # Far in the past so the first request is granted immediately.
+        self._last_grant = float("-inf")
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = self._now()
+            earliest = self._last_grant + self._min_interval
+            grant_at = earliest if earliest > now else now
+            self._last_grant = grant_at  # reserve the slot
+            wait = grant_at - now
+        if wait > 0:
+            self._sleep(wait)
+
+
+# Module-level singleton shared by every KisClient instance in the process.
+_GATE = _RateGate(KIS_MIN_REQUEST_INTERVAL_SECONDS)
 
 
 @dataclass
@@ -63,6 +113,16 @@ class KisClient:
             self._appkey = s.kis.paper_app_key.get_secret_value()
             self._appsecret = s.kis.paper_app_secret.get_secret_value()
             self._account_full = s.kis.paper_account
+
+    @property
+    def cache_key(self) -> str:
+        """Stable identity for read-through caches (SPEC-TRADING-043 REQ-043-B2).
+
+        Keys cached reads by trading mode + account so paper and live never
+        share a value. Owned by the client (the layer that holds these fields)
+        rather than reconstructed by callers via ``getattr``.
+        """
+        return f"{self.mode}:{self._account_full}"
 
     @property
     def account_prefix(self) -> str:
@@ -103,7 +163,17 @@ class KisClient:
         params: dict[str, Any] | None = None,
         timeout: float = 10.0,
     ) -> KisResponse:
+        # @MX:ANCHOR: [AUTO] Every KIS inquiry (GET) passes through the process-
+        # wide pacing gate so the aggregate request rate stays below the broker
+        # per-second cap. High fan_in: fill_sync/reconcile (SPEC-042/029),
+        # position_watchdog (SPEC-033), tools.executor get_portfolio_status all
+        # depend on inquiry timing being governed here. Orders (post) are NOT
+        # gated. The injectable clock preserves deterministic testing.
+        # @MX:REASON: A blind exit-watchdog window caused by a TPS-breach balance
+        # read failure could miss a stop; proactive pacing keeps reads healthy.
+        # @MX:SPEC: SPEC-TRADING-043 REQ-043-B1/B5/B6
         for attempt in range(RATE_LIMIT_RETRIES + 1):
+            _GATE.acquire()
             with httpx.Client(timeout=timeout) as client:
                 r = client.get(f"{self.base}{path}", params=params, headers=self._headers(tr_id))
             resp = self._parse(r)

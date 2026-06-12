@@ -147,7 +147,10 @@ class TestDataSource:
         ):
             fills.reconcile_from_balance(client, dry_run=False)
 
-        balance_fn.assert_called_once_with(client)
+        # SPEC-TRADING-043 REQ-043-B2: reconcile runs right after fills land, so
+        # it bypasses the transparent balance cache (force_fresh=True) to avoid
+        # reading stale holdings. balance() is still the sole data source.
+        balance_fn.assert_called_once_with(client, force_fresh=True)
         # The deprecated entry point must be gone entirely.
         assert not hasattr(fills, "inquire_fills_today")
 

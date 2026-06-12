@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 
 from trading.db.session import audit, connection
+from trading.personas.base import is_cli_only_mode
 
 LOG = logging.getLogger(__name__)
 
@@ -193,7 +194,21 @@ def scheduled_import() -> None:
         LOG.exception("Host result import failed")
 
     if imported == 0 and not RESULTS_FILE.exists():
-        # Fallback: host CLI did not produce results, try Haiku API
+        # @MX:NOTE: [AUTO] The Haiku fallback is sanctioned ONLY when
+        # cli_only_mode is OFF; under cli_only_mode it is dead code that always
+        # raises (@block_if_cli_only_mode). The guard reuses the single mode
+        # source ``is_cli_only_mode`` (fall-open to False on DB failure) and
+        # defers gracefully — articles stay pending and are re-processed
+        # idempotently by the next host-CLI import slot (INFO only, no audit row).
+        # @MX:SPEC: SPEC-TRADING-043 REQ-043-A1/A2/A4/A5
+        if is_cli_only_mode():
+            LOG.info(
+                "news_import: cli_only_mode active and no host results — "
+                "deferring to next slot"
+            )
+            return
+        # Fallback: host CLI did not produce results, try Haiku API (sanctioned
+        # only when cli_only_mode is OFF — REQ-043-A4).
         LOG.warning("No host CLI results found — falling back to Haiku API")
         audit("NEWS_INTEL_FALLBACK_HAIKU", actor="scheduler", details={
             "reason": "no_host_results",

@@ -75,6 +75,30 @@ def _ensure_cli_imports() -> None:
         build_cli_prompt = _cpb.build_cli_prompt
 
 
+def is_cli_only_mode() -> bool:
+    """Return True when the system is in ``cli_only_mode`` (single mode source).
+
+    SPEC-TRADING-043 REQ-043-A5: the news-import fallback guard reuses this
+    predicate — the SAME mechanism as :func:`block_if_cli_only_mode` — so there
+    is no second mode-detection source. It reads ``system_state`` and treats the
+    SPEC-016 column (``cli_only_mode``) and the legacy SPEC-015 column
+    (``cli_personas_enabled``) as equivalent.
+
+    Fall-open behaviour: if ``get_system_state`` itself raises (e.g. DB outage),
+    this returns ``False``. That mirrors the decorator's fail-open — a DB problem
+    must not wedge the only working path (here, the Haiku fallback proceeds).
+    """
+    try:
+        state = get_system_state()
+    except Exception as exc:  # noqa: BLE001 — fail open on DB outage
+        LOG.warning(
+            "is_cli_only_mode: get_system_state failed (%s) — reporting not-cli-only",
+            exc,
+        )
+        return False
+    return bool(state.get("cli_only_mode") or state.get("cli_personas_enabled"))
+
+
 def block_if_cli_only_mode(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: raise RuntimeError if ``cli_only_mode`` is active.
 
@@ -98,22 +122,10 @@ def block_if_cli_only_mode(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            state = get_system_state()
-        except Exception as exc:  # noqa: BLE001
-            # Fail open — never let a DB outage block direct API calls.
-            LOG.warning(
-                "block_if_cli_only_mode: get_system_state failed (%s) — "
-                "allowing %s to proceed",
-                exc, fn.__qualname__,
-            )
-            return fn(*args, **kwargs)
-
-        cli_only = bool(
-            state.get("cli_only_mode")
-            or state.get("cli_personas_enabled")
-        )
-        if cli_only:
+        # SPEC-TRADING-043 REQ-043-A5: single mode source. ``is_cli_only_mode``
+        # fails open to False on DB outage, so a DB problem lets ``fn`` run
+        # (preserves the decorator's original fail-open contract).
+        if is_cli_only_mode():
             raise RuntimeError(
                 f"cli_only_mode=True but {fn.__qualname__} attempted a "
                 "direct Anthropic API call. Use the CLI bridge "
