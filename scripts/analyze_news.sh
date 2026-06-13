@@ -60,6 +60,11 @@ if [ $EXIT_CODE -eq 0 ] && [ -n "$RESPONSE" ]; then
     # Remove pending file to signal completion
     rm -f "$PENDING"
     log "Analysis complete — results written to $RESULTS ($(echo "$RESPONSE" | wc -c) bytes)"
+elif [ $EXIT_CODE -eq 0 ]; then
+    # exit=0 but empty response: transient (not a real failure).
+    # Keep the pending file so the next cron slot retries — no data loss.
+    log "WARN: Claude CLI returned empty response (exit=0) — transient, keeping pending file to retry next slot"
+    exit 1
 else
     log "ERROR: Claude CLI failed (exit=$EXIT_CODE), keeping pending file for retry"
     exit 1
