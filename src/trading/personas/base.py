@@ -28,6 +28,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from trading.config import get_settings, project_root
 from trading.db.session import audit, connection, get_system_state
 
+LOG = logging.getLogger(__name__)
+
 # SPEC-TRADING-016 REQ-016-1-4: Single source of truth for the Haiku fallback
 # model. The log message and the API call must both use this constant so
 # they cannot drift apart.
@@ -135,8 +137,6 @@ def block_if_cli_only_mode(fn: Callable[..., Any]) -> Callable[..., Any]:
         return fn(*args, **kwargs)
 
     return wrapper
-
-LOG = logging.getLogger(__name__)
 
 KRW_PER_USD = float(os.environ.get("ANTHROPIC_KRW_PER_USD", "1380"))
 

@@ -54,7 +54,7 @@ def is_intelligence_enabled() -> bool:
             if row is None:
                 return True  # Default enabled
             return bool(row.get("news_intelligence_enabled", True))
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Column might not exist yet — default to enabled
         return True
 
@@ -100,7 +100,7 @@ def run_intelligence_pipeline(
 
         result.success = True
 
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result.success = False
         result.error = f"{type(e).__name__}: {e}"
         LOG.exception("Intelligence pipeline failed")
@@ -167,7 +167,7 @@ def scheduled_export() -> None:
     try:
         count = export_pending_for_host()
         LOG.info("Scheduled export: %d articles pending for host analysis", count)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.exception("Scheduled export failed")
 
 
@@ -190,7 +190,7 @@ def scheduled_import() -> None:
     imported = 0
     try:
         imported = import_host_results()
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.exception("Host result import failed")
 
     if imported == 0 and not RESULTS_FILE.exists():
@@ -217,7 +217,7 @@ def scheduled_import() -> None:
             from trading.news.intelligence.analyzer import analyze_articles
             metrics = analyze_articles()
             imported = metrics.articles_processed
-        except Exception:  # noqa: BLE001
+        except Exception:
             LOG.exception("Haiku fallback also failed")
 
     if imported > 0:
@@ -244,7 +244,7 @@ def _run_post_analysis_pipeline() -> None:
         macro_bytes, micro_bytes = write_intelligence_reports()
         LOG.info("Post-analysis: reports written (macro=%d, micro=%d bytes)", macro_bytes, micro_bytes)
 
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.exception("Post-analysis pipeline failed")
 
 
@@ -308,5 +308,5 @@ def _check_consecutive_failures() -> None:
                 "[NEWS INTEL] 3회 연속 분석 파이프라인 실패. 확인 필요.",
             )
             LOG.error("3 consecutive intelligence pipeline failures — alert sent")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         LOG.warning("Failed to check consecutive failures: %s", e)

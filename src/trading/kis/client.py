@@ -172,6 +172,9 @@ class KisClient:
         # @MX:REASON: A blind exit-watchdog window caused by a TPS-breach balance
         # read failure could miss a stop; proactive pacing keeps reads healthy.
         # @MX:SPEC: SPEC-TRADING-043 REQ-043-B1/B5/B6
+        # @MX:NOTE: [AUTO] retry 루프마다 _GATE.acquire()가 호출된다 (의도적 설계).
+        #   backoff sleep 후에도 게이트를 재획득함으로써 재시도 요청도 전역 TPS 상한에
+        #   포함된다. backoff(≥1s) > gate_interval(0.4s)이므로 실제 영향은 없다.
         for attempt in range(RATE_LIMIT_RETRIES + 1):
             _GATE.acquire()
             with httpx.Client(timeout=timeout) as client:
@@ -206,8 +209,10 @@ class KisClient:
     def _parse(r: httpx.Response) -> KisResponse:
         try:
             data = r.json()
-        except ValueError:
-            raise RuntimeError(f"KIS non-JSON response (status {r.status_code}): {r.text[:200]}")
+        except ValueError as err:
+            raise RuntimeError(
+                f"KIS non-JSON response (status {r.status_code}): {r.text[:200]}"
+            ) from err
         return KisResponse(
             status_code=r.status_code,
             rt_cd=data.get("rt_cd", ""),

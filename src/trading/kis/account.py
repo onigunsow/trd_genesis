@@ -8,6 +8,11 @@ from trading.kis.balance_cache import _CACHE
 from trading.kis.client import KisClient, KisError
 
 
+# @MX:ANCHOR: [AUTO] 모든 balance 조회의 단일 진입점 (14+ callers). 캐시
+#   read-through 계층이 투명하게 내장됨. force_fresh=True는 reconcile 후 경로에서만 사용.
+# @MX:REASON: 캐시 키잉(paper/live 분리)·TTL·force_fresh 의미론이 여기서 결정되어
+#   계약 변경이 14+ caller에 영향을 줌.
+# @MX:SPEC: SPEC-TRADING-043 REQ-043-B2
 def balance(client: KisClient, *, force_fresh: bool = False) -> dict[str, Any]:
     """Fetch domestic stock balance summary + per-ticker holdings.
 

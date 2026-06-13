@@ -31,6 +31,10 @@ class _Entry:
     ts: float
 
 
+# @MX:WARN: [AUTO] lock이 fetch() 전체 구간에 걸쳐 유지된다 (의도적 thundering-herd 방지).
+#   KIS HTTP 호출이 느릴 경우 모든 caller가 fetch timeout만큼 블로킹된다.
+# @MX:REASON: 중복 호출 방지(REQ-043-B2)를 위해 잠금 범위를 의도적으로 넓힌 설계이며,
+#   실운용에서는 단일 키(trading mode 1개)만 사용해 교착 위험이 없다.
 class BalanceCache:
     """Thread-safe read-through cache with a short TTL and an injectable clock."""
 
@@ -69,7 +73,12 @@ class BalanceCache:
                 entry = self._store.get(key)
                 if entry is not None and (now - entry.ts) < self._ttl:
                     return entry.value
-            value = fetch()
+            try:
+                value = fetch()
+            except Exception:
+                # fetch 실패 시 stale 항목 제거 → 직후 조회가 옛 잔고 소비 방지
+                self._store.pop(key, None)
+                raise
             self._store[key] = _Entry(value=value, ts=self._now())
             return value
 
