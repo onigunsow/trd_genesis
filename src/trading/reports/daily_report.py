@@ -379,6 +379,32 @@ def _fallback_text(data: dict[str, Any], skip_reason: str | None = None) -> str:
     )
 
 
+def format_benchmark_section(benchmark: object) -> str:
+    """SPEC-TRADING-044 M4 — KOSPI 매수후보유 누적 초과수익 섹션 (REQ-044-B1, B2, B3).
+
+    CLI-only 경로(비용 0)에서 일일 리포트에 포함된다 (SPEC-030 패턴).
+    benchmark.py의 Benchmark 객체를 받아 텍스트를 생성한다 (병렬 경로 없음, REQ-044-B4).
+    """
+    from trading.edge.benchmark import Benchmark  # lazy import (circular 방지)
+
+    if not isinstance(benchmark, Benchmark):
+        return "전략 vs KOSPI: 데이터 없음 — 알파 미확인\n"
+
+    if not benchmark.available:
+        return "전략 vs KOSPI 매수후보유 누적 초과수익: 알파 미확인 (KOSPI 데이터 없음)\n"
+
+    excess = benchmark.cumulative_excess_return_pct
+    sign = "+" if excess >= 0 else ""
+    basis = benchmark.comparison_basis or "money-weighted(원가기준 집계)"
+    strat_pct = benchmark.strategy_return_pct
+    kospi_pct = benchmark.kospi_return_pct
+    return (
+        f"전략 vs KOSPI 매수후보유 누적 초과수익: {sign}{excess:.1f}%p\n"
+        f"  (기간: {benchmark.start} ~ {benchmark.end}, 기준: {basis})\n"
+        f"  전략 {strat_pct:+.2f}% vs KOSPI {kospi_pct:+.2f}%\n"
+    )
+
+
 @block_if_cli_only_mode
 def _llm_text(data: dict[str, Any]) -> str:
     """DEPRECATED (SPEC-TRADING-030): direct-API daily summary.

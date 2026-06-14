@@ -49,6 +49,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# SPEC-TRADING-044 ADR-001: vectorbt는 offline walk-forward 분석 전용.
+# 런타임 컨테이너에 설치하지 않는다 (numba/llvmlite 의존성 때문).
+# 사용법: pip install trading[backtest]
+backtest = [
+    "vectorbt>=0.26",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.25",

@@ -204,8 +204,17 @@ def render(
     out.append(f"  보정 차감액: -{_won(a.slippage_drag)}")
     out.append(f"  보정 후 총 순손익: {_won(a.total_net_pnl_adj)}")
     out.append(
-        f"  보정 후 기대값: {_won(a.expectancy_adj)}  /  손익비: {_pf(a.profit_factor_adj)}"
+        f"  보정 후 기대값(net expectancy): {_won(a.expectancy_adj)}"
+        f"  /  손익비: {_pf(a.profit_factor_adj)}"  # REQ-044-C1
     )
+    out.append("")
+
+    # SPEC-TRADING-044 M3: 비용보정 엣지 지표 (REQ-044-C2)
+    sortino_str = "∞" if math.isinf(a.sortino) else f"{a.sortino:.3f}"
+    out.append("【 비용보정 엣지 지표 (SPEC-TRADING-044) 】")
+    out.append(f"  Sortino 비율(MAR=0): {sortino_str}")
+    out.append(f"  비용보정 승률: {a.cost_adjusted_win_rate*100:.1f}%"
+               "  (round-trip 비용 초과 거래 비율)")
     out.append("")
 
     # 미실현 (Phase 2)

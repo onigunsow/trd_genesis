@@ -70,6 +70,9 @@ def kospi_closes(start: date, end: date) -> list[tuple[date, float]]:
 
 
 class Benchmark:
+    # @MX:NOTE: [AUTO] SPEC-TRADING-044 M4 — KOSPI 누적 초과수익 surface.
+    # money-weighted(원가기준 집계) vs time-weighted 라벨링.
+    # available=False 시 cumulative_excess_return_pct=0.0, comparison_basis="".
     def __init__(self) -> None:
         self.available: bool = False
         self.start: date | None = None
@@ -79,6 +82,10 @@ class Benchmark:
         self.kospi_return_pct: float = 0.0
         self.strategy_return_pct: float = 0.0
         self.alpha_pct: float = 0.0
+
+        # SPEC-TRADING-044 M4: 누적 초과수익 + 비교 기준 라벨 (REQ-044-B1, B2)
+        self.cumulative_excess_return_pct: float = 0.0
+        self.comparison_basis: str = ""
 
 
 def compute(
@@ -117,4 +124,9 @@ def compute(
 
     b.alpha_pct = b.strategy_return_pct - b.kospi_return_pct
     b.available = True
+
+    # SPEC-TRADING-044 M4: 누적 초과수익 surface (REQ-044-B1, B2)
+    # alpha_pct = 전략 - KOSPI = 누적 초과수익 (동일 기간, money-weighted 근사)
+    b.cumulative_excess_return_pct = b.alpha_pct
+    b.comparison_basis = "money-weighted(원가기준 집계): 실투입 원가 대비 순손익률"
     return b

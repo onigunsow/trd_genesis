@@ -104,33 +104,59 @@ FIXED_TAKE_PROFIT_RSI: Final[int] = 85
 KIS_TOKEN_CACHE_WINDOW_SECONDS: Final[int] = 60
 
 # ──────────────────────────────────────────────────────────────────────────
-# 한국투자증권 + 한국 주식시장 매매 비용 모델 (2026-05 기준)
+# 한국투자증권 + 한국 주식시장 매매 비용 모델 (SPEC-TRADING-044 M1)
+#
+# 단일 진실원천(Single Source of Truth):
+#   - 아래 명명 컴포넌트에서 모든 소비자(analytics, exit_sweep, scorecard, walk-forward)가
+#     LIVE_ROUND_TRIP_COST_KOSPI/_KOSDAQ 를 읽는다.
+#   - 세율 변경 시 컴포넌트 상수 한 줄만 수정하면 됨.
+#
+# 2026 증권거래세 개편 (유효일: 2026-01-01, SPEC-TRADING-044 Q-C1 확정):
+#   - KOSPI: 거래세 0.18% → 0.05% 인하. 농특세 0.15% 유지.
+#             매도 합계 = 0.015%(수수료) + 0.05%(거래세) + 0.15%(농특세) = 0.215%
+#             기존 0.345%에서 인하 → 비용 모델이 LESS pessimistic (SPEC-040 주의사항 참조)
+#   - KOSDAQ: 거래세 0.18% → 0.20% (농특세 없음).
+#              매도 합계 = 0.015%(수수료) + 0.20%(거래세)              = 0.215%
 #
 # - 모의(paper) 환경은 KIS가 수수료 0으로 시뮬한다.
-# - 실전(live) 환경은 비대면 일반 수수료 + 거래세 + (KOSPI 한정) 농어촌특별세.
-# - 양도소득세는 소액주주(연 25억 미만 단일종목 보유)에 해당 없음 — 박세훈 님 무관.
+# - 양도소득세는 소액주주(연 25억 미만 단일종목 보유)에 해당 없음.
 # ──────────────────────────────────────────────────────────────────────────
+
+# @MX:ANCHOR: [AUTO] config.py 비용 단일소스 — 모든 소비자가 이 블록 파생값을 읽는다.
+# @MX:REASON: SPEC-TRADING-044 REQ-044-C5: 세율 변경은 이 블록 한 줄 수정으로 끝난다.
+
+# 브로커 수수료 (매수/매도 공통, 한국투자증권 비대면 일반)
+KOSPI_BROKER_FEE: Final[float] = 0.00015    # 0.015% — KOSDAQ 와 동일
+
+# KOSPI 거래세/농특세 (2026-01-01 개편 반영)
+KOSPI_TX_TAX: Final[float] = 0.0005         # 거래세 0.05% (2026 인하, 구 0.18%)
+KOSPI_RURAL_TAX: Final[float] = 0.0015      # 농어촌특별세 0.15% (변경 없음)
+
+# KOSDAQ 거래세 (농특세 없음, 2026-01-01 기준)
+KOSDAQ_TX_TAX: Final[float] = 0.002         # 거래세 0.20%
 
 # 매수 수수료 (양 모드 매수 시 적용)
 PAPER_FEE_BUY: Final[float] = 0.0
-LIVE_FEE_BUY: Final[float] = 0.00015        # 0.015%
+LIVE_FEE_BUY: Final[float] = KOSPI_BROKER_FEE  # 0.015%
 
-# 매도 수수료 + 거래세 + 농특세 (양 모드 매도 시)
+# 매도 수수료 합계 (수수료 + 거래세 + 농특세, 2026 개편 반영)
 # 모의는 KIS가 0으로 시뮬하나, 실거래 진입 시 즉시 체감 가능.
-# KOSPI 매도: 0.015% + 0.18% + 0.15% = 0.345% ≈ 0.0035
-# KOSDAQ 매도: 0.015% + 0.18%        = 0.195% ≈ 0.002
+# KOSPI 매도: 0.015%(수수료) + 0.05%(거래세) + 0.15%(농특세) = 0.215%
+# KOSDAQ 매도: 0.015%(수수료) + 0.20%(거래세)                = 0.215%
 PAPER_FEE_SELL_KOSPI: Final[float] = 0.0
 PAPER_FEE_SELL_KOSDAQ: Final[float] = 0.0
-LIVE_FEE_SELL_KOSPI: Final[float] = 0.00345
-LIVE_FEE_SELL_KOSDAQ: Final[float] = 0.00195
+LIVE_FEE_SELL_KOSPI: Final[float] = KOSPI_BROKER_FEE + KOSPI_TX_TAX + KOSPI_RURAL_TAX  # 0.00215
+LIVE_FEE_SELL_KOSDAQ: Final[float] = KOSPI_BROKER_FEE + KOSDAQ_TX_TAX                  # 0.00215
 
 # 시장가 슬리피지 가정 (백테스트와 실거래 평가 기준 일치)
 SLIPPAGE_BPS: Final[float] = 0.0005          # 0.05%
 
-# 매수→매도 1사이클 비용 (KOSPI live 기준): 0.015 + 0.345 = 0.36%
-# → "+0.5% 이상 평가익이어야 0.14% 순익 보장"  (페르소나 익절 룰의 근거)
-LIVE_ROUND_TRIP_COST_KOSPI: Final[float] = LIVE_FEE_BUY + LIVE_FEE_SELL_KOSPI  # ≈ 0.0036
-LIVE_ROUND_TRIP_COST_KOSDAQ: Final[float] = LIVE_FEE_BUY + LIVE_FEE_SELL_KOSDAQ  # ≈ 0.0021
+# 매수→매도 1사이클 비용 (단일 진실원천 파생):
+#   KOSPI: 0.015%(매수) + 0.215%(매도) = 0.23% ≈ 0.0023  (구 ≈0.0036 에서 인하)
+#   KOSDAQ: 0.015%(매수) + 0.215%(매도) = 0.23% ≈ 0.0023  (구 ≈0.0021 에서 소폭 인상)
+# ※ SPEC-040 주의: KOSPI round-trip 인하로 익절 floor/GO-NO-GO 게이트 재튜닝 필요 (별도 결정)
+LIVE_ROUND_TRIP_COST_KOSPI: Final[float] = LIVE_FEE_BUY + LIVE_FEE_SELL_KOSPI   # ≈ 0.0023
+LIVE_ROUND_TRIP_COST_KOSDAQ: Final[float] = LIVE_FEE_BUY + LIVE_FEE_SELL_KOSDAQ  # ≈ 0.0023
 
 
 def estimate_fee(*, mode: str, side: str, market: str, notional: int) -> int:

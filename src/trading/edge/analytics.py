@@ -20,6 +20,7 @@ from trading.backtest.engine import (
     DEFAULT_TAX_RATE,
     TRADING_DAYS_PER_YEAR,
 )
+from trading.config import LIVE_ROUND_TRIP_COST_KOSPI
 from trading.edge.roundtrips import RoundTrip, RoundTripResult, UnmatchedSell
 
 # Phase 3: 캘린더 시간가중 지표를 신뢰할 최소 일별 스냅샷 행 수.
@@ -64,6 +65,10 @@ class Analytics:
     expectancy_adj: float = 0.0
     profit_factor_adj: float = 0.0
     slippage_drag: float = 0.0       # 보정으로 깎인 총액 (양수)
+
+    # SPEC-TRADING-044 M3: 비용보정 지표 (REQ-044-C2)
+    sortino: float = 0.0             # Sortino 비율 (MAR=0, 거래당 수익률 기준)
+    cost_adjusted_win_rate: float = 0.0  # round-trip 비용 초과 수익인 거래 비율
 
     # 미실현 (Phase 2; balance 주어질 때만)
     has_unrealized: bool = False
@@ -161,6 +166,32 @@ def compute(
         (gross_profit_adj / gross_loss_adj) if gross_loss_adj > 0
         else (math.inf if gross_profit_adj > 0 else 0.0)
     )
+
+    # SPEC-TRADING-044 M3: Sortino (MAR=0, 거래당 수익률 기준) (REQ-044-C2)
+    # Sortino = mean(return_pct) / downside_dev(return_pct), MAR=0
+    # downside_dev: 손실 거래 수익률의 모표준편차 (단, 손실 1건이면 절댓값 대체)
+    # 손실 0 건 → downside dev = 0 → Sortino = +inf
+    downsides = [r for r in rets if r < 0]
+    if not rets:
+        a.sortino = 0.0
+    elif not downsides:
+        a.sortino = math.inf
+    else:
+        if len(downsides) == 1:
+            # pstdev of a single value is 0; use abs as the deviation proxy
+            dd = abs(downsides[0])
+        else:
+            dd = statistics.pstdev(downsides)
+        mean_ret = statistics.mean(rets)
+        a.sortino = (mean_ret / dd) if dd else 0.0
+
+    # SPEC-TRADING-044 M3: cost-adjusted win rate (REQ-044-C2)
+    # round-trip 비용(단일소스: LIVE_ROUND_TRIP_COST_KOSPI)을 초과한 수익 거래 비율
+    cost_wins = sum(
+        1 for r in roundtrips
+        if r.net_pnl > LIVE_ROUND_TRIP_COST_KOSPI * r.cost_basis
+    )
+    a.cost_adjusted_win_rate = cost_wins / a.n_closed
 
     a.total_pnl_incl_unrealized = a.total_net_pnl + a.unrealized_pnl
     return a
