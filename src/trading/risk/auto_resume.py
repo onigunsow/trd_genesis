@@ -35,6 +35,9 @@ _DAILY_LOSS_PREFIX = "daily_loss"
 # Prefix of every manual halt reason ("manual /halt", "manual cli /halt") —
 # capital-preservation hard rule: never auto-resume (REQ-032-3a).
 _MANUAL_PREFIX = "manual"
+# SPEC-TRADING-048 REQ-048-M3-5: COOL_DOWN 은 수동 해제 전용 — 자동재개 제외.
+# daily_loss 와 동일 취급 (capital-preservation 이벤트).
+_COOL_DOWN_PREFIX = "cool_down"
 
 
 def classify_halt(
@@ -66,6 +69,10 @@ def classify_halt(
     # REQ-032-3a: manual halt — capital-preservation hard rule.
     if reason.startswith(_MANUAL_PREFIX):
         return (False, "manual", reason)
+
+    # REQ-048-M3-5: COOL_DOWN halt — 수동 해제 전용, 자동재개 제외.
+    if reason.startswith(_COOL_DOWN_PREFIX):
+        return (False, "cool_down", reason)
 
     # REQ-032-3c: only the automatic limit-breach reason is eligible.
     if reason != _AUTO_LIMIT_REASON:
@@ -166,5 +173,5 @@ def _notify(category: str, message: str) -> None:
     """Send a system briefing, swallowing telegram failures (fail-safe)."""
     try:
         system_briefing(category, message)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.exception("premarket_auto_resume telegram briefing failed")

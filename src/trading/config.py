@@ -206,6 +206,16 @@ class SizingParams:
             os.getenv("SIZING_CONFIDENCE_DAMP_ENABLED", "false").lower() == "true"
         )
     )
+    # SPEC-TRADING-048 REQ-048-M1-4: 포트폴리오 heat 상한 (기본 0.08).
+    # env var 로 재정의 가능. 주입형 파라미터 — KRX 상수 하드코딩 금지.
+    heat_cap: float = dataclasses.field(
+        default_factory=lambda: float(os.getenv("SIZING_HEAT_CAP", "0.08"))
+    )
+    # SPEC-TRADING-048 REQ-048-M1-1: half-Kelly sell_tax_rate 주입 (KRX 기본 0).
+    # 호출자가 KRX 거래세율을 주입한다. 코어는 0 허용.
+    kelly_sell_tax_rate: float = dataclasses.field(
+        default_factory=lambda: float(os.getenv("SIZING_KELLY_SELL_TAX_RATE", "0.0"))
+    )
 
 
 # SPEC-TRADING-046 REQ-046-E1: sizing_mode feature flag.

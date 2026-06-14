@@ -194,3 +194,70 @@ def fetch_scorecard() -> dict[str, Any]:
         "mdd": tw.mdd if tw.available else None,
         "sharpe": tw.sharpe if tw.available else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-048 M3 REQ-048-M3-6: postmortem/calibration 읽기전용 쿼리
+# ---------------------------------------------------------------------------
+
+
+def fetch_postmortem_distribution(*, limit: int = 200) -> list[dict[str, Any]]:
+    """결정 분류 분포 읽기전용 쿼리 (dashboard_ro 역할).
+
+    persona_decisions + 분류 라벨(임시 컬럼 또는 뷰 — 마이그레이션 033 적용 후)
+    을 읽어 TRUE_POSITIVE/FALSE_POSITIVE/REGIME_MISMATCH/MISSED 분포를 반환한다.
+
+    쓰기 작업 없음(AC-M3-5).
+    """
+    sql = """
+        SELECT
+            pd.id,
+            pd.ts,
+            pr.persona_name,
+            pd.cycle_kind,
+            pd.confidence,
+            pd.prob_bull,
+            pd.prob_base,
+            pd.prob_bear
+        FROM persona_decisions pd
+        LEFT JOIN persona_runs pr ON pr.id = pd.run_id
+        ORDER BY pd.ts DESC
+        LIMIT %s
+    """
+    with ro_connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (limit,))
+        rows = cur.fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def fetch_calibration_scores(*, limit: int = 200) -> list[dict[str, Any]]:
+    """calibration 점수 원재료 읽기전용 쿼리 (dashboard_ro 역할).
+
+    prob_bull/base/bear 가 채워진 결정 행만 반환 (NULL 행 제외).
+    Brier 점수 계산은 호출자가 처리한다.
+
+    쓰기 작업 없음(AC-M3-5).
+    """
+    sql = """
+        SELECT
+            pd.id,
+            pd.ts,
+            pr.persona_name,
+            pd.confidence,
+            pd.prob_bull,
+            pd.prob_base,
+            pd.prob_bear
+        FROM persona_decisions pd
+        LEFT JOIN persona_runs pr ON pr.id = pd.run_id
+        WHERE pd.prob_bull IS NOT NULL
+          AND pd.prob_base IS NOT NULL
+          AND pd.prob_bear IS NOT NULL
+        ORDER BY pd.ts DESC
+        LIMIT %s
+    """
+    with ro_connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (limit,))
+        rows = cur.fetchall()
+
+    return [dict(r) for r in rows]

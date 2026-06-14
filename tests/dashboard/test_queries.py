@@ -213,3 +213,71 @@ class TestFetchEquityCurve:
         assert len(result) == 2
         assert result[0]["trading_day"].isoformat() == "2026-06-10"
         assert result[1]["total_assets"] == 10_050_000
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-048 M3 REQ-048-M3-6: postmortem/calibration 읽기전용 쿼리 (T-012)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchPostmortemDistribution:
+    """AC-M3-5: postmortem 분류 분포 읽기전용 쿼리."""
+
+    def test_returns_rows(self) -> None:
+        from trading.dashboard import queries
+
+        rows = [
+            {"id": 1, "ts": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
+             "persona_name": "decision", "cycle_kind": "intraday",
+             "confidence": 0.7, "prob_bull": None, "prob_base": None, "prob_bear": None},
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_postmortem_distribution()
+
+        assert len(result) == 1
+        assert result[0]["persona_name"] == "decision"
+
+    def test_returns_empty_list_on_no_rows(self) -> None:
+        from trading.dashboard import queries
+
+        with _make_patch([]):
+            result = queries.fetch_postmortem_distribution()
+
+        assert result == []
+
+    def test_no_write_operations(self) -> None:
+        """쿼리 함수가 SELECT 만 사용하는지 소스 확인."""
+        import inspect
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_postmortem_distribution)
+        assert "INSERT" not in src.upper()
+        assert "UPDATE" not in src.upper()
+        assert "DELETE" not in src.upper()
+
+
+class TestFetchCalibrationScores:
+    """AC-M3-5: calibration 점수 원재료 읽기전용 쿼리."""
+
+    def test_returns_rows_with_probs(self) -> None:
+        from trading.dashboard import queries
+
+        rows = [
+            {"id": 2, "ts": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
+             "persona_name": "macro", "confidence": 0.8,
+             "prob_bull": 0.6, "prob_base": 0.3, "prob_bear": 0.1},
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_calibration_scores()
+
+        assert len(result) == 1
+        assert result[0]["prob_bull"] == 0.6
+
+    def test_no_write_operations(self) -> None:
+        import inspect
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_calibration_scores)
+        assert "INSERT" not in src.upper()
+        assert "UPDATE" not in src.upper()
+        assert "DELETE" not in src.upper()

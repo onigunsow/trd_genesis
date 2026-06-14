@@ -24,9 +24,10 @@ from datetime import date
 from typing import Any, Literal
 
 from trading.alerts import telegram as tg
-from trading.config import SIZING_MODE, SizingParams, get_settings
+from trading.config import SIZING_MODE, SizingParams, TradingMode, get_settings
 from trading.data.ticker_names import ticker_name
 from trading.db.session import NOW, audit, connection, get_system_state, update_system_state
+from trading.edge.validation_gate import is_validation_passed
 from trading.kis.account import balance
 from trading.kis.broker_truth import (
     clamp_sell_to_confirmed,
@@ -56,6 +57,12 @@ from trading.scripts.refresh_market_data import (
 )
 from trading.strategy.car.filter import evaluate_event
 from trading.strategy.car.models import FilterDecision
+from trading.strategy.sizing.kelly import (
+    half_kelly_cap,
+    kelly_fraction,
+    portfolio_heat,
+    reduce_qty_for_heat,
+)
 from trading.strategy.sizing.vol_target import compute_qty
 from trading.tools.registry import get_tools_for_persona
 
@@ -891,6 +898,15 @@ def _apply_overheat_order_policy(
     return qty, False
 
 
+def _is_live_mode() -> bool:
+    """현재 실거래(live) 모드 여부.
+
+    SPEC-TRADING-048: M1 Kelly/heat 사이징 가드는 live 에만 적용한다.
+    paper 는 기존 동작을 그대로 유지하여 OOS 데이터 수집을 지속한다(운영자 결정).
+    """
+    return get_settings().trading_mode == TradingMode.LIVE
+
+
 def _execute_signal(
     client: KisClient,
     sig: dict[str, Any],
@@ -941,6 +957,53 @@ def _execute_signal(
                 "SPEC-046: sizing_mode=deterministic 이지만 portfolio_state 없음 "
                 "— llm_direct fallthrough (ticker=%s)", ticker
             )
+
+    # SPEC-TRADING-048 REQ-048-M1-1/2/3/4/5/6/8: Kelly/heat 사이징 가드.
+    # BUY 전용. SIZING_MODE 와 무관하게 항상 활성(REQ-048-M1-6).
+    # [운영자 결정 2026-06-14] live 에만 적용 — paper 는 기존 동작 유지(OOS 수집 지속).
+    # 배치 위치: deterministic 블록 이후, `if not ticker or qty<=0` 이전.
+    if side == "buy" and qty > 0 and _is_live_mode():
+        _sp = SizingParams()
+        _heat_cap: float = _sp.heat_cap
+
+        # REQ-048-M1-8: M2 PASS 전에는 kelly_pct 강제 0.
+        # @MX:NOTE: [AUTO] 검증 게이트 미통과 시 kelly_pct=0 → qty=0 (거래 금지).
+        if not is_validation_passed():
+            _kelly_pct = 0.0
+        else:
+            # PASS 후: 실측 라운드트립에서 kelly_pct 계산
+            # portfolio_state 에서 win_rate/payoff_ratio 추출 (없으면 0)
+            _win_rate = float((portfolio_state or {}).get("win_rate", 0.0))
+            _payoff = float((portfolio_state or {}).get("payoff_ratio", 0.0))
+            _kelly_pct = kelly_fraction(_win_rate, _payoff)
+
+        # REQ-048-M1-2: negative-Kelly → qty=0 (거래 금지)
+        if _kelly_pct <= 0:
+            LOG.info(
+                "SPEC-048: kelly_pct=%.4f ≤ 0 → BUY 차단 (ticker=%s, decision=%s)",
+                _kelly_pct, ticker, decision_id,
+            )
+            return None
+
+        # REQ-048-M1-3: vol-targeting qty vs half-Kelly cap → min 채택
+        _equity = float((portfolio_state or {}).get("equity", 1.0))
+        _price = float(sig.get("price", 0.0) or 0.0)
+        if _price > 0 and _equity > 0:
+            _kelly_cap_qty = half_kelly_cap(_kelly_pct, _equity, _price, lot_size=1)
+            if _kelly_cap_qty < qty:
+                qty = _kelly_cap_qty
+                sig["qty"] = qty
+
+        # REQ-048-M1-4: heat 가드
+        _open_positions = (portfolio_state or {}).get("open_positions", [])
+        if isinstance(_open_positions, list) and _equity > 0 and _price > 0:
+            _current_heat = portfolio_heat(_open_positions, _equity)
+            _stop_price = sig.get("stop_price")
+            qty = reduce_qty_for_heat(
+                qty, _price, _stop_price, _current_heat, _equity,
+                heat_cap=_heat_cap, lot_size=1,
+            )
+            sig["qty"] = qty
 
     if not ticker or qty <= 0:
         return None
