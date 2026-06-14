@@ -55,7 +55,7 @@ class TestComputeATR:
         base_price = 150000
         for i in range(35):
             rows.append({
-                "date": f"2025-03-{i+1:02d}" if i < 28 else f"2025-04-{i-27:02d}",
+                "ts": f"2025-03-{i+1:02d}" if i < 28 else f"2025-04-{i-27:02d}",
                 "open": base_price + i * 100,
                 "high": base_price + i * 100 + 5000,
                 "low": base_price + i * 100 - 3000,
@@ -118,10 +118,10 @@ class TestTrueRange:
         """M4-2: TR = max(H-L, |H-prevC|, |L-prevC|)."""
         # Two rows: yesterday close=148000, today H=150000, L=145000
         rows = [
-            {"date": "2025-03-02", "open": 149000, "high": 150000, "low": 145000, "close": 149500, "volume": 1000000},
-            {"date": "2025-03-01", "open": 147000, "high": 149000, "low": 146000, "close": 148000, "volume": 900000},
+            {"ts": "2025-03-02", "open": 149000, "high": 150000, "low": 145000, "close": 149500, "volume": 1000000},
+            {"ts": "2025-03-01", "open": 147000, "high": 149000, "low": 146000, "close": 148000, "volume": 900000},
         ] + [
-            {"date": f"2025-02-{28-i:02d}", "open": 147000, "high": 149000, "low": 146000, "close": 148000, "volume": 900000}
+            {"ts": f"2025-02-{28-i:02d}", "open": 147000, "high": 149000, "low": 146000, "close": 148000, "volume": 900000}
             for i in range(10)
         ]
         # 12 rows total in DESC order

@@ -15,9 +15,9 @@ from trading.tools.registry import (
 class TestGetAllToolDefinitions:
     """Verify registry returns all 10 tools in correct format."""
 
-    def test_returns_10_tools(self):
+    def test_returns_14_tools(self):
         tools = get_all_tool_definitions()
-        assert len(tools) == 10
+        assert len(tools) == 14
 
     def test_each_tool_has_required_fields(self):
         tools = get_all_tool_definitions()
@@ -42,12 +42,13 @@ class TestGetAllToolDefinitions:
             desc = tool["description"]
             assert len(desc) <= 50, f"{tool['name']}: description too long ({len(desc)} chars)"
 
-    def test_each_tool_has_cache_control(self):
-        """REQ-TOOL-01-6: Each tool includes cache_control for SPEC-008."""
+    def test_tools_have_no_per_tool_cache_control(self):
+        """캐싱은 system_prompt 레벨(base.py:264 cache_control)에서 처리하며, 툴 정의는
+        per-tool cache_control 을 갖지 않는다. Anthropic 캐시 브레이크포인트 한계(4개)상
+        14개 툴 전부 표시는 불가하므로 REQ-TOOL-01-6 을 재해석한 실제 설계 검증."""
         tools = get_all_tool_definitions()
         for tool in tools:
-            assert "cache_control" in tool, f"{tool['name']}: missing cache_control"
-            assert tool["cache_control"] == {"type": "ephemeral"}
+            assert "cache_control" not in tool
 
     def test_tool_names_are_unique(self):
         tools = get_all_tool_definitions()
@@ -59,7 +60,7 @@ class TestGetAllToolDefinitions:
         tools1 = get_all_tool_definitions()
         tools1.pop()
         tools2 = get_all_tool_definitions()
-        assert len(tools2) == 10
+        assert len(tools2) == 14
 
 
 class TestGetToolsForPersona:

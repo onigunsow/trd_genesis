@@ -7,8 +7,9 @@ from trading.news.web_scraper import SCRAPE_RULES, ScrapeRule, WebScraper
 
 
 def test_scrape_rule_registry_completeness():
-    """AC-3-2: Exactly 11 ScrapeRule entries, one per web source."""
-    assert len(SCRAPE_RULES) == 11
+    """AC-3-2: One ScrapeRule entry per web source (소스 증감에 견고)."""
+    web_sources = get_sources_by_type("web")
+    assert len(SCRAPE_RULES) == len(web_sources)
 
 
 def test_scrape_rules_match_web_sources():
