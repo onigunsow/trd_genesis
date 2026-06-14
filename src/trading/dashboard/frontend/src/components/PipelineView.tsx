@@ -167,8 +167,14 @@ export default function PipelineView({ status }: Props) {
   // 파이프라인 스텝을 정해진 순서로 정렬
   const orderedSteps = pipeline
     ? STEP_ORDER.map((key) => {
-        const found = pipeline.steps.find((st) => st.step.toLowerCase().includes(key))
-        return found ?? { step: key, persona_name: null, cycle_kind: null, status: 'pending' as const, latency_ms: null, started_at: null, decisions: [], verdicts: [] }
+        // 백엔드 /api/pipeline 은 단계를 persona_name 으로 반환한다(step 필드 없음).
+        // null-safe 로 매칭하고, 찾은 항목엔 표준 키(step)를 부여한다.
+        const found = pipeline.steps.find((st) =>
+          (st.persona_name ?? st.step ?? '').toLowerCase().includes(key),
+        )
+        return found
+          ? { ...found, step: key }
+          : { step: key, persona_name: null, cycle_kind: null, status: 'pending' as const, latency_ms: null, started_at: null, decisions: [], verdicts: [] }
       })
     : []
 

@@ -9,6 +9,7 @@ import ChartsView from './components/ChartsView'
 import NewsView from './components/NewsView'
 import HoldingsTable from './components/HoldingsTable'
 import OrdersTable from './components/OrdersTable'
+import ErrorBoundary from './components/ErrorBoundary'
 
 type Tab = 'pipeline' | 'charts' | 'news' | 'positions'
 
@@ -137,14 +138,22 @@ export default function App() {
 
       {/* 콘텐츠 */}
       <main style={styles.content} role="tabpanel">
-        {activeTab === 'pipeline' && <PipelineView status={status} />}
-        {activeTab === 'charts' && <ChartsView />}
-        {activeTab === 'news' && <NewsView />}
+        {activeTab === 'pipeline' && (
+          <ErrorBoundary label="파이프라인"><PipelineView status={status} /></ErrorBoundary>
+        )}
+        {activeTab === 'charts' && (
+          <ErrorBoundary label="자산 통계"><ChartsView /></ErrorBoundary>
+        )}
+        {activeTab === 'news' && (
+          <ErrorBoundary label="뉴스 인텔리전스"><NewsView /></ErrorBoundary>
+        )}
         {activeTab === 'positions' && (
-          <div style={{ display: 'grid', gap: 24 }}>
-            <HoldingsTable />
-            <OrdersTable />
-          </div>
+          <ErrorBoundary label="포지션 / 주문">
+            <div style={{ display: 'grid', gap: 24 }}>
+              <HoldingsTable />
+              <OrdersTable />
+            </div>
+          </ErrorBoundary>
         )}
       </main>
     </div>

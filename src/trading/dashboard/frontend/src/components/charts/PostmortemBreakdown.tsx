@@ -8,21 +8,26 @@ interface Props {
 }
 
 const CLASS_COLORS: Record<string, string> = {
-  TP: theme.accentGreen,
-  FP: theme.accentRed,
+  TRUE_POSITIVE: theme.accentGreen,
+  FALSE_POSITIVE: theme.accentRed,
   REGIME_MISMATCH: theme.accentYellow,
   MISSED: theme.textMuted,
 }
 
 const CLASS_LABELS: Record<string, string> = {
-  TP: 'TP (적중)',
-  FP: 'FP (오신호)',
+  TRUE_POSITIVE: 'TP (적중)',
+  FALSE_POSITIVE: 'FP (오신호)',
   REGIME_MISMATCH: 'REGIME_MISMATCH',
   MISSED: 'MISSED (기회 누락)',
 }
 
 export default function PostmortemBreakdown({ data }: Props) {
-  const { counts, total, by_persona } = data
+  // 백엔드 /api/postmortem 은 distribution/per_persona 키로 반환한다(counts/by_persona 아님).
+  // 양쪽 키 + null 을 모두 방어하여 Object.entries(undefined) 크래시를 방지한다.
+  const d = (data ?? {}) as unknown as Record<string, unknown>
+  const counts = (d.distribution ?? d.counts ?? {}) as Record<string, number>
+  const total = (d.total as number) ?? 0
+  const by_persona = (d.per_persona ?? d.by_persona ?? {}) as Record<string, Record<string, number>>
 
   // 파이 차트: 4분류 전체
   const pieData = Object.entries(counts).map(([k, v]) => ({

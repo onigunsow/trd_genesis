@@ -12,7 +12,18 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import psycopg
+from psycopg.adapt import Loader
 from psycopg.rows import dict_row
+
+
+# SPEC-050: Pydantic/FastAPI v2 는 DB NUMERIC(Decimal)을 JSON 문자열로 직렬화하여
+# 프론트의 숫자 연산(.toFixed 등)을 깨뜨린다. 읽기 전용 대시보드 표시 용도이므로
+# NUMERIC 을 float 로 로드해 JSON 숫자로 내보낸다(표시 정밀도 충분).
+class _NumericFloatLoader(Loader):
+    def load(self, data):  # type: ignore[override]
+        if data is None:
+            return None
+        return float(bytes(data).decode())
 
 
 def ro_dsn() -> str:
@@ -39,6 +50,8 @@ def ro_dsn() -> str:
 def ro_connection(autocommit: bool = False) -> Iterator[psycopg.Connection]:
     """읽기 전용 psycopg 연결 컨텍스트 매니저."""
     conn = psycopg.connect(ro_dsn(), autocommit=autocommit, row_factory=dict_row)
+    # NUMERIC → float (위 _NumericFloatLoader 주석 참조)
+    conn.adapters.register_loader("numeric", _NumericFloatLoader)
     try:
         yield conn
         if not autocommit:
