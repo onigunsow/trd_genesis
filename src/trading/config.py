@@ -10,6 +10,7 @@ separation via TRADING_MODE).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from enum import Enum
 from functools import lru_cache
@@ -157,6 +158,60 @@ SLIPPAGE_BPS: Final[float] = 0.0005          # 0.05%
 # ※ SPEC-040 주의: KOSPI round-trip 인하로 익절 floor/GO-NO-GO 게이트 재튜닝 필요 (별도 결정)
 LIVE_ROUND_TRIP_COST_KOSPI: Final[float] = LIVE_FEE_BUY + LIVE_FEE_SELL_KOSPI   # ≈ 0.0023
 LIVE_ROUND_TRIP_COST_KOSDAQ: Final[float] = LIVE_FEE_BUY + LIVE_FEE_SELL_KOSDAQ  # ≈ 0.0023
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# SPEC-TRADING-046 — 결정적 사이징 파라미터 단일 외부 진실원천 (REQ-046-C)
+#
+# SizingParams 는 SPEC-044 walk_forward 하니스가 그리드 스윕할 수 있도록
+# 타입이 명시된 dataclass 로 정의한다. 운영자는 코드 수정 없이 env var 로
+# 기본값을 재정의할 수 있다.
+#
+# 기본값 근거 (ADR-HYBRID-LLM-SIGNAL-001 Option C + spec.md §6):
+#   vol_target_per_trade = 0.01  — 1-ATR 역풍이 자산의 1% 를 초과하지 않도록
+#                                   (포지션당 변동성 예산 1%)
+#   atr_lookback = 14            — 기존 ATR_PERIOD 재사용 (REQ-046-A5, plan.md)
+#   fallback_fraction = 0.02     — ATR 부재 시 자산의 2% 고정 notional
+#                                   (단건 상한 10% 보다 충분히 보수적)
+#   confidence_damp_enabled = False  — [HARD] 기본 OFF (REQ-046-B2, Spearman -0.455)
+# ──────────────────────────────────────────────────────────────────────────
+
+# @MX:ANCHOR: [AUTO] SizingParams — SPEC-046 사이징 파라미터 단일진실원천.
+# @MX:REASON: SPEC-TRADING-046 REQ-046-C1/C2: walk_forward 그리드 스윕 진입점.
+#   파라미터 변경은 이 dataclass 한 곳에서만 한다.
+
+@dataclasses.dataclass
+class SizingParams:
+    """결정적 사이징 파라미터 (SPEC-TRADING-046 REQ-046-C).
+
+    SPEC-044 walk_forward 하니스가 이 구조체를 그리드 스윕한다.
+    env var 로 기본값 재정의 가능 (코드 수정 불필요).
+    """
+
+    # 포지션당 변동성 예산: 1-ATR 역풍이 자산의 이 비율을 초과하지 않도록
+    vol_target_per_trade: float = dataclasses.field(
+        default_factory=lambda: float(os.getenv("SIZING_VOL_TARGET_PER_TRADE", "0.01"))
+    )
+    # ATR lookback 윈도 (일) — 기존 ATR_PERIOD=14 재사용
+    atr_lookback: int = dataclasses.field(
+        default_factory=lambda: int(os.getenv("SIZING_ATR_LOOKBACK", "14"))
+    )
+    # ATR 부재 시 보수 고정 분율 (단건 상한 10% 미만)
+    fallback_fraction: float = dataclasses.field(
+        default_factory=lambda: float(os.getenv("SIZING_FALLBACK_FRACTION", "0.02"))
+    )
+    # confidence 하향 damp 활성화 여부 -- [HARD] 기본 OFF (REQ-046-B2)
+    confidence_damp_enabled: bool = dataclasses.field(
+        default_factory=lambda: (
+            os.getenv("SIZING_CONFIDENCE_DAMP_ENABLED", "false").lower() == "true"
+        )
+    )
+
+
+# SPEC-TRADING-046 REQ-046-E1: sizing_mode feature flag.
+# 기본값 'llm_direct' — 현재 동작 byte-for-byte 보존.
+# 'deterministic' 으로 전환 시 결정적 사이징 모듈이 qty 를 산출.
+SIZING_MODE: Final[str] = os.getenv("SIZING_MODE", "llm_direct")
 
 
 def estimate_fee(*, mode: str, side: str, market: str, notional: int) -> int:

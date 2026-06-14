@@ -24,7 +24,7 @@ from datetime import date
 from typing import Any, Literal
 
 from trading.alerts import telegram as tg
-from trading.config import get_settings
+from trading.config import SIZING_MODE, SizingParams, get_settings
 from trading.data.ticker_names import ticker_name
 from trading.db.session import NOW, audit, connection, get_system_state, update_system_state
 from trading.kis.account import balance
@@ -56,6 +56,7 @@ from trading.scripts.refresh_market_data import (
 )
 from trading.strategy.car.filter import evaluate_event
 from trading.strategy.car.models import FilterDecision
+from trading.strategy.sizing.vol_target import compute_qty
 from trading.tools.registry import get_tools_for_persona
 
 LOG = logging.getLogger(__name__)
@@ -890,13 +891,57 @@ def _apply_overheat_order_policy(
     return qty, False
 
 
-def _execute_signal(client: KisClient, sig: dict[str, Any], decision_id: int) -> int | None:
-    """Submit a buy/sell order based on a decision signal. Returns DB orders.id or None."""
+def _execute_signal(
+    client: KisClient,
+    sig: dict[str, Any],
+    decision_id: int,
+    portfolio_state: dict[str, Any] | None = None,
+) -> int | None:
+    """Submit a buy/sell order based on a decision signal. Returns DB orders.id or None.
+
+    SPEC-TRADING-046 REQ-046-E1/E2: sizing_mode feature flag.
+    - 'llm_direct' (default): byte-for-byte 현 동작 — sig['qty'] 그대로 사용.
+    - 'deterministic': portfolio_state 가 있으면 compute_qty 로 qty 를 대체한다.
+      SELL 은 항상 SPEC-042 clamp_sell_to_confirmed 가 처리 (사이징 무관).
+    """
     side = sig.get("side", "hold")
     if side == "hold":
         return None
     ticker = sig.get("ticker", "")
     qty = int(sig.get("qty", 0) or 0)
+
+    # SPEC-TRADING-046 M3 REQ-046-E2: deterministic 사이징 seam.
+    # BUY 전용, SELL 은 SPEC-042 clamp_sell_to_confirmed 경로(아래)가 담당.
+    # portfolio_state 없이 deterministic 이면 llm qty 로 fallthrough (경고만).
+    if SIZING_MODE == "deterministic" and side == "buy":
+        if portfolio_state is not None:
+            _sizing_result = compute_qty(
+                candidate=sig,
+                portfolio_state=portfolio_state,
+                params=SizingParams(),
+            )
+            # REQ-046-E3: advisory qty (LLM 원본) + deterministic qty 둘 다 보존
+            sig["advisory_qty"] = _sizing_result["advisory_qty"]
+            sig["sizing_reason"] = _sizing_result["sizing_reason"]
+            qty = _sizing_result["qty"]
+            sig["qty"] = qty
+            audit(
+                "SIZING_DETERMINISTIC",
+                actor="orchestrator",
+                details={
+                    "ticker": ticker,
+                    "decision_id": decision_id,
+                    "advisory_qty": sig["advisory_qty"],
+                    "deterministic_qty": qty,
+                    "sizing_reason": _sizing_result["sizing_reason"],
+                },
+            )
+        else:
+            LOG.warning(
+                "SPEC-046: sizing_mode=deterministic 이지만 portfolio_state 없음 "
+                "— llm_direct fallthrough (ticker=%s)", ticker
+            )
+
     if not ticker or qty <= 0:
         return None
 
