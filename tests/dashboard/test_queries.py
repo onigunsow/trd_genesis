@@ -1,7 +1,13 @@
-"""SPEC-TRADING-047 M1: dashboard query function tests.
+"""SPEC-TRADING-047/050 M1: dashboard query function tests.
 
 RED phase — tests written before implementation.
 DB is mocked via the FakeConnection/FakeCursor pattern from conftest.
+
+SPEC-TRADING-050 M1 추가사항:
+- fetch_postmortem_distribution / fetch_calibration_scores 구형 stub 테스트 제거(REQ-050-6).
+- fetch_postmortem / fetch_confidence_analysis 신규 지연계산 함수 테스트 추가.
+- fetch_recent_news / fetch_story_clusters / fetch_trends / fetch_pipeline 신규 테스트.
+- fetch_recent_decisions / fetch_system_status / fetch_equity_curve 확장 테스트 추가.
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ def _make_patch(rows: list[dict[str, Any]]):
 
 
 # ---------------------------------------------------------------------------
-# fetch_system_status
+# fetch_system_status (SPEC-047 기존 + SPEC-050 REQ-050-4 확장)
 # ---------------------------------------------------------------------------
 
 class TestFetchSystemStatus:
@@ -61,13 +67,37 @@ class TestFetchSystemStatus:
             with pytest.raises(RuntimeError, match="system_state"):
                 queries.fetch_system_status()
 
+    def test_returns_cool_down_and_late_cycle_fields(self) -> None:
+        """AC-M1-5: status 확장 — cool_down_active / late_cycle 필드 포함."""
+        from trading.dashboard import queries
+
+        state_row = {
+            "halt_state": True,
+            "trading_mode": "paper",
+            "current_regime": "bear",
+            "current_risk_appetite": "risk-off",
+            "late_cycle_defense_active": True,
+            "late_cycle_level": "severe",
+            "cool_down_active": True,
+            "halt_reason": "daily_loss 한도 초과",
+            "updated_at": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
+        }
+        with _make_patch([state_row]):
+            result = queries.fetch_system_status()
+
+        assert result["cool_down_active"] is True
+        assert result["late_cycle_defense_active"] is True
+        assert result["late_cycle_level"] == "severe"
+        # halt_reason 은 None 이거나 문자열이어야 함
+        assert "halt_reason" in result
+
 
 # ---------------------------------------------------------------------------
-# fetch_recent_decisions
+# fetch_recent_decisions (SPEC-047 기존 + SPEC-050 REQ-050-3 확장)
 # ---------------------------------------------------------------------------
 
 class TestFetchRecentDecisions:
-    """fetch_recent_decisions returns joined persona_runs + decisions rows."""
+    """fetch_recent_decisions: persona_runs + decisions + risk_reviews LEFT JOIN."""
 
     def test_returns_list_of_dicts(self) -> None:
         from trading.dashboard import queries
@@ -83,6 +113,8 @@ class TestFetchRecentDecisions:
                 "qty": 10,
                 "confidence": 0.82,
                 "rationale": "모멘텀 확인",
+                "risk_verdict": None,
+                "risk_rationale": None,
             }
         ]
         with _make_patch(rows):
@@ -100,9 +132,51 @@ class TestFetchRecentDecisions:
 
         assert result == []
 
+    def test_includes_risk_verdict_and_rationale(self) -> None:
+        """AC-M1-2: risk_reviews LEFT JOIN — verdict/rationale 포함."""
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 10,
+                "ts": datetime(2026, 6, 14, 9, 30, tzinfo=UTC),
+                "persona_name": "decision",
+                "cycle_kind": "intraday",
+                "ticker": "000660",
+                "side": "buy",
+                "qty": 5,
+                "confidence": 0.75,
+                "rationale": "상승 모멘텀",
+                "risk_verdict": "REJECT",
+                "risk_rationale": "집중도 초과",
+            },
+            {
+                "id": 11,
+                "ts": datetime(2026, 6, 14, 9, 31, tzinfo=UTC),
+                "persona_name": "decision",
+                "cycle_kind": "intraday",
+                "ticker": "005930",
+                "side": "hold",
+                "qty": 0,
+                "confidence": 0.50,
+                "rationale": "관망",
+                "risk_verdict": None,       # LEFT JOIN 미매칭
+                "risk_rationale": None,
+            },
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_recent_decisions(limit=50)
+
+        assert len(result) == 2
+        assert result[0]["risk_verdict"] == "REJECT"
+        assert result[0]["risk_rationale"] == "집중도 초과"
+        # LEFT JOIN 미매칭은 null 이며 행 누락 없음
+        assert result[1]["risk_verdict"] is None
+        assert result[1]["risk_rationale"] is None
+
 
 # ---------------------------------------------------------------------------
-# fetch_recent_orders
+# fetch_recent_orders (SPEC-047 기존)
 # ---------------------------------------------------------------------------
 
 class TestFetchRecentOrders:
@@ -132,7 +206,7 @@ class TestFetchRecentOrders:
         assert result[0]["fill_price"] == 75000
 
     def test_no_secrets_in_response_fields(self) -> None:
-        """Response rows must not contain request/response JSONB (may hold credentials)."""
+        """응답 행에 request/response JSONB (자격증명 포함 가능) 없음 — REQ-050-8."""
         from trading.dashboard import queries
 
         rows = [
@@ -146,8 +220,9 @@ class TestFetchRecentOrders:
                 "status": "submitted",
                 "fill_price": None,
                 "mode": "paper",
-                "request": {"api_key": "SECRET"},   # must NOT appear in output
+                "request": {"api_key": "SECRET"},   # 응답에 포함 금지
                 "response": {"token": "SECRET"},
+                "kis_order_no": "ORD123456",        # 응답에 포함 금지
             }
         ]
         with _make_patch(rows):
@@ -156,10 +231,11 @@ class TestFetchRecentOrders:
         for row in result:
             assert "request" not in row
             assert "response" not in row
+            assert "kis_order_no" not in row
 
 
 # ---------------------------------------------------------------------------
-# fetch_holdings
+# fetch_holdings (SPEC-047 기존)
 # ---------------------------------------------------------------------------
 
 class TestFetchHoldings:
@@ -193,11 +269,11 @@ class TestFetchHoldings:
 
 
 # ---------------------------------------------------------------------------
-# fetch_equity_curve
+# fetch_equity_curve (SPEC-047 기존 + SPEC-050 REQ-050-5 확장)
 # ---------------------------------------------------------------------------
 
 class TestFetchEquityCurve:
-    """fetch_equity_curve returns daily_equity_snapshot rows for charting."""
+    """fetch_equity_curve returns daily_equity_snapshot rows + drawdown 곡선."""
 
     def test_returns_date_and_total_assets(self) -> None:
         from datetime import date
@@ -214,70 +290,529 @@ class TestFetchEquityCurve:
         assert result[0]["trading_day"].isoformat() == "2026-06-10"
         assert result[1]["total_assets"] == 10_050_000
 
+    def test_drawdown_series_included(self) -> None:
+        """AC-M1 / REQ-050-5: drawdown(러닝 맥스 대비 낙폭) 시리즈 포함."""
+        from datetime import date
+
+        from trading.dashboard import queries
+
+        # 최고점 10M → 9.5M 으로 낙폭 발생
+        rows = [
+            {"trading_day": date(2026, 6, 10), "total_assets": 10_000_000,
+             "stock_eval": 0, "cash": 10_000_000, "unrealized_pnl": 0},
+            {"trading_day": date(2026, 6, 11), "total_assets": 10_500_000,
+             "stock_eval": 0, "cash": 10_500_000, "unrealized_pnl": 0},
+            {"trading_day": date(2026, 6, 12), "total_assets": 9_975_000,
+             "stock_eval": 0, "cash": 9_975_000, "unrealized_pnl": 0},
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_equity_curve(days=30)
+
+        # 세 번째 행은 drawdown 이 음수여야 함
+        assert len(result) == 3
+        assert "drawdown_pct" in result[0]
+        # 첫 행 drawdown = 0 (최고점)
+        assert result[0]["drawdown_pct"] == pytest.approx(0.0)
+        # 두 번째 행도 최고점 = 0
+        assert result[1]["drawdown_pct"] == pytest.approx(0.0)
+        # 세 번째 행: (9_975_000 - 10_500_000) / 10_500_000 ≈ -0.05
+        assert result[2]["drawdown_pct"] < 0
+
+    def test_empty_equity_curve_returns_empty_list(self) -> None:
+        from trading.dashboard import queries
+
+        with _make_patch([]):
+            result = queries.fetch_equity_curve(days=30)
+
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
-# SPEC-TRADING-048 M3 REQ-048-M3-6: postmortem/calibration 읽기전용 쿼리 (T-012)
+# fetch_recent_news (SPEC-050 신규 REQ-050-2)
 # ---------------------------------------------------------------------------
 
+class TestFetchRecentNews:
+    """fetch_recent_news: news_articles + news_analysis JOIN."""
 
-class TestFetchPostmortemDistribution:
-    """AC-M3-5: postmortem 분류 분포 읽기전용 쿼리."""
-
-    def test_returns_rows(self) -> None:
+    def test_returns_news_with_analysis_fields(self) -> None:
+        """REQ-050-2: news 엔드포인트 계약 — impact_score/sentiment/keywords 포함."""
         from trading.dashboard import queries
 
         rows = [
-            {"id": 1, "ts": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
-             "persona_name": "decision", "cycle_kind": "intraday",
-             "confidence": 0.7, "prob_bull": None, "prob_base": None, "prob_bear": None},
+            {
+                "id": 1,
+                "title": "삼성전자 실적 발표",
+                "url": "https://example.com/1",
+                "summary": "어닝 서프라이즈",
+                "source_name": "한국경제",
+                "sector": "반도체",
+                "published_at": datetime(2026, 6, 14, 8, 0, tzinfo=UTC),
+                "impact_score": 4,
+                "sentiment": "positive",
+                "keywords": ["삼성전자", "반도체", "실적"],
+                "summary_2line": "삼성전자 2Q 실적 서프라이즈\n반도체 업황 회복세",
+            }
         ]
         with _make_patch(rows):
-            result = queries.fetch_postmortem_distribution()
+            result = queries.fetch_recent_news(days=7, limit=20)
 
         assert len(result) == 1
-        assert result[0]["persona_name"] == "decision"
+        row = result[0]
+        assert row["title"] == "삼성전자 실적 발표"
+        assert row["impact_score"] == 4
+        assert row["sentiment"] == "positive"
+        assert "keywords" in row
+        assert "summary_2line" in row
 
     def test_returns_empty_list_on_no_rows(self) -> None:
         from trading.dashboard import queries
 
         with _make_patch([]):
-            result = queries.fetch_postmortem_distribution()
+            result = queries.fetch_recent_news(days=7, limit=20)
 
         assert result == []
 
     def test_no_write_operations(self) -> None:
-        """쿼리 함수가 SELECT 만 사용하는지 소스 확인."""
+        """읽기 전용 — INSERT/UPDATE/DELETE 없음 (REQ-050-1)."""
         import inspect
+
         from trading.dashboard import queries
 
-        src = inspect.getsource(queries.fetch_postmortem_distribution)
+        src = inspect.getsource(queries.fetch_recent_news)
         assert "INSERT" not in src.upper()
         assert "UPDATE" not in src.upper()
         assert "DELETE" not in src.upper()
 
 
-class TestFetchCalibrationScores:
-    """AC-M3-5: calibration 점수 원재료 읽기전용 쿼리."""
+# ---------------------------------------------------------------------------
+# fetch_story_clusters (SPEC-050 신규 REQ-050-2, AC-M1-1)
+# ---------------------------------------------------------------------------
 
-    def test_returns_rows_with_probs(self) -> None:
+class TestFetchStoryClusters:
+    """fetch_story_clusters: portfolio_relevant/relevance_tickers 포함."""
+
+    def test_returns_portfolio_relevant_clusters(self) -> None:
+        """AC-M1-1: portfolio_relevant/relevance_tickers 포함 확인."""
         from trading.dashboard import queries
 
         rows = [
-            {"id": 2, "ts": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
-             "persona_name": "macro", "confidence": 0.8,
-             "prob_bull": 0.6, "prob_base": 0.3, "prob_bear": 0.1},
+            {
+                "id": 1,
+                "representative_title": "반도체 업황 개선",
+                "sector": "반도체",
+                "sentiment_dominant": "positive",
+                "portfolio_relevant": True,
+                "relevance_tickers": ["005930", "000660"],
+                "source_count": 3,
+                "impact_max": 4,
+                "cluster_date": "2026-06-14",
+            },
+            {
+                "id": 2,
+                "representative_title": "경제 지표 발표",
+                "sector": "경제",
+                "sentiment_dominant": "neutral",
+                "portfolio_relevant": False,
+                "relevance_tickers": [],
+                "source_count": 1,
+                "impact_max": 2,
+                "cluster_date": "2026-06-14",
+            },
         ]
         with _make_patch(rows):
-            result = queries.fetch_calibration_scores()
+            result = queries.fetch_story_clusters(days=7, limit=20)
 
-        assert len(result) == 1
-        assert result[0]["prob_bull"] == 0.6
+        assert len(result) == 2
+        assert result[0]["representative_title"] == "반도체 업황 개선"
+        assert result[0]["portfolio_relevant"] is True
+        assert result[0]["relevance_tickers"] == ["005930", "000660"]
+        assert "sentiment_dominant" in result[0]
+        # portfolio_relevant=False 행도 포함 (필터는 프론트)
+        assert result[1]["portfolio_relevant"] is False
+
+    def test_empty_returns_empty_list(self) -> None:
+        from trading.dashboard import queries
+
+        with _make_patch([]):
+            result = queries.fetch_story_clusters(days=7, limit=20)
+
+        assert result == []
 
     def test_no_write_operations(self) -> None:
         import inspect
+        import re
+
         from trading.dashboard import queries
 
-        src = inspect.getsource(queries.fetch_calibration_scores)
+        src = inspect.getsource(queries.fetch_story_clusters)
+        assert "INSERT INTO" not in src.upper()
+        # UPDATE DML — 컬럼명 last_updated 와 구분하기 위해 단어 경계 검사
+        assert not re.search(r"\bUPDATE\s+\w", src.upper())
+
+
+# ---------------------------------------------------------------------------
+# fetch_trends (SPEC-050 신규 REQ-050-2, AC-M5-3)
+# ---------------------------------------------------------------------------
+
+class TestFetchTrends:
+    """fetch_trends: news_trends 키워드/감성 집계."""
+
+    def test_returns_trend_rows(self) -> None:
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 1,
+                "keyword": "반도체",
+                "mention_count": 15,
+                "sentiment_positive": 8,
+                "sentiment_neutral": 5,
+                "sentiment_negative": 2,
+                "sentiment_avg": 0.6,
+                "trend_type": "daily",
+                "trend_date": "2026-06-14",
+            }
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_trends(trend_type="daily", days=7)
+
+        assert len(result) == 1
+        assert result[0]["keyword"] == "반도체"
+        assert result[0]["mention_count"] == 15
+        assert "sentiment_positive" in result[0]
+
+    def test_empty_returns_empty_list(self) -> None:
+        from trading.dashboard import queries
+
+        with _make_patch([]):
+            result = queries.fetch_trends(trend_type="daily", days=7)
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_postmortem (SPEC-050 신규 REQ-050-6/7, AC-M1-3/4)
+# ---------------------------------------------------------------------------
+
+class TestFetchPostmortem:
+    """fetch_postmortem: 어댑터 → edge.postmortem.classify_decision_outcome → aggregate."""
+
+    def test_returns_distribution_with_four_classes(self) -> None:
+        """AC-M1-3: edge 순수 함수 결과가 JSON 으로 반환."""
+        from trading.dashboard import queries
+
+        # 캐시 초기화 — 테스트 간 격리
+        queries._postmortem_cache.clear()
+
+        # persona_decisions + persona_runs 올바른 FK 조인 행
+        rows = [
+            {
+                "id": 1,
+                "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
+                "persona_name": "decision",
+                "ticker": "005930",
+                "side": "buy",
+                "confidence": 0.85,
+                "rationale": "매수 근거",
+                "regime_at_decision": "bull",
+                "persona_run_id": 100,      # 올바른 FK (persona_run_id)
+                "risk_verdict": "APPROVE",
+                "prob_bull": 0.7,
+                "prob_base": 0.2,
+                "prob_bear": 0.1,
+            }
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_postmortem(days=30, limit=100)
+
+        assert isinstance(result, dict)
+        # 집계 분포 4분류
+        assert "distribution" in result
+        dist = result["distribution"]
+        assert isinstance(dist, dict)
+        # 4가지 분류 키 존재
+        for key in ("TRUE_POSITIVE", "FALSE_POSITIVE", "REGIME_MISMATCH", "MISSED"):
+            assert key in dist, f"{key} 가 distribution 에 없음"
+
+    def test_correct_fk_used(self) -> None:
+        """REQ-050-6: pd.persona_run_id 올바른 FK 사용 — SQL 소스 확인."""
+        import inspect
+
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_postmortem)
+        # SQL 에 올바른 FK 조인 컬럼이 있어야 함
+        assert "pd.persona_run_id" in src
+        # LEFT JOIN persona_runs 가 있어야 함
+        assert "JOIN persona_runs pr ON pr.id = pd.persona_run_id" in src
+
+    def test_returns_persona_attribution(self) -> None:
+        """AC-M1-3: 페르소나별 귀인 포함."""
+        from trading.dashboard import queries
+
+        queries._postmortem_cache.clear()
+        rows = [
+            {
+                "id": 1,
+                "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
+                "persona_name": "decision",
+                "ticker": "000660",
+                "side": "buy",
+                "confidence": 0.55,
+                "rationale": "관망",
+                "regime_at_decision": "neutral",
+                "persona_run_id": 200,
+                "risk_verdict": None,
+                "prob_bull": None,
+                "prob_base": None,
+                "prob_bear": None,
+            }
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_postmortem(days=30, limit=100)
+
+        assert "per_persona" in result
+
+    def test_no_write_operations(self) -> None:
+        """REQ-050-1: 읽기 전용."""
+        import inspect
+
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_postmortem)
         assert "INSERT" not in src.upper()
         assert "UPDATE" not in src.upper()
         assert "DELETE" not in src.upper()
+
+    def test_cache_returns_same_result_on_second_call(self) -> None:
+        """AC-M1-4: 두 번째 호출은 캐시에서 응답."""
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 1,
+                "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
+                "persona_name": "decision",
+                "ticker": "005930",
+                "side": "buy",
+                "confidence": 0.75,
+                "rationale": "테스트",
+                "regime_at_decision": "bull",
+                "persona_run_id": 300,
+                "risk_verdict": "APPROVE",
+                "prob_bull": 0.6,
+                "prob_base": 0.3,
+                "prob_bear": 0.1,
+            }
+        ]
+        # 캐시 초기화 (인젝터블 clock 으로 만료 강제)
+        queries._postmortem_cache.clear()
+
+        call_count = 0
+
+        @contextmanager
+        def _counting_conn(autocommit: bool = False):
+            nonlocal call_count
+            call_count += 1
+            from tests.conftest import FakeConnection, FakeCursor
+            cursor = FakeCursor(rows)
+            yield FakeConnection(cursor)
+
+        with patch("trading.dashboard.queries.ro_connection", side_effect=_counting_conn):
+            result1 = queries.fetch_postmortem(days=30, limit=100)
+            result2 = queries.fetch_postmortem(days=30, limit=100)
+
+        # 두 결과가 동일
+        assert result1["distribution"] == result2["distribution"]
+        # DB 는 1번만 조회
+        assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# fetch_confidence_analysis (SPEC-050 신규 REQ-050-6/7, AC-M1-3)
+# ---------------------------------------------------------------------------
+
+class TestFetchConfidenceAnalysis:
+    """fetch_confidence_analysis: 어댑터 → build_roundtrips → confidence.analyze."""
+
+    def test_returns_buckets_and_correlations(self) -> None:
+        """AC-M1-3: edge 순수 함수(confidence.analyze) 결과 반환."""
+        from trading.dashboard import queries
+
+        # 캐시 초기화
+        queries._confidence_cache.clear()
+
+        # 매수→매도 라운드트립 형성 가능한 체결 행
+        rows = [
+            {
+                "id": 1, "ts": datetime(2026, 6, 1, 9, 30, tzinfo=UTC),
+                "filled_at": datetime(2026, 6, 1, 9, 31, tzinfo=UTC),
+                "side": "buy", "ticker": "005930",
+                "fill_qty": 10, "fill_price": 74000, "fee": 0,
+                "confidence": 0.8, "verdict": "APPROVE",
+            },
+            {
+                "id": 2, "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
+                "filled_at": datetime(2026, 6, 10, 9, 31, tzinfo=UTC),
+                "side": "sell", "ticker": "005930",
+                "fill_qty": 10, "fill_price": 76000, "fee": 0,
+                "confidence": None, "verdict": None,
+            },
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_confidence_analysis(days=30)
+
+        assert isinstance(result, dict)
+        assert "buckets" in result
+        assert "n_with_conf" in result
+        # pearson/spearman 은 n<3 이면 None
+        assert "pearson" in result
+        assert "spearman" in result
+
+    def test_empty_returns_zero_buckets(self) -> None:
+        from trading.dashboard import queries
+
+        # 캐시 초기화 — 이전 테스트 캐시가 남아 있을 수 있음
+        queries._confidence_cache.clear()
+        with _make_patch([]):
+            result = queries.fetch_confidence_analysis(days=30)
+
+        assert isinstance(result, dict)
+        assert result["n_with_conf"] == 0
+
+    def test_no_write_operations(self) -> None:
+        import inspect
+
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_confidence_analysis)
+        assert "INSERT" not in src.upper()
+        assert "UPDATE" not in src.upper()
+
+
+# ---------------------------------------------------------------------------
+# fetch_pipeline (SPEC-050 신규 REQ-050-2)
+# ---------------------------------------------------------------------------
+
+class TestFetchPipeline:
+    """fetch_pipeline: 최신 사이클 persona_runs 재구성."""
+
+    def test_returns_pipeline_dict(self) -> None:
+        """REQ-050-2: pipeline 엔드포인트 계약 — persona_name/cycle_kind/ts 포함."""
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 10,
+                "ts": datetime(2026, 6, 14, 9, 0, tzinfo=UTC),
+                "persona_name": "macro",
+                "cycle_kind": "pre_market",
+                "input_tokens": 1200,
+                "output_tokens": 350,
+                "latency_ms": 2100,
+                "error": None,
+                "regime_at_decision": "bull",
+            },
+            {
+                "id": 11,
+                "ts": datetime(2026, 6, 14, 9, 1, tzinfo=UTC),
+                "persona_name": "micro",
+                "cycle_kind": "pre_market",
+                "input_tokens": 900,
+                "output_tokens": 280,
+                "latency_ms": 1800,
+                "error": None,
+                "regime_at_decision": "bull",
+            },
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_pipeline()
+
+        assert isinstance(result, dict)
+        assert "steps" in result
+        steps = result["steps"]
+        assert isinstance(steps, list)
+        if steps:
+            step = steps[0]
+            assert "persona_name" in step
+            assert "ts" in step
+
+    def test_empty_persona_runs_returns_empty_steps(self) -> None:
+        """E1: persona_runs 가 비어 있는 신규 환경 → 빈 steps (500 금지)."""
+        from trading.dashboard import queries
+
+        with _make_patch([]):
+            result = queries.fetch_pipeline()
+
+        assert result["steps"] == []
+
+    def test_no_write_operations(self) -> None:
+        import inspect
+
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_pipeline)
+        assert "INSERT" not in src.upper()
+        assert "UPDATE" not in src.upper()
+
+
+# ---------------------------------------------------------------------------
+# Redaction (SPEC-050 REQ-050-8, AC-M1-6)
+# ---------------------------------------------------------------------------
+
+class TestRedaction:
+    """민감 필드 redaction — 자격증명/KIS payload/kis_order_no 제외."""
+
+    def test_sensitive_fields_excluded_from_orders(self) -> None:
+        """AC-M1-6: request/response/kis_order_no 제외."""
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 1,
+                "ts": datetime(2026, 6, 14, tzinfo=UTC),
+                "side": "buy", "ticker": "005930",
+                "qty": 1, "order_type": "market",
+                "status": "filled", "fill_price": 75000, "mode": "paper",
+                "request": {"api_key": "SECRET_KEY"},
+                "response": {"token": "SECRET_TOKEN"},
+                "kis_order_no": "KIS_ORD_001",
+            }
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_recent_orders(limit=10)
+
+        assert len(result) == 1
+        row = result[0]
+        assert "request" not in row
+        assert "response" not in row
+        assert "kis_order_no" not in row
+
+    def test_decision_rationale_confidence_exposed(self) -> None:
+        """AC-M1-6: rationale/confidence/prob_*/verdict 는 노출 허용."""
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 1,
+                "ts": datetime(2026, 6, 14, 9, 30, tzinfo=UTC),
+                "persona_name": "decision",
+                "cycle_kind": "intraday",
+                "ticker": "005930",
+                "side": "buy",
+                "qty": 5,
+                "confidence": 0.82,
+                "rationale": "상승 모멘텀 확인",
+                "risk_verdict": "APPROVE",
+                "risk_rationale": "집중도 허용 범위",
+            }
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_recent_decisions(limit=10)
+
+        assert len(result) == 1
+        row = result[0]
+        assert row["confidence"] == 0.82
+        assert row["rationale"] == "상승 모멘텀 확인"
+        assert row["risk_verdict"] == "APPROVE"
+        assert row["risk_rationale"] == "집중도 허용 범위"
