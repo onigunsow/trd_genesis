@@ -37,16 +37,29 @@ See ``.moai/specs/SPEC-TRADING-042-broker-truth-ledger/`` for the full SPEC.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
+import pytz
+
 from trading.config import TradingMode
-from trading.db.session import audit
+from trading.db.session import audit, connection
 from trading.kis.account import balance
 from trading.kis.fills import reconcile_from_balance
 
 LOG = logging.getLogger(__name__)
+
+# KST timezone for trading-day date calculations (KRX).
+_KST = pytz.timezone("Asia/Seoul")
+
+# Terminal order statuses — an order already in one of these must never be
+# re-transitioned (REQ-045-D3 idempotency).
+_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"filled", "partial", "rejected", "cancelled", "expired", "error"}
+)
 
 # ADR-1 trade-off (correctness vs KIS rate limit): intraday reconcile is limited
 # to "before a sell decision cycle" + "after each order submission", and a short
@@ -60,13 +73,13 @@ _last_reconcile_monotonic: float | None = None
 
 
 class BrokerFillInquiryNotImplemented(NotImplementedError):
-    """Live fill confirmation (주식일별주문체결조회) is a guarded seam, not wired.
+    """Preserved for callers that catch this typed error (REQ-042-A3/order_resolver).
 
-    REQ-042-A3/A5: live fill confirmation must use the KIS execution-inquiry
-    poll, NOT the paper balance reconcile. The KIS TR id for that endpoint is
-    not yet verified, so ``confirm_fills`` raises this typed error on live
-    rather than fabricating a live fill or silently falling back to the paper
-    path. Wiring the live inquiry is a drop-in at the marked seam below.
+    SPEC-045 M2: ``confirm_fills`` no longer raises this on live — the live
+    inquiry seam is now wired. This exception class is kept so
+    ``order_resolver._attempt_fill_confirmation`` (which catches it) continues
+    to compile without modification. It may also be raised by callers who
+    explicitly need to signal that a fill inquiry is unavailable.
     """
 
 
@@ -213,23 +226,301 @@ def intraday_reconcile(
             "summary": summary}
 
 
-# @MX:ANCHOR: single fill-confirmation code path (REQ-042-A3 paper/live parity).
-# @MX:REASON: paper and live must confirm fills through ONE callable so the path
-# validated on paper is the same one used on live. Only the SOURCE branches:
-# paper = balance reconcile (KIS paper does not report same-day sell fills),
-# live = KIS execution inquiry (주식일별주문체결조회). The live branch is a guarded
-# seam — we raise rather than fabricate (REQ-042-A5) until the TR id is verified.
+def _today_kst() -> str:
+    """Current KST calendar date as YYYYMMDD string for inquiry parameters."""
+    return datetime.now(_KST).strftime("%Y%m%d")
+
+
+def _inquire_daily_ccld(client: Any) -> list[dict[str, Any]]:
+    """Query KIS 주식일별주문체결조회 (inquire-daily-ccld) for today's fills.
+
+    Routes through ``client.get()`` → SPEC-043 global TPS pacer (_GATE.acquire()
+    inside KisClient.get) so this call respects the process-wide rate budget
+    (REQ-045-A3, REQ-043-B1). Never calls ``client.post``.
+
+    Returns a list of fill records from the ``output1`` array of the KIS response.
+    Returns ``[]`` on any error or non-success rt_cd — callers must treat an
+    empty return as "unconfirmed" and NOT fabricate a fill (REQ-045-A2).
+
+    LIVE-only. Paper MUST NOT call this — paper uses the balance-reconcile path
+    (REQ-045-A5: KIS paper inquire-daily-ccld returns empty, msg_cd 70070000,
+    verified 2026-05-28).
+
+    [확인 필요-1]: live TR_ID TTTC8001R (3개월 이내) / CTSC9115R (3개월 이전) —
+    cross-verified from public sources but NOT live-tested by this project.
+    Operator must verify with live credentials before full live promotion (M5 gate).
+
+    [확인 필요-2]: response field names (ODNO, CCLD_QTY, CCLD_AVG_UNPR, etc.) —
+    cross-referenced from open-source KIS wrappers but unverified against a live
+    account. All field reads below are defensive (default to empty/zero on miss).
+    """
+    today = _today_kst()
+
+    # [확인 필요-1]: TR_ID selection — TTTC8001R live (within 3mo) / CTSC9115R live
+    # (older than 3mo) / VTTC8001R paper. For same-day fills only TTTC8001R is
+    # needed; CTSC9115R is a fallback for aged orders not yet confirmed.
+    tr_id = client.tr_id(
+        "VTTC8001R",   # paper (unused — this function is live-only)
+        "TTTC8001R",   # live (3개월 이내) # [확인 필요-1]
+    )
+
+    try:
+        resp = client.get(
+            "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            tr_id,
+            params={
+                "CANO": client.account_prefix,           # [확인 필요-2]
+                "ACNT_PRDT_CD": client.account_suffix,  # [확인 필요-2]
+                "INQR_STRT_DT": today,                  # [확인 필요-2] YYYYMMDD
+                "INQR_END_DT": today,                   # [확인 필요-2] YYYYMMDD
+                "SLL_BUY_DVSN_CD": "00",               # [확인 필요-2] 00=전체
+                "INQR_DVSN": "00",                      # [확인 필요-2] 00=주문일
+                "PDNO": "",                              # [확인 필요-2] 전종목
+                "CCLD_DVSN": "00",                      # [확인 필요-2] 00=전체
+                "ORD_GNO_BRNO": "",                     # [확인 필요-2]
+                "ODNO": "",                              # [확인 필요-2] 전주문
+                "INQR_DVSN_3": "00",                    # [확인 필요-2]
+                "INQR_DVSN_1": "",                      # [확인 필요-2]
+                "CTX_AREA_FK100": "",                   # [확인 필요-2] 페이징 커서
+                "CTX_AREA_NK100": "",                   # [확인 필요-2] 페이징 커서
+            },
+        )
+    except Exception:
+        LOG.exception(
+            "SPEC-045 _inquire_daily_ccld: KIS inquiry failed — "
+            "treating as unconfirmed (no fabricated fill, REQ-045-A2)"
+        )
+        return []
+
+    if resp.rt_cd != "0":
+        LOG.warning(
+            "SPEC-045 _inquire_daily_ccld: KIS rt_cd=%s msg_cd=%s msg=%s — "
+            "treating as unconfirmed",
+            resp.rt_cd, resp.msg_cd, resp.msg,
+        )
+        return []
+
+    # [확인 필요-2]: KIS returns daily fills in output1 (list). The _parse method
+    # in KisClient maps output→output1 fallback; raw always holds the full body.
+    records = resp.raw.get("output1", [])
+    if not isinstance(records, list):
+        LOG.warning(
+            "SPEC-045 _inquire_daily_ccld: output1 is not a list (%r) — "
+            "treating as empty", type(records)
+        )
+        return []
+    return records
+
+
+def _apply_live_fills(
+    client: Any,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Match KIS fill records to submitted orders and transition their status.
+
+    Queries the DB for today's submitted orders with a non-null kis_order_no,
+    matches them against the KIS fill records by order number (ODNO field),
+    and transitions matches to ``filled`` or ``partial``.
+
+    Returns a summary: ``{"filled_count": N, "partial_count": N,
+    "unmatched_kis": N, "skipped_terminal": N, "errors": N}``.
+
+    REQ-045-A2: orders with no matching KIS record are left unchanged — they
+    are NOT fabricated filled. ``order_resolver`` will expire them after the
+    window.
+
+    REQ-045-D3: orders already in a terminal status are skipped (idempotent).
+
+    [확인 필요-2]: field names ODNO / CCLD_QTY / CCLD_AVG_UNPR are assumed from
+    public KIS API documentation. Verify against a live response before promotion.
+    """
+    summary: dict[str, Any] = {
+        "filled_count": 0,
+        "partial_count": 0,
+        "unmatched_kis": 0,
+        "skipped_terminal": 0,
+        "errors": 0,
+    }
+
+    if not records:
+        return summary
+
+    # Index KIS fill records by ODNO for O(1) lookup.
+    # [확인 필요-2]: ODNO is the KIS order number field name.
+    kis_by_odno: dict[str, dict[str, Any]] = {}
+    for rec in records:
+        odno = str(rec.get("ODNO", "") or "").strip()  # [확인 필요-2]
+        if odno:
+            kis_by_odno[odno] = rec
+
+    if not kis_by_odno:
+        return summary
+
+    # Fetch today's submitted orders with a known KIS order number.
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, qty, COALESCE(fill_qty, 0) AS fill_qty,
+                           status, kis_order_no, ticker, side
+                      FROM orders
+                     WHERE status IN ('submitted', 'partial')
+                       AND kis_order_no IS NOT NULL
+                       AND kis_order_no != ''
+                     ORDER BY ts ASC
+                     FOR UPDATE
+                    """,
+                )
+                open_orders = list(cur.fetchall())
+
+            for order in open_orders:
+                try:
+                    _apply_one_fill(order, kis_by_odno, conn, summary)
+                except Exception:
+                    summary["errors"] += 1
+                    LOG.exception(
+                        "SPEC-045 _apply_live_fills: failed for order id=%s",
+                        order.get("id"),
+                    )
+    except Exception:
+        summary["errors"] += 1
+        LOG.exception("SPEC-045 _apply_live_fills: DB query failed")
+
+    # Count KIS records with no matching local order.
+    matched_odnos = {
+        str(o.get("kis_order_no", ""))
+        for o in open_orders  # type: ignore[name-defined]
+        if str(o.get("kis_order_no", "")) in kis_by_odno
+    }
+    summary["unmatched_kis"] = max(0, len(kis_by_odno) - len(matched_odnos))
+    return summary
+
+
+def _apply_one_fill(
+    order: dict[str, Any],
+    kis_by_odno: dict[str, dict[str, Any]],
+    conn: Any,
+    summary: dict[str, Any],
+) -> None:
+    """Transition one order based on its matching KIS fill record (if any).
+
+    Skips terminal orders (REQ-045-D3). Leaves unmatched orders unchanged
+    (REQ-045-A2 — no fabricated fill).
+    """
+    order_id = int(order["id"])
+    current_status = str(order.get("status") or "")
+    kis_order_no = str(order.get("kis_order_no") or "").strip()
+
+    # REQ-045-D3: idempotent — never re-transition terminal orders.
+    if current_status in _TERMINAL_STATUSES:
+        summary["skipped_terminal"] += 1
+        return
+
+    rec = kis_by_odno.get(kis_order_no)
+    if rec is None:
+        # No matching KIS record — leave in submitted/partial; resolver will
+        # expire after window (REQ-045-A2: no fabricated fill).
+        return
+
+    # [확인 필요-2]: CCLD_QTY = 체결수량, CCLD_AVG_UNPR = 체결평균가.
+    # Defensive int-cast with 0 fallback so a bad schema never crashes here.
+    ccld_qty = int(rec.get("CCLD_QTY", 0) or 0)      # [확인 필요-2]
+    ccld_price = int(rec.get("CCLD_AVG_UNPR", 0) or 0)  # [확인 필요-2]
+    order_qty = int(order.get("qty", 0) or 0)
+
+    if ccld_qty <= 0:
+        # KIS returned a record for this order but fill qty is 0 — still
+        # pending; do not fabricate.
+        return
+
+    new_status = "filled" if ccld_qty >= order_qty else "partial"
+    ticker = order.get("ticker", "")
+    side = order.get("side", "")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE orders
+               SET status = %s,
+                   fill_qty = %s,
+                   fill_price = %s,
+                   filled_at = now()
+             WHERE id = %s
+               AND status NOT IN ('filled', 'partial', 'rejected',
+                                  'cancelled', 'expired', 'error')
+            """,
+            (new_status, ccld_qty, ccld_price, order_id),
+        )
+        _emit_fill_audit(
+            cur, order_id, ticker, side, order_qty, ccld_qty, ccld_price, new_status
+        )
+
+    if new_status == "filled":
+        summary["filled_count"] += 1
+    else:
+        summary["partial_count"] += 1
+
+    LOG.info(
+        "SPEC-045 live fill confirmed: order id=%s %s %s qty=%d fill_qty=%d "
+        "fill_price=%d → %s",
+        order_id, side, ticker, order_qty, ccld_qty, ccld_price, new_status,
+    )
+
+
+def _emit_fill_audit(
+    cur: Any,
+    order_id: int,
+    ticker: str,
+    side: str,
+    ord_qty: int,
+    fill_qty: int,
+    fill_price: int,
+    new_status: str,
+) -> None:
+    """Emit an audit_log row inside the caller's transaction (REQ-042-D3)."""
+    event = "ORDER_FILLED" if new_status == "filled" else "ORDER_PARTIAL"
+    cur.execute(
+        "INSERT INTO audit_log (event_type, actor, details) VALUES (%s, %s, %s::jsonb)",
+        (event, "live_inquiry", json.dumps({
+            "order_id": order_id,
+            "ticker": ticker,
+            "side": side,
+            "ord_qty": ord_qty,
+            "fill_qty": fill_qty,
+            "fill_price": fill_price,
+            "new_status": new_status,
+            "source": "inquire-daily-ccld",  # [확인 필요-2]
+        })),
+    )
+
+
+# @MX:ANCHOR: single fill-confirmation code path (REQ-042-A3/REQ-045-A4 paper/live
+# parity). fan_in >= 2: order_resolver._attempt_fill_confirmation and the intraday
+# reconcile both route through here.
+# @MX:REASON: paper and live confirm fills through ONE callable so the path
+# exercised on paper is the same entry point used on live. SOURCE branches:
+# paper = balance reconcile (KIS paper does not report same-day SELL fills),
+# live = KIS execution inquiry 주식일별주문체결조회 (SPEC-045 M2, REQ-045-A1).
+# Never fabricates a fill (REQ-042-A5/REQ-045-A2).
 def confirm_fills(client: Any, *, source: str | None = None) -> dict[str, Any]:
     """Confirm fills through a single code path, source-branched (REQ-042-A3).
 
     ``source`` is auto-detected from ``client.mode`` when None:
 
     - paper → ``"balance_reconcile"``: delegates to ``reconcile_from_balance``.
-    - live  → ``"execution_inquiry"``: KIS 주식일별주문체결조회 polling. NOT yet
-      wired — raises :class:`BrokerFillInquiryNotImplemented` rather than
-      fabricating a live fill or falling back to the paper reconcile (REQ-042-A5).
+      KIS paper returns empty results for same-day SELL fills (inquire-daily-ccld
+      VTTC8001R → msg_cd 70070000, verified 2026-05-28), so balance-reconcile
+      is the only reliable paper path (REQ-045-A5).
+    - live  → ``"execution_inquiry"``: calls KIS 주식일별주문체결조회 via
+      ``_inquire_daily_ccld`` (routes through ``client.get()`` → SPEC-043
+      TPS pacer, REQ-045-A3). Matches fill records to submitted orders by
+      kis_order_no. Unconfirmed orders are left unchanged for ``order_resolver``
+      to expire (never fabricated filled, REQ-042-A5/REQ-045-A2).
 
-    Returns a dict with ``source`` and the reconcile ``summary`` on paper.
+    Returns a dict with ``source`` and a ``summary`` dict. On live the summary
+    contains ``filled_count``, ``partial_count``, ``unmatched_kis``,
+    ``skipped_terminal``, ``errors``.
     """
     if source is None:
         source = (
@@ -242,13 +533,11 @@ def confirm_fills(client: Any, *, source: str | None = None) -> dict[str, Any]:
         summary = reconcile_from_balance(client, dry_run=False)
         return {"source": "balance_reconcile", "summary": summary}
 
-    # ── LIVE seam (REQ-042-A3/A5) ──────────────────────────────────────────
-    # Drop-in point for the KIS execution-inquiry (주식일별주문체결조회) poll. The
-    # TR id is not yet verified, so we DO NOT guess — raise the typed seam error.
-    # When wired, this branch must map KIS execution states to filled/partial
-    # WITHOUT touching the paper synthetic path and WITHOUT fabricating fills.
-    raise BrokerFillInquiryNotImplemented(
-        "live fill confirmation (주식일별주문체결조회) is not yet wired; "
-        "the KIS execution-inquiry TR id must be verified before live use "
-        "(REQ-042-A3/A5) — never fabricate a live fill"
-    )
+    # ── LIVE execution inquiry (SPEC-045 M2, REQ-045-A1..A5) ──────────────
+    # 1. Query KIS inquire-daily-ccld via client.get() (SPEC-043 TPS pacer).
+    # 2. Match fill records to submitted orders by kis_order_no.
+    # 3. Transition matched orders to filled/partial (no fabrication).
+    # 4. Leave unmatched orders for order_resolver to expire after the window.
+    records = _inquire_daily_ccld(client)
+    summary = _apply_live_fills(client, records)
+    return {"source": "execution_inquiry", "summary": summary}

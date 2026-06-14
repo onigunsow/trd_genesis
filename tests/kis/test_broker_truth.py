@@ -194,29 +194,33 @@ class TestFillConfirmationParity:
         reconcile.assert_called_once_with(client, dry_run=False)
         assert out["source"] == "balance_reconcile"
 
-    def test_live_confirm_fills_is_guarded_seam_not_fabricated(self):
-        """REQ-042-A3/A5: live fill-inquiry is a guarded seam, NEVER fabricated.
+    def test_live_confirm_fills_uses_execution_inquiry_not_balance_reconcile(self):
+        """REQ-042-A3/A5 + SPEC-045-M2: live fill-inquiry uses KIS execution inquiry.
 
-        The 주식일별주문체결조회 TR id is not yet wired; confirm_fills(live) must
-        raise the typed seam error and must NOT fall back to balance reconcile
-        (no fabricated live fills).
+        SPEC-045 M2 wires the live seam: confirm_fills(live) now calls
+        inquire-daily-ccld via client.get() and returns source='execution_inquiry'.
+        It must NOT fall back to balance reconcile (no fabricated live fills).
         """
         from trading.kis import broker_truth
 
         client = _live_client()
-        with patch.object(
-            broker_truth, "reconcile_from_balance",
-        ) as reconcile:
-            try:
-                broker_truth.confirm_fills(client)
-            except broker_truth.BrokerFillInquiryNotImplemented:
-                pass
-            else:  # pragma: no cover - explicit failure path
-                raise AssertionError(
-                    "live confirm_fills must raise the guarded seam error"
-                )
+        with (
+            patch.object(broker_truth, "reconcile_from_balance") as reconcile,
+            patch.object(broker_truth, "_inquire_daily_ccld",
+                         return_value=[]) as _inq,
+            patch.object(broker_truth, "_apply_live_fills",
+                         return_value={"filled_count": 0, "partial_count": 0,
+                                       "unmatched_kis": 0, "skipped_terminal": 0,
+                                       "errors": 0}),
+        ):
+            result = broker_truth.confirm_fills(client)
 
+        # Paper reconcile must NOT be called (no fabricated live fill)
         reconcile.assert_not_called()
+        # Live seam now returns execution_inquiry result
+        assert result["source"] == "execution_inquiry"
+        # client.get() is invoked inside _inquire_daily_ccld (tested in SPEC-045 suite)
+        _inq.assert_called_once_with(client)
 
     def test_confirm_fills_single_signature_both_modes(self):
         """Parity: the same callable + signature serves paper and live."""
@@ -335,13 +339,20 @@ class TestLiveSafety:
         assert "PHANTOM_SELL_BLOCKED" in sink.events
 
     def test_confirm_fills_live_never_calls_reconcile(self):
-        """REQ-042-A5: live path must not reach the paper reconcile fallback."""
+        """REQ-042-A5: live path must not reach the paper reconcile fallback.
+
+        SPEC-045 M2: live now uses _inquire_daily_ccld, never reconcile_from_balance.
+        """
         from trading.kis import broker_truth
 
         client = _live_client()
-        with patch.object(broker_truth, "reconcile_from_balance") as reconcile:
-            try:
-                broker_truth.confirm_fills(client)
-            except broker_truth.BrokerFillInquiryNotImplemented:
-                pass
+        with (
+            patch.object(broker_truth, "reconcile_from_balance") as reconcile,
+            patch.object(broker_truth, "_inquire_daily_ccld", return_value=[]),
+            patch.object(broker_truth, "_apply_live_fills",
+                         return_value={"filled_count": 0, "partial_count": 0,
+                                       "unmatched_kis": 0, "skipped_terminal": 0,
+                                       "errors": 0}),
+        ):
+            broker_truth.confirm_fills(client)
         reconcile.assert_not_called()
