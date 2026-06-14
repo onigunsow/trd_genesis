@@ -1,7 +1,7 @@
 ---
 id: SPEC-TRADING-050
-version: 0.2.0
-status: draft
+version: 0.3.0
+status: implemented
 created: 2026-06-14
 updated: 2026-06-14
 author: oni
@@ -13,6 +13,8 @@ labels: [dashboard, frontend, observability, ui-ux, brownfield]
 # SPEC-TRADING-050 — 전문 인터랙티브 대시보드 전면 개편 (Dashboard Overhaul)
 
 ## HISTORY
+
+- 0.3.0 (2026-06-15): 구현 완료. M1 백엔드(commit 16b079f): 신규 6 엔드포인트+기존 3 확장, 죽은 stub 교체(어댑터→edge 순수함수 지연계산). M2~M5 프론트(React+Vite+TS+ECharts): 파이프라인 다이어그램·결정 드릴다운·자산통계 차트 8종·뉴스 인텔리전스·폴링 훅·다크 테마. 검증: 백엔드 pytest 1652 passed/회귀0, 프론트 typecheck 클린+vitest 30 passed+vite build 성공, FastAPI가 빌드 산출물(static/) 서빙 확인(React 렌더·/api/pipeline 실데이터). 빌드 산출물 git 커밋(dashboard-api 컨테이너 python-only). **배포 의존성**: /api/status 등 일부는 mig 033(SPEC-048 cool_down_active/prob_*) 라이브 DB 적용 필요 — 운영자 승인 프로덕션 작업(미적용 시 해당 패널 503, 코드 정상). 알려진 한계: fetch_postmortem relative수익 0 고정(후속).
 
 - v0.2.0 (2026-06-14): plan-auditor 1차 감사(0.68 FAIL) 결함 7건 반영(iteration 2).
   D4(BLOCKING): postmortem/confidence 접근 모순 해소 — 죽은/깨진 stub(`pd.run_id`)
