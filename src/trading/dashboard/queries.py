@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import time
+
+import psycopg
 from typing import Any
 
 from trading.dashboard.db import ro_connection
@@ -78,9 +80,8 @@ def fetch_system_status() -> dict[str, Any]:
     Raises:
         RuntimeError: system_state 행이 없을 때.
     """
-    with ro_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
+    def _sql(cool_expr: str) -> str:
+        return f"""
             SELECT
                 ss.halt_state,
                 ss.trading_mode,
@@ -88,7 +89,7 @@ def fetch_system_status() -> dict[str, Any]:
                 ss.current_risk_appetite,
                 ss.late_cycle_defense_active,
                 ss.late_cycle_level,
-                ss.cool_down_active,
+                {cool_expr},
                 ss.updated_at,
                 al.details->>'reason' AS halt_reason
             FROM system_state ss
@@ -99,8 +100,17 @@ def fetch_system_status() -> dict[str, Any]:
             ) al ON true
             WHERE ss.id = 1
             """
-        )
-        row = cur.fetchone()
+
+    with ro_connection() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(_sql("ss.cool_down_active"))
+            row = cur.fetchone()
+        except psycopg.errors.UndefinedColumn:
+            # mig 033 미적용 환경: cool_down_active 컬럼 부재 → 기본 false 로 graceful 폴백.
+            # (선택 컬럼 하나로 status 패널 전체가 503 되지 않도록)
+            conn.rollback()
+            cur.execute(_sql("false AS cool_down_active"))
+            row = cur.fetchone()
 
     if not row:
         raise RuntimeError("system_state 행 없음 — migration 001 미적용?")
