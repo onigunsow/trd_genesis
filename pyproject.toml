@@ -46,6 +46,9 @@ dependencies = [
     # M3 backtest — own vectorised engine (src/trading/backtest/engine.py),
     # avoiding vectorbt's heavy numba/llvmlite dependency.
     "matplotlib>=3.10",
+    # SPEC-TRADING-047: monitoring dashboard API
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [project.optional-dependencies]

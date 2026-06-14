@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trading Dashboard</title>
+  <style>
+    /* REQ-047-9: halt_state=true 시 시각적으로 명확히 표시 */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
+    header { padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 1rem; color: #58a6ff; }
+    #halt-banner { display: none; padding: 8px 20px; background: #da3633; color: #fff; font-weight: bold; text-align: center; font-size: 0.9rem; letter-spacing: 0.05em; }
+    #halt-banner.active { display: block; }
+    #status-bar { padding: 6px 20px; background: #161b22; border-bottom: 1px solid #30363d; font-size: 0.75rem; color: #8b949e; display: flex; gap: 20px; flex-wrap: wrap; }
+    #status-bar span { display: inline-flex; align-items: center; gap: 4px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #3fb950; display: inline-block; }
+    .dot.halt { background: #da3633; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #30363d; min-height: calc(100vh - 80px); }
+    section { background: #0d1117; padding: 14px 18px; }
+    section h2 { font-size: 0.8rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+    .feed-item { border-bottom: 1px solid #21262d; padding: 8px 0; font-size: 0.8rem; }
+    .feed-item:last-child { border-bottom: none; }
+    .feed-item .meta { color: #8b949e; font-size: 0.72rem; margin-bottom: 2px; }
+    .side-buy { color: #3fb950; }
+    .side-sell { color: #f85149; }
+    .rationale { color: #c9d1d9; margin-top: 3px; font-size: 0.75rem; line-height: 1.4; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    th { text-align: left; color: #8b949e; font-weight: normal; padding: 4px 8px 4px 0; border-bottom: 1px solid #21262d; }
+    td { padding: 4px 8px 4px 0; border-bottom: 1px solid #161b22; }
+    .status-pill { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 0.7rem; }
+    .pill-filled { background: #1f4f2e; color: #3fb950; }
+    .pill-submitted { background: #2f2a10; color: #e3b341; }
+    .pill-rejected { background: #3d1f1f; color: #f85149; }
+    .pill-cancelled { background: #262626; color: #8b949e; }
+    .scorecard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .score-item { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; }
+    .score-item .label { font-size: 0.7rem; color: #8b949e; }
+    .score-item .value { font-size: 1.1rem; font-weight: bold; margin-top: 2px; }
+    .verdict-GO { color: #3fb950; }
+    .verdict-WEAK { color: #e3b341; }
+    .verdict-NO { color: #f85149; }
+    .error-msg { color: #f85149; font-size: 0.75rem; padding: 8px 0; }
+    .empty-msg { color: #8b949e; font-size: 0.75rem; padding: 8px 0; }
+    #last-updated { font-size: 0.7rem; color: #8b949e; }
+    @media (max-width: 768px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<!-- REQ-047-9: halt banner shown when halt_state=true -->
+<div id="halt-banner">⛔ SYSTEM HALTED — 매매 정지 중</div>
+
+<header>
+  <h1>Trading Dashboard</h1>
+  <span id="last-updated"></span>
+</header>
+
+<div id="status-bar">
+  <span><span class="dot" id="status-dot"></span> <span id="status-mode">—</span></span>
+  <span>Regime: <strong id="status-regime">—</strong></span>
+  <span>Risk: <strong id="status-risk">—</strong></span>
+  <span>Late-cycle: <strong id="status-latecycle">—</strong></span>
+</div>
+
+<main>
+  <!-- 결정 피드 (REQ-047-6, 8) -->
+  <section id="section-decisions">
+    <h2>페르소나 결정 피드</h2>
+    <div id="decisions-list"><span class="empty-msg">로딩 중...</span></div>
+  </section>
+
+  <!-- 보유/손익 (REQ-047-6) -->
+  <section id="section-holdings">
+    <h2>보유 종목</h2>
+    <div id="holdings-content"><span class="empty-msg">로딩 중...</span></div>
+  </section>
+
+  <!-- 최근 주문 (REQ-047-6) -->
+  <section id="section-orders">
+    <h2>최근 주문</h2>
+    <div id="orders-content"><span class="empty-msg">로딩 중...</span></div>
+  </section>
+
+  <!-- 엣지 스코어카드 (REQ-047-6) -->
+  <section id="section-scorecard">
+    <h2>엣지 스코어카드</h2>
+    <div id="scorecard-content"><span class="empty-msg">로딩 중...</span></div>
+  </section>
+</main>
+
+<script>
+// REQ-047-7: 5초 간격 폴링 (SSE/WebSocket 미사용 — ADR-047-1)
+const POLL_MS = 5000;
+const BASE = '';  // same-origin
+
+function fmt(v, decimals=2) {
+  if (v == null) return '—';
+  if (typeof v === 'number') return v.toLocaleString('ko-KR', {maximumFractionDigits: decimals});
+  return String(v);
+}
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleString('ko-KR', {timeZone: 'Asia/Seoul', hour12: false}).slice(0, 16);
+  } catch { return ts; }
+}
+
+function pillClass(status) {
+  const map = {filled:'pill-filled', submitted:'pill-submitted', rejected:'pill-rejected', cancelled:'pill-cancelled', error:'pill-rejected'};
+  return map[status] || '';
+}
+
+// ── status ───────────────────────────────────────────────────────────────────
+async function fetchStatus() {
+  try {
+    const r = await fetch(BASE + '/api/status');
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+
+    const isHalt = d.halt_state === true;
+    document.getElementById('halt-banner').classList.toggle('active', isHalt);
+    const dot = document.getElementById('status-dot');
+    dot.className = 'dot' + (isHalt ? ' halt' : '');
+    document.getElementById('status-mode').textContent = d.trading_mode || '—';
+    document.getElementById('status-regime').textContent = d.current_regime || '—';
+    document.getElementById('status-risk').textContent = d.current_risk_appetite || '—';
+    document.getElementById('status-latecycle').textContent = d.late_cycle_defense_active ? 'ON' : 'OFF';
+  } catch (e) {
+    document.getElementById('status-mode').textContent = 'DB 오류';
+  }
+}
+
+// ── decisions ────────────────────────────────────────────────────────────────
+async function fetchDecisions() {
+  const el = document.getElementById('decisions-list');
+  try {
+    const r = await fetch(BASE + '/api/decisions?limit=30');
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    if (!data.length) { el.innerHTML = '<span class="empty-msg">결정 없음</span>'; return; }
+
+    el.innerHTML = data.map(d => `
+      <div class="feed-item">
+        <div class="meta">${fmtTs(d.ts)} &nbsp; ${d.persona_name || ''} &nbsp; ${d.cycle_kind || ''}</div>
+        <span class="side-${d.side}">${d.side?.toUpperCase()}</span>
+        &nbsp;<strong>${d.ticker || '—'}</strong>
+        &nbsp;${d.qty != null ? d.qty + '주' : ''}
+        &nbsp;<span style="color:#8b949e">신뢰도 ${fmt(d.confidence, 2)}</span>
+        <div class="rationale">${d.rationale || ''}</div>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = '<span class="error-msg">결정 피드 오류: ' + e.message + '</span>';
+  }
+}
+
+// ── holdings ─────────────────────────────────────────────────────────────────
+async function fetchHoldings() {
+  const el = document.getElementById('holdings-content');
+  try {
+    const r = await fetch(BASE + '/api/holdings');
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    if (!data.length) { el.innerHTML = '<span class="empty-msg">보유 종목 없음</span>'; return; }
+
+    el.innerHTML = `<table>
+      <thead><tr><th>종목</th><th>수량</th><th>평균단가</th><th>매수총액</th></tr></thead>
+      <tbody>${data.map(h => `
+        <tr>
+          <td><strong>${h.ticker}</strong></td>
+          <td>${fmt(h.qty_net, 0)}</td>
+          <td>${fmt(h.avg_fill_price, 0)}</td>
+          <td>${fmt(h.total_cost, 0)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  } catch (e) {
+    el.innerHTML = '<span class="error-msg">보유 오류: ' + e.message + '</span>';
+  }
+}
+
+// ── orders ───────────────────────────────────────────────────────────────────
+async function fetchOrders() {
+  const el = document.getElementById('orders-content');
+  try {
+    const r = await fetch(BASE + '/api/orders?limit=20');
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    if (!data.length) { el.innerHTML = '<span class="empty-msg">주문 없음</span>'; return; }
+
+    el.innerHTML = `<table>
+      <thead><tr><th>시각</th><th>종목</th><th>방향</th><th>수량</th><th>체결가</th><th>상태</th></tr></thead>
+      <tbody>${data.map(o => `
+        <tr>
+          <td style="color:#8b949e">${fmtTs(o.ts)}</td>
+          <td><strong>${o.ticker}</strong></td>
+          <td class="side-${o.side}">${o.side?.toUpperCase()}</td>
+          <td>${fmt(o.qty, 0)}</td>
+          <td>${o.fill_price != null ? fmt(o.fill_price, 0) : '—'}</td>
+          <td><span class="status-pill ${pillClass(o.status)}">${o.status}</span></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  } catch (e) {
+    el.innerHTML = '<span class="error-msg">주문 오류: ' + e.message + '</span>';
+  }
+}
+
+// ── scorecard ────────────────────────────────────────────────────────────────
+async function fetchScorecard() {
+  const el = document.getElementById('scorecard-content');
+  try {
+    const r = await fetch(BASE + '/api/scorecard');
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+
+    const verdictClass = d.verdict?.includes('GO') && !d.verdict?.includes('NO')
+      ? (d.verdict?.includes('WEAK') ? 'verdict-WEAK' : 'verdict-GO')
+      : 'verdict-NO';
+
+    el.innerHTML = `
+      <div class="scorecard-grid">
+        <div class="score-item"><div class="label">판정</div><div class="value ${verdictClass}">${d.verdict || '—'}</div></div>
+        <div class="score-item"><div class="label">등급</div><div class="value">${d.grade || '—'}</div></div>
+        <div class="score-item"><div class="label">KOSPI 알파</div><div class="value">${d.alpha_pct != null ? fmt(d.alpha_pct, 1) + '%' : '—'}</div></div>
+        <div class="score-item"><div class="label">승률</div><div class="value">${d.win_rate != null ? fmt(d.win_rate * 100, 1) + '%' : '—'}</div></div>
+        <div class="score-item"><div class="label">CAGR</div><div class="value">${d.cagr != null ? fmt(d.cagr * 100, 1) + '%' : '—'}</div></div>
+        <div class="score-item"><div class="label">MDD</div><div class="value">${d.mdd != null ? fmt(d.mdd * 100, 1) + '%' : '—'}</div></div>
+        <div class="score-item"><div class="label">Sharpe</div><div class="value">${d.sharpe != null ? fmt(d.sharpe, 2) : '—'}</div></div>
+        <div class="score-item"><div class="label">거래 수</div><div class="value">${d.n_closed ?? '—'}</div></div>
+      </div>
+      ${d.reasons?.length ? '<ul style="margin-top:8px;padding-left:16px;font-size:0.75rem;color:#8b949e">' + d.reasons.map(r => '<li>' + r + '</li>').join('') + '</ul>' : ''}`;
+  } catch (e) {
+    el.innerHTML = '<span class="error-msg">스코어카드 오류: ' + e.message + '</span>';
+  }
+}
+
+// ── poll loop ────────────────────────────────────────────────────────────────
+async function pollAll() {
+  await Promise.all([fetchStatus(), fetchDecisions(), fetchHoldings(), fetchOrders(), fetchScorecard()]);
+  document.getElementById('last-updated').textContent =
+    '갱신: ' + new Date().toLocaleTimeString('ko-KR', {hour12: false, timeZone: 'Asia/Seoul'});
+}
+
+pollAll();
+setInterval(pollAll, POLL_MS);
+</script>
+</body>
+</html>

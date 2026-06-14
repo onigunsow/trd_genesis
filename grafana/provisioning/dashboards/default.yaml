@@ -1,0 +1,13 @@
+# SPEC-TRADING-047 M3 REQ-047-11: 대시보드 프로비저닝 config-as-code.
+apiVersion: 1
+
+providers:
+  - name: trading
+    orgId: 1
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

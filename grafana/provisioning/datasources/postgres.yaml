@@ -1,0 +1,22 @@
+# SPEC-TRADING-047 M3 REQ-047-10: dashboard_ro 역할을 사용하는 Postgres 데이터소스.
+# config-as-code — 클릭옵스 없음 (REQ-047-11).
+apiVersion: 1
+
+datasources:
+  - name: trading-postgres-ro
+    type: postgres
+    uid: trading_pg_ro
+    url: postgres:5432
+    user: ${DASHBOARD_DB_USER:-dashboard_ro}
+    secureJsonData:
+      password: ${DASHBOARD_DB_PASSWORD}
+    jsonData:
+      database: ${POSTGRES_DB:-trading}
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1600
+      timescaledb: false
+    isDefault: true
+    editable: false

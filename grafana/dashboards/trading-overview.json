@@ -1,0 +1,214 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_TRADING_PG_RO",
+      "label": "trading-postgres-ro",
+      "description": "dashboard_ro read-only Postgres datasource",
+      "type": "datasource",
+      "pluginId": "postgres",
+      "pluginName": "PostgreSQL"
+    }
+  ],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0"},
+    {"type": "datasource", "id": "postgres", "name": "PostgreSQL", "version": "1.0.0"},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "panel", "id": "table", "name": "Table", "version": ""},
+    {"type": "panel", "id": "stat", "name": "Stat", "version": ""}
+  ],
+  "annotations": {"list": []},
+  "description": "SPEC-TRADING-047: Trading system monitoring — equity curve, order flow, halt/regime, P&L",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "시스템 상태",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"true": {"text": "HALT", "color": "red"}, "false": {"text": "정상", "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT halt_state::text AS \"Halt\", trading_mode AS \"모드\", current_regime AS \"Regime\", current_risk_appetite AS \"Risk\" FROM system_state WHERE id = 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "자산 곡선 (Equity Curve)",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 0},
+      "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+      "options": {
+        "legend": {"calcs": ["last", "max", "min"], "displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 10},
+          "unit": "currencyKRW"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT trading_day AS time, total_assets AS \"총자산\", stock_eval AS \"주식평가\", cash AS \"현금\" FROM daily_equity_snapshot WHERE $__timeFilter(trading_day::timestamptz) ORDER BY trading_day",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "손익 (P&L)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+      "options": {
+        "legend": {"calcs": ["last"], "displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 5},
+          "unit": "currencyKRW"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT trading_day AS time, unrealized_pnl AS \"미실현손익\", realized_pnl_cum AS \"누적실현손익\" FROM daily_equity_snapshot WHERE $__timeFilter(trading_day::timestamptz) ORDER BY trading_day",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Halt / Regime 타임라인",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+      "options": {
+        "legend": {"calcs": [], "displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"lineWidth": 1, "drawStyle": "bars", "fillOpacity": 60},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS time, CASE WHEN event_type LIKE 'HALT%' THEN 1 ELSE 0 END AS \"Halt 이벤트\" FROM audit_log WHERE event_type IN ('HALT_TRIPPED','HALT_RESUMED','HALT_TRIGGERED') AND $__timeFilter(created_at) ORDER BY created_at",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "주문 흐름 (Order Flow)",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+      "options": {
+        "legend": {"calcs": ["count"], "displayMode": "list", "placement": "bottom"},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 0, "drawStyle": "bars", "fillOpacity": 80},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('hour', ts) AS time, COUNT(*) FILTER (WHERE side='buy') AS \"매수\", COUNT(*) FILTER (WHERE side='sell') AS \"매도\" FROM orders WHERE $__timeFilter(ts) GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "최근 주문 목록",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+      "options": {"footer": {"fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto", "displayMode": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "status"}, "properties": [{"id": "custom.displayMode", "value": "color-background"}]},
+          {"matcher": {"id": "byName", "options": "fill_price"}, "properties": [{"id": "unit", "value": "currencyKRW"}]}
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "trading_pg_ro"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS \"시각\", ticker AS \"종목\", side AS \"방향\", qty AS \"수량\", fill_price AS \"체결가\", status AS \"상태\", mode AS \"모드\" FROM orders WHERE $__timeFilter(ts) ORDER BY ts DESC LIMIT 50",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["trading", "spec-047"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "timepicker": {},
+  "timezone": "Asia/Seoul",
+  "title": "Trading Overview",
+  "uid": "trading-overview-047",
+  "version": 1
+}

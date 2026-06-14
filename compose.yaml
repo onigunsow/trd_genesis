@@ -142,8 +142,94 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # SPEC-TRADING-047 M1+M2: 읽기 전용 FastAPI 대시보드 API
+  # REQ-047-13/14: tailnet/LAN 전용 바인딩 — 0.0.0.0 공개 노출 없음.
+  dashboard-api:
+    build: .
+    image: trading-app:latest
+    container_name: trading-dashboard-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Seoul
+      PYTHONUNBUFFERED: "1"
+      # 읽기 전용 역할 DSN (dashboard_ro). DASHBOARD_DATABASE_URL 이 없으면 폴백.
+      DASHBOARD_DATABASE_URL: postgresql://dashboard_ro:${DASHBOARD_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+    user: "1000:1000"
+    command: ["uvicorn", "trading.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+    # REQ-047-13: LAN/tailnet IP 에만 바인딩. 공인 IP 포트포워딩 금지(REQ-047-14).
+    # 아래 ports 는 127.0.0.1 또는 tailnet IP 로 교체하여 공개 노출 차단.
+    # 예: "100.x.y.z:8080:8080" (Tailscale IP) 또는 "192.168.1.x:8080:8080" (LAN IP)
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - trading-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # SPEC-TRADING-047 M3: Grafana 컨테이너 (config-as-code 프로비저닝)
+  # REQ-047-10/11/12: dashboard_ro 데이터소스 + 프로비저닝 파일 + 4개 패널.
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: trading-grafana
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Seoul
+      GF_SERVER_HTTP_PORT: "3000"
+      # REQ-047-14: 공개 인터넷 노출 금지 — ports 를 LAN/tailnet IP 로 제한.
+      GF_SERVER_HTTP_ADDR: "0.0.0.0"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # 데이터소스 환경변수 주입
+      DASHBOARD_DB_USER: ${DASHBOARD_DB_USER:-dashboard_ro}
+      DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    # REQ-047-13: LAN/tailnet IP 에만 바인딩.
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - trading-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
 volumes:
   postgres_data:
+  grafana_data:
 
 networks:
   trading-net:
