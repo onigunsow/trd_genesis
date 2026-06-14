@@ -197,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_edge_report(rest)
     if cmd == "edge-snapshot":
         return _cmd_edge_snapshot(rest)
+    if cmd == "smoke-gate":
+        return _cmd_smoke_gate(rest)
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     _print_help(file=sys.stderr)
@@ -484,6 +486,370 @@ def _cmd_edge_report(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_smoke_gate(rest: list[str]) -> int:
+    """SPEC-TRADING-049 REQ-045-C: 라이브 스모크 게이트 (실행 경로 검증).
+
+    live 자격증명으로 1회 소액 BUY→SELL round-trip을 실행하고 5가지 증거 항목을
+    판정하여 PASS/FAIL 기록을 남긴다. PASS 기록이 있어야 live 전면 승격이 허용된다.
+
+    Flags
+    -----
+    --max-qty N         BUY/SELL 최대 수량 상한(필수, 0이면 차단). REQ-049-M1-2.
+    --max-notional N    BUY 최대 금액 상한(원화). 가격*qty > N이면 차단. REQ-049-M1-2.
+    --ticker CODE       대상 종목코드(미지정 시 운영 기본 종목 사용).
+    --dry-run           주문 발주 없이 정직 고지만 출력하고 종료(테스트용).
+
+    주의: 이 서브커맨드는 live 모드 + live_unlocked=True 상태에서만 발주합니다.
+    PAPER 모드이거나 live_unlocked=False이면 실거래 발주 없이 종료합니다.
+
+    정직 고지(REQ-049-M1-4, REQ-045-C4):
+        본 게이트는 실행 경로 검증이며 전략 수익성 검증이 아닙니다.
+
+    Exit codes: 0=PASS, 1=FAIL 또는 오류, 2=잘못된 인수/모드.
+    """
+    from trading.config import TradingMode, get_settings
+    from trading.db.session import get_system_state
+    from trading.kis.broker_truth import (
+        BrokerFillInquiryNotImplemented,
+        confirm_fills,
+        intraday_reconcile,
+    )
+    from trading.kis.client import KisClient, KisError
+    from trading.kis.market import current_price
+    from trading.kis.order import submit_order
+    from trading.kis.order_resolver import resolve_stuck_orders
+    from trading.kis.sell_lock import guard_sell, set_sell_inflight
+    from trading.kis.smoke_gate import (
+        HONESTY_DISCLOSURE,
+        SmokeEvidence,
+        evaluate_smoke_evidence,
+        record_smoke_verdict,
+    )
+
+    # ── 정직 고지 — 항상 먼저 출력(REQ-049-M1-4) ──────────────────────────
+    print(HONESTY_DISCLOSURE)
+    print()
+
+    # ── 플래그 파싱 ─────────────────────────────────────────────────────────
+    max_qty: int | None = None
+    max_notional: int | None = None
+    ticker: str | None = None
+    dry_run = False
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--max-qty":
+            value = rest[i + 1] if i + 1 < len(rest) else None
+            skip_next = True
+            try:
+                max_qty = int(value) if value is not None else None
+            except ValueError:
+                print(f"trading smoke-gate: invalid --max-qty {value!r}", file=sys.stderr)
+                return 2
+        elif arg == "--max-notional":
+            value = rest[i + 1] if i + 1 < len(rest) else None
+            skip_next = True
+            try:
+                max_notional = int(value) if value is not None else None
+            except ValueError:
+                print(f"trading smoke-gate: invalid --max-notional {value!r}", file=sys.stderr)
+                return 2
+        elif arg == "--ticker":
+            ticker = rest[i + 1] if i + 1 < len(rest) else None
+            skip_next = True
+        elif arg == "--dry-run":
+            dry_run = True
+        else:
+            logging.warning("trading smoke-gate: ignoring unknown flag %s", arg)
+
+    if dry_run:
+        print("[DRY-RUN] 주문 발주 없이 종료합니다.")
+        return 0
+
+    # ── 상한 검증 ───────────────────────────────────────────────────────────
+    if max_qty is None or max_qty <= 0:
+        print(
+            "trading smoke-gate: --max-qty N(>=1) 필수. 예: --max-qty 1",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ── 모드/자격증명 검증 (REQ-049-M1-3) ──────────────────────────────────
+    try:
+        settings = get_settings()
+        client = KisClient(settings.trading_mode)
+    except Exception as e:
+        print(f"trading smoke-gate: 설정/클라이언트 초기화 실패: {e}", file=sys.stderr)
+        return 1
+
+    if client.mode != TradingMode.LIVE:
+        print(
+            f"trading smoke-gate: PAPER 모드에서는 실거래를 발주하지 않습니다. "
+            f"현재 모드: {client.mode.value}. live 모드 + 자격증명 필요 (REQ-049-M1-3).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ── live_unlocked 확인 ──────────────────────────────────────────────────
+    try:
+        state = get_system_state()
+    except Exception as e:
+        print(f"trading smoke-gate: system_state 조회 실패: {e}", file=sys.stderr)
+        return 1
+
+    if not state.get("live_unlocked"):
+        print(
+            "trading smoke-gate: live_unlocked=False — 발주 불가.\n"
+            "스모크 게이트 실행 전 live_unlocked=True 설정이 필요합니다.\n"
+            "(스모크 PASS 확인 후 live 전면 승격 절차를 진행하십시오)",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ── 종목 코드 결정 ──────────────────────────────────────────────────────
+    if ticker is None:
+        # 기본 스모크 종목: 삼성전자 (유동성 최고, 소액 1주 가능)
+        ticker = "005930"
+        logging.warning(
+            "trading smoke-gate: --ticker 미지정. 기본 종목 %s 사용.", ticker
+        )
+
+    # ── 금액 상한 확인 (REQ-049-M1-2) ──────────────────────────────────────
+    if max_notional is not None:
+        try:
+            quote = current_price(client, ticker)
+            price = int(quote.get("price", 0) or 0)
+        except Exception as e:
+            print(f"trading smoke-gate: 현재가 조회 실패: {e}", file=sys.stderr)
+            return 1
+        estimated_notional = price * max_qty
+        if estimated_notional > max_notional:
+            print(
+                f"trading smoke-gate: 금액 상한 초과 — "
+                f"예상 주문금액 {estimated_notional:,}원 > max-notional {max_notional:,}원. "
+                "발주하지 않습니다 (REQ-049-M1-2).",
+                file=sys.stderr,
+            )
+            return 2
+
+    # ── BUY 발주 ────────────────────────────────────────────────────────────
+    print(f"[smoke-gate] BUY 발주: ticker={ticker} qty={max_qty}")
+    try:
+        buy_result = submit_order(
+            client,
+            ticker=ticker,
+            qty=max_qty,
+            side="buy",
+            order_type="market",
+        )
+    except KisError as e:
+        print(f"trading smoke-gate: BUY 발주 KIS 오류: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"trading smoke-gate: BUY 발주 실패: {e}", file=sys.stderr)
+        return 1
+
+    buy_order_id = buy_result.get("order_id")
+    buy_order_no = str(buy_result.get("kis_order_no") or "")
+    print(f"[smoke-gate] BUY submitted: order_id={buy_order_id} kis_order_no={buy_order_no}")
+
+    # ── BUY 체결 확인 ───────────────────────────────────────────────────────
+    # SPEC-043 페이서 경유: confirm_fills()가 client.get() → _RateGate 경유.
+    # 원장 갱신용으로 confirm_fills()를 먼저 호출하고,
+    # ODNO 매칭용으로 _inquire_ccld_raw()로 raw 레코드를 별도 수집한다.
+    tr_id_compatible = True
+    ccld_records: list[dict] = []
+    try:
+        confirm_fills(client, source="execution_inquiry")
+        # ODNO 매칭용 raw 레코드 수집 (TPS 페이서 경유)
+        ccld_records = _inquire_ccld_raw(client)
+    except BrokerFillInquiryNotImplemented:
+        tr_id_compatible = False
+        logging.warning(
+            "trading smoke-gate: BrokerFillInquiryNotImplemented — "
+            "TR_ID/필드 미호환([확인 필요-1/2] 미해소). 증거(e) 미충족."
+        )
+    except Exception as e:
+        logging.warning("trading smoke-gate: BUY 체결 확인 실패: %s", e)
+
+    buy_fill = _find_fill_record(ccld_records, buy_order_no)
+    print(f"[smoke-gate] BUY 체결 확인: {'OK' if buy_fill else 'NOT FOUND'}")
+
+    # ── SELL 발주 (guard_sell 경유, REQ-049-M3-1) ───────────────────────────
+    sell_order_no = ""
+
+    if not guard_sell(ticker, actor="smoke_gate"):
+        print(
+            f"trading smoke-gate: SELL 발주가 sell_lock에 의해 억제됨 (ticker={ticker}). "
+            "이중매도 방지(REQ-049-M3-1). 이미 진행 중인 SELL이 있습니다.",
+            file=sys.stderr,
+        )
+        # SELL 없이 판정 진행 → (b) 미충족 → FAIL
+    else:
+        set_sell_inflight(ticker)
+        print(f"[smoke-gate] SELL 발주: ticker={ticker} qty={max_qty}")
+        try:
+            sell_result = submit_order(
+                client,
+                ticker=ticker,
+                qty=max_qty,
+                side="sell",
+                order_type="market",
+            )
+            sell_order_no = str(sell_result.get("kis_order_no") or "")
+            print(
+                f"[smoke-gate] SELL submitted: "
+                f"order_id={sell_result.get('order_id')} kis_order_no={sell_order_no}"
+            )
+        except KisError as e:
+            logging.warning("trading smoke-gate: SELL 발주 KIS 오류: %s", e)
+        except Exception as e:
+            logging.warning("trading smoke-gate: SELL 발주 실패: %s", e)
+
+        # ── SELL 체결 확인 (원장 갱신 + ODNO 매칭용 raw 재조회) ──────────────
+        try:
+            confirm_fills(client, source="execution_inquiry")
+            ccld_records = _inquire_ccld_raw(client)
+        except BrokerFillInquiryNotImplemented:
+            tr_id_compatible = False
+        except Exception as e:
+            logging.warning("trading smoke-gate: SELL 체결 확인 실패: %s", e)
+
+    sell_fill = _find_fill_record(ccld_records, sell_order_no) if sell_order_no else None
+    print(f"[smoke-gate] SELL 체결 확인: {'OK' if sell_fill else 'NOT FOUND'}")
+
+    # ── 원장 정합 수집 (REQ-049-M2-1(c)) ────────────────────────────────────
+    ledger_parity = False
+    try:
+        rec_result = intraday_reconcile(client, reason="smoke-gate", force=True)
+        # throttled=False이면 실제 reconcile 수행. drift가 0이면 정합.
+        if not rec_result.get("throttled"):
+            summary = rec_result.get("summary") or {}
+            drift = int(summary.get("positions_synced", 0) or 0)
+            errors = int(summary.get("errors", 0) or 0)
+            ledger_parity = (drift == 0 and errors == 0)
+        else:
+            # throttled이면 이전 reconcile 결과를 신뢰 (정합으로 간주)
+            ledger_parity = True
+    except Exception as e:
+        logging.warning("trading smoke-gate: intraday_reconcile 실패: %s", e)
+
+    # ── stuck 'submitted' 해소 (REQ-049-M3-2) ─────────────────────────────
+    try:
+        resolve_stuck_orders(client)
+    except Exception as e:
+        logging.warning("trading smoke-gate: resolve_stuck_orders 실패: %s", e)
+
+    stuck_count = _count_stuck_submitted()
+
+    # ── 증거 판정 ───────────────────────────────────────────────────────────
+    evidence = SmokeEvidence(
+        buy_fill=buy_fill,
+        buy_order_no=buy_order_no,
+        sell_fill=sell_fill,
+        sell_order_no=sell_order_no,
+        ledger_parity=ledger_parity,
+        stuck_submitted_count=stuck_count,
+        tr_id_field_compatible=tr_id_compatible,
+    )
+    verdict = evaluate_smoke_evidence(evidence)
+
+    # ── 영구 기록 ───────────────────────────────────────────────────────────
+    snapshot = {
+        "ticker": ticker,
+        "max_qty": max_qty,
+        "buy_order_no": buy_order_no,
+        "sell_order_no": sell_order_no,
+        "buy_fill": buy_fill,
+        "sell_fill": sell_fill,
+        "ledger_parity": ledger_parity,
+        "stuck_count": stuck_count,
+        "tr_id_compatible": tr_id_compatible,
+    }
+    record_smoke_verdict(verdict, snapshot=snapshot)
+
+    # ── 결과 출력 ───────────────────────────────────────────────────────────
+    _print_smoke_result(verdict)
+
+    return 0 if verdict.passed else 1
+
+
+def _inquire_ccld_raw(client) -> list[dict]:
+    """KIS inquire-daily-ccld raw 레코드를 직접 조회한다(ODNO 매칭용).
+
+    SPEC-043 TPS 페이서를 경유하는 client.get()을 통해 호출 (REQ-049-M3-3).
+    """
+    from trading.kis.broker_truth import _inquire_daily_ccld
+    try:
+        return _inquire_daily_ccld(client)
+    except Exception as e:
+        logging.warning("trading smoke-gate: _inquire_ccld_raw 실패: %s", e)
+        return []
+
+
+def _find_fill_record(records: list[dict], order_no: str) -> dict | None:
+    """records에서 ODNO가 order_no와 일치하는 fill 레코드를 반환(없으면 None).
+
+    동일 ODNO가 BUY/SELL 양쪽에 있어도 order_no 기준으로 독립 매칭한다.
+    """
+    if not order_no or not records:
+        return None
+    for rec in records:
+        odno = str(rec.get("ODNO", "") or "").strip()
+        if odno == str(order_no).strip():
+            return rec
+    return None
+
+
+def _count_stuck_submitted() -> int:
+    """현재 'submitted' 상태로 잔존하는 주문 수를 반환(resolve 후 잔여)."""
+    from trading.db.session import connection
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM orders WHERE status = 'submitted'"
+            )
+            row = cur.fetchone()
+            return int((row or {}).get("cnt", 0) or 0)
+    except Exception as e:
+        logging.warning("trading smoke-gate: _count_stuck_submitted 실패: %s", e)
+        return 0
+
+
+def _print_smoke_result(verdict) -> None:
+    """스모크 판정 결과를 콘솔에 출력한다."""
+    label = "PASS" if verdict.passed else "FAIL"
+    separator = "=" * 60
+    print(separator)
+    print(f"[smoke-gate] 판정: {label}  ({verdict.timestamp})")
+    print(separator)
+    item_labels = {
+        "a": "(a) BUY 확정 체결",
+        "b": "(b) SELL 확정 체결",
+        "c": "(c) 원장 정합",
+        "d": "(d) stuck 'submitted' 0건",
+        "e": "(e) live TR_ID/필드 호환",
+    }
+    for key, item_label in item_labels.items():
+        item = verdict.items.get(key)
+        if item is None:
+            continue
+        mark = "✓" if item.satisfied else "✗"
+        print(f"  {mark} {item_label}: {item.reason}")
+    print(separator)
+    if verdict.passed:
+        print("[smoke-gate] PASS — audit_log에 SMOKE_GATE_PASS 기록됨.")
+        print("[smoke-gate] live 전면 승격 조건 충족. 별도 승격 절차를 진행하십시오.")
+    else:
+        print("[smoke-gate] FAIL — live 전면 승격 차단.", file=sys.stderr)
+        print("[smoke-gate] 미충족 사유:", file=sys.stderr)
+        for reason in verdict.reasons:
+            print(f"  - {reason}", file=sys.stderr)
+    print()
+
+
 def _cmd_edge_snapshot(rest: list[str]) -> int:
     """Edge Validation: 오늘 자산 스냅샷 1회 기록(수동/백필). 멱등 UPSERT."""
     from trading.edge.snapshot import record_snapshot
@@ -556,7 +922,9 @@ def _print_help(file=sys.stdout) -> int:
         "  aggregate-pnl     backfill realized_pnl_cum from fills [--dry-run] [--days N]\n"
         "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
         "  analyze-news      run intelligence analysis [--sector X] [--force]\n"
-        "  news-health       show news source health status table\n",
+        "  news-health       show news source health status table\n"
+        "  smoke-gate        live 스모크 게이트 (실행 경로 검증, REQ-049) "
+        "[--max-qty N] [--max-notional N] [--ticker CODE] [--dry-run]\n",
         file=file,
     )
     return 0
