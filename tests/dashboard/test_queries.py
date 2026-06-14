@@ -8,12 +8,15 @@ SPEC-TRADING-050 M1 추가사항:
 - fetch_postmortem / fetch_confidence_analysis 신규 지연계산 함수 테스트 추가.
 - fetch_recent_news / fetch_story_clusters / fetch_trends / fetch_pipeline 신규 테스트.
 - fetch_recent_decisions / fetch_system_status / fetch_equity_curve 확장 테스트 추가.
+
+SPEC-050 follow-up 추가:
+- TestFetchPostmortem 확장: prob_* 미참조, 라운드트립 매칭, KOSPI 상대수익률, graceful 폴백.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -30,6 +33,25 @@ def _make_patch(rows: list[dict[str, Any]]):
     def _conn(autocommit: bool = False):
         from tests.conftest import FakeConnection, FakeCursor
         cursor = FakeCursor(rows)
+        yield FakeConnection(cursor)
+
+    return patch("trading.dashboard.queries.ro_connection", side_effect=_conn)
+
+
+def _make_multi_patch(rows_list: list[list[dict[str, Any]]]):
+    """각 DB 호출마다 순서대로 다른 rows 를 반환하는 패치.
+
+    fetch_postmortem 처럼 ro_connection 을 2번 이상 호출하는 함수 테스트용.
+    rows_list[0] → 첫 번째 호출, rows_list[1] → 두 번째 호출, 이후 마지막 반복.
+    """
+    call_count: list[int] = [0]
+
+    @contextmanager
+    def _conn(autocommit: bool = False):
+        idx = min(call_count[0], len(rows_list) - 1)
+        call_count[0] += 1
+        from tests.conftest import FakeConnection, FakeCursor
+        cursor = FakeCursor(rows_list[idx])
         yield FakeConnection(cursor)
 
     return patch("trading.dashboard.queries.ro_connection", side_effect=_conn)
@@ -497,42 +519,255 @@ class TestFetchTrends:
 class TestFetchPostmortem:
     """fetch_postmortem: 어댑터 → edge.postmortem.classify_decision_outcome → aggregate."""
 
+    # ------------------------------------------------------------------
+    # 공통 결정 행 팩토리 (prob_* 컬럼 없음 — mig 033 미적용 호환)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _decision_row(
+        id_: int = 1,
+        ticker: str = "005930",
+        side: str = "buy",
+        confidence: float = 0.85,
+        regime: str = "bull",
+        ts: datetime | None = None,
+        persona_run_id: int = 100,
+    ) -> dict[str, Any]:
+        return {
+            "id": id_,
+            "ts": ts or datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
+            "persona_name": "decision",
+            "cycle_kind": "intraday",
+            "ticker": ticker,
+            "side": side,
+            "confidence": confidence,
+            "rationale": "테스트 근거",
+            "regime_at_decision": regime,
+            "persona_run_id": persona_run_id,
+            "risk_verdict": "APPROVE",
+            # prob_* 컬럼 없음: mig 033 이전 환경 시뮬레이션
+        }
+
+    @staticmethod
+    def _fill_rows(
+        ticker: str = "005930",
+        buy_price: int = 74000,
+        sell_price: int = 76000,
+        entry_ts: datetime | None = None,
+        exit_ts: datetime | None = None,
+        qty: int = 10,
+    ) -> list[dict[str, Any]]:
+        """매수+매도 체결 행 — build_roundtrips 용."""
+        entry = entry_ts or datetime(2026, 6, 10, 9, 31, tzinfo=UTC)
+        exit_ = exit_ts or datetime(2026, 6, 20, 9, 31, tzinfo=UTC)
+        return [
+            {
+                "id": 1, "ts": entry, "filled_at": entry,
+                "side": "buy", "ticker": ticker,
+                "fill_qty": qty, "fill_price": buy_price, "fee": 0,
+                "confidence": 0.85, "verdict": "APPROVE",
+            },
+            {
+                "id": 2, "ts": exit_, "filled_at": exit_,
+                "side": "sell", "ticker": ticker,
+                "fill_qty": qty, "fill_price": sell_price, "fee": 0,
+                "confidence": None, "verdict": None,
+            },
+        ]
+
+    # ------------------------------------------------------------------
+    # (a) prob_* 컬럼 미참조 — mig 033 없이 동작
+    # ------------------------------------------------------------------
+
+    def test_no_prob_columns_in_sql(self) -> None:
+        """(a) prob_bull/prob_base/prob_bear 컬럼 미참조 → mig 033 없이도 동작."""
+        import inspect
+
+        from trading.dashboard import queries
+
+        src = inspect.getsource(queries.fetch_postmortem)
+        assert "prob_bull" not in src, "prob_bull 이 쿼리에서 제거되지 않았음"
+        assert "prob_base" not in src, "prob_base 이 쿼리에서 제거되지 않았음"
+        assert "prob_bear" not in src, "prob_bear 이 쿼리에서 제거되지 않았음"
+
     def test_returns_distribution_with_four_classes(self) -> None:
         """AC-M1-3: edge 순수 함수 결과가 JSON 으로 반환."""
         from trading.dashboard import queries
 
-        # 캐시 초기화 — 테스트 간 격리
         queries._postmortem_cache.clear()
 
-        # persona_decisions + persona_runs 올바른 FK 조인 행
-        rows = [
-            {
-                "id": 1,
-                "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
-                "persona_name": "decision",
-                "ticker": "005930",
-                "side": "buy",
-                "confidence": 0.85,
-                "rationale": "매수 근거",
-                "regime_at_decision": "bull",
-                "persona_run_id": 100,      # 올바른 FK (persona_run_id)
-                "risk_verdict": "APPROVE",
-                "prob_bull": 0.7,
-                "prob_base": 0.2,
-                "prob_bear": 0.1,
-            }
-        ]
-        with _make_patch(rows):
-            result = queries.fetch_postmortem(days=30, limit=100)
+        decision_rows = [self._decision_row()]
+        fill_rows: list[dict[str, Any]] = []  # 라운드트립 없음 → MISSED 경로
+
+        with _make_multi_patch([decision_rows, fill_rows]):
+            with patch("trading.edge.benchmark.kospi_closes", return_value=[]):
+                result = queries.fetch_postmortem(days=30, limit=100)
 
         assert isinstance(result, dict)
-        # 집계 분포 4분류
         assert "distribution" in result
         dist = result["distribution"]
         assert isinstance(dist, dict)
-        # 4가지 분류 키 존재
         for key in ("TRUE_POSITIVE", "FALSE_POSITIVE", "REGIME_MISMATCH", "MISSED"):
             assert key in dist, f"{key} 가 distribution 에 없음"
+
+    # ------------------------------------------------------------------
+    # (b) 진입 + 수익 + 시장 대비 우위 → TRUE_POSITIVE
+    # ------------------------------------------------------------------
+
+    def test_entered_profitable_market_beating_is_true_positive(self) -> None:
+        """(b) 진입 결정 + 라운드트립 수익 + KOSPI 상대 우위 → TRUE_POSITIVE."""
+        from trading.dashboard import queries
+
+        queries._postmortem_cache.clear()
+
+        # 결정: buy 005930, confidence=0.85
+        dec_ts = datetime(2026, 6, 10, 9, 30, tzinfo=UTC)
+        decision_rows = [self._decision_row(ticker="005930", confidence=0.85, ts=dec_ts)]
+
+        # 체결: 매수 74,000 → 매도 78,000 (+5.4% 수익)
+        entry_ts = datetime(2026, 6, 10, 9, 31, tzinfo=UTC)
+        exit_ts = datetime(2026, 6, 20, 9, 31, tzinfo=UTC)
+        fills = self._fill_rows(
+            ticker="005930",
+            buy_price=74000, sell_price=78000,
+            entry_ts=entry_ts, exit_ts=exit_ts,
+        )
+
+        # KOSPI: 동 기간 2% 상승 → 상대수익 +3.4% > 0 → TRUE_POSITIVE
+        entry_date = date(2026, 6, 10)
+        exit_date = date(2026, 6, 20)
+        kospi_closes_mock = [
+            (entry_date, 2700.0),
+            (exit_date, 2754.0),  # +2%
+        ]
+
+        with _make_multi_patch([decision_rows, fills]):
+            with patch("trading.edge.benchmark.kospi_closes", return_value=kospi_closes_mock):
+                result = queries.fetch_postmortem(days=30, limit=100)
+
+        dist = result["distribution"]
+        assert dist["TRUE_POSITIVE"] >= 1, f"TRUE_POSITIVE 기대, distribution={dist}"
+
+    # ------------------------------------------------------------------
+    # (c) 고확신 손실 결정 → FALSE_POSITIVE
+    # ------------------------------------------------------------------
+
+    def test_confident_losing_trade_is_false_positive(self) -> None:
+        """(c) confidence ≥ 0.6 + 라운드트립 손실 + KOSPI 상대수익 < 0 → FALSE_POSITIVE."""
+        from trading.dashboard import queries
+
+        queries._postmortem_cache.clear()
+
+        dec_ts = datetime(2026, 6, 10, 9, 30, tzinfo=UTC)
+        decision_rows = [self._decision_row(
+            ticker="000660", confidence=0.75, ts=dec_ts, id_=2
+        )]
+
+        entry_ts = datetime(2026, 6, 10, 9, 31, tzinfo=UTC)
+        exit_ts = datetime(2026, 6, 20, 9, 31, tzinfo=UTC)
+        fills = self._fill_rows(
+            ticker="000660",
+            buy_price=60000, sell_price=55000,  # -8.3% 손실
+            entry_ts=entry_ts, exit_ts=exit_ts,
+        )
+
+        # KOSPI: 동 기간 1% 상승 → 상대수익 -9.3% < 0 → FALSE_POSITIVE 조건 충족
+        entry_date = date(2026, 6, 10)
+        exit_date = date(2026, 6, 20)
+        kospi_closes_mock = [
+            (entry_date, 2700.0),
+            (exit_date, 2727.0),  # +1%
+        ]
+
+        with _make_multi_patch([decision_rows, fills]):
+            with patch("trading.edge.benchmark.kospi_closes", return_value=kospi_closes_mock):
+                result = queries.fetch_postmortem(days=30, limit=100)
+
+        dist = result["distribution"]
+        assert dist["FALSE_POSITIVE"] >= 1, f"FALSE_POSITIVE 기대, distribution={dist}"
+
+    # ------------------------------------------------------------------
+    # (d) 미진입 결정 + 양의 KOSPI 선행 → MISSED
+    # ------------------------------------------------------------------
+
+    def test_non_entered_with_positive_forward_kospi_is_missed(self) -> None:
+        """(d) hold 결정 + 이후 20거래일 KOSPI 양수 → MISSED."""
+        from trading.dashboard import queries
+
+        queries._postmortem_cache.clear()
+
+        dec_ts = datetime(2026, 6, 10, 9, 30, tzinfo=UTC)
+        decision_rows = [self._decision_row(side="hold", confidence=0.3, ts=dec_ts, id_=3)]
+
+        fill_rows: list[dict[str, Any]] = []  # 체결 없음
+
+        dec_date = date(2026, 6, 10)
+        # 20거래일 후 약 +3% 상승 시뮬레이션
+        future_date = date(2026, 7, 10)
+        kospi_closes_mock = [
+            (dec_date, 2700.0),
+            (future_date, 2781.0),  # +3%
+        ]
+        # 추가 거래일 채우기 (20일 인덱스 확보)
+        from datetime import timedelta
+        extra = [(dec_date + timedelta(days=i), 2700.0 + i * 4) for i in range(1, 22)]
+        kospi_closes_mock = sorted(set([kospi_closes_mock[0]] + extra + [kospi_closes_mock[1]]))
+
+        with _make_multi_patch([decision_rows, fill_rows]):
+            with patch("trading.edge.benchmark.kospi_closes", return_value=kospi_closes_mock):
+                result = queries.fetch_postmortem(days=30, limit=100)
+
+        dist = result["distribution"]
+        assert dist["MISSED"] >= 1, f"MISSED 기대, distribution={dist}"
+
+    # ------------------------------------------------------------------
+    # (e) 페르소나 귀인
+    # ------------------------------------------------------------------
+
+    def test_returns_persona_attribution(self) -> None:
+        """(e) 페르소나별 귀인 포함."""
+        from trading.dashboard import queries
+
+        queries._postmortem_cache.clear()
+
+        decision_rows = [self._decision_row()]
+        fill_rows: list[dict[str, Any]] = []
+
+        with _make_multi_patch([decision_rows, fill_rows]):
+            with patch("trading.edge.benchmark.kospi_closes", return_value=[]):
+                result = queries.fetch_postmortem(days=30, limit=100)
+
+        assert "per_persona" in result
+        assert isinstance(result["per_persona"], dict)
+        # 결정이 1건이므로 per_persona 에 항목 있음
+        assert len(result["per_persona"]) >= 1
+
+    # ------------------------------------------------------------------
+    # (f) KOSPI 데이터 없음 → graceful 폴백 (크래시 금지)
+    # ------------------------------------------------------------------
+
+    def test_graceful_when_kospi_data_absent(self) -> None:
+        """(f) KOSPI 종가 없어도 크래시 없음 — relative=0.0 폴백."""
+        from trading.dashboard import queries
+
+        queries._postmortem_cache.clear()
+
+        decision_rows = [self._decision_row()]
+        fill_rows = self._fill_rows()  # 라운드트립 있음
+
+        # kospi_closes 가 빈 목록 반환 → relative=0.0 폴백
+        with _make_multi_patch([decision_rows, fill_rows]):
+            with patch("trading.edge.benchmark.kospi_closes", return_value=[]):
+                result = queries.fetch_postmortem(days=30, limit=100)
+
+        # 크래시 없이 결과 반환
+        assert isinstance(result, dict)
+        assert "distribution" in result
+        total = sum(result["distribution"].values())
+        assert total == 1, "결정 1건 → 합계 1"
+
+    # ------------------------------------------------------------------
+    # 기존 테스트 (리팩터링 후 유지)
+    # ------------------------------------------------------------------
 
     def test_correct_fk_used(self) -> None:
         """REQ-050-6: pd.persona_run_id 올바른 FK 사용 — SQL 소스 확인."""
@@ -541,37 +776,8 @@ class TestFetchPostmortem:
         from trading.dashboard import queries
 
         src = inspect.getsource(queries.fetch_postmortem)
-        # SQL 에 올바른 FK 조인 컬럼이 있어야 함
         assert "pd.persona_run_id" in src
-        # LEFT JOIN persona_runs 가 있어야 함
         assert "JOIN persona_runs pr ON pr.id = pd.persona_run_id" in src
-
-    def test_returns_persona_attribution(self) -> None:
-        """AC-M1-3: 페르소나별 귀인 포함."""
-        from trading.dashboard import queries
-
-        queries._postmortem_cache.clear()
-        rows = [
-            {
-                "id": 1,
-                "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
-                "persona_name": "decision",
-                "ticker": "000660",
-                "side": "buy",
-                "confidence": 0.55,
-                "rationale": "관망",
-                "regime_at_decision": "neutral",
-                "persona_run_id": 200,
-                "risk_verdict": None,
-                "prob_bull": None,
-                "prob_base": None,
-                "prob_bear": None,
-            }
-        ]
-        with _make_patch(rows):
-            result = queries.fetch_postmortem(days=30, limit=100)
-
-        assert "per_persona" in result
 
     def test_no_write_operations(self) -> None:
         """REQ-050-1: 읽기 전용."""
@@ -585,47 +791,28 @@ class TestFetchPostmortem:
         assert "DELETE" not in src.upper()
 
     def test_cache_returns_same_result_on_second_call(self) -> None:
-        """AC-M1-4: 두 번째 호출은 캐시에서 응답."""
+        """AC-M1-4: 두 번째 호출은 캐시에서 응답 — DB 1회만 조회."""
         from trading.dashboard import queries
 
-        rows = [
-            {
-                "id": 1,
-                "ts": datetime(2026, 6, 10, 9, 30, tzinfo=UTC),
-                "persona_name": "decision",
-                "ticker": "005930",
-                "side": "buy",
-                "confidence": 0.75,
-                "rationale": "테스트",
-                "regime_at_decision": "bull",
-                "persona_run_id": 300,
-                "risk_verdict": "APPROVE",
-                "prob_bull": 0.6,
-                "prob_base": 0.3,
-                "prob_bear": 0.1,
-            }
-        ]
-        # 캐시 초기화 (인젝터블 clock 으로 만료 강제)
         queries._postmortem_cache.clear()
 
-        call_count = 0
+        call_count: list[int] = [0]
 
         @contextmanager
         def _counting_conn(autocommit: bool = False):
-            nonlocal call_count
-            call_count += 1
+            call_count[0] += 1
             from tests.conftest import FakeConnection, FakeCursor
-            cursor = FakeCursor(rows)
+            cursor = FakeCursor([])
             yield FakeConnection(cursor)
 
         with patch("trading.dashboard.queries.ro_connection", side_effect=_counting_conn):
-            result1 = queries.fetch_postmortem(days=30, limit=100)
-            result2 = queries.fetch_postmortem(days=30, limit=100)
+            with patch("trading.edge.benchmark.kospi_closes", return_value=[]):
+                result1 = queries.fetch_postmortem(days=30, limit=100)
+                result2 = queries.fetch_postmortem(days=30, limit=100)
 
-        # 두 결과가 동일
         assert result1["distribution"] == result2["distribution"]
-        # DB 는 1번만 조회
-        assert call_count == 1
+        # 첫 호출에서 2번(결정+체결) — 두 번째 호출은 캐시에서
+        assert call_count[0] == 2
 
 
 # ---------------------------------------------------------------------------

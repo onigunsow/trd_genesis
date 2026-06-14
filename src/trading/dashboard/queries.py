@@ -420,39 +420,152 @@ def fetch_trends(*, trend_type: str = "daily", days: int = 14) -> list[dict[str,
 # SPEC-TRADING-050 M1: postmortem 지연계산 (REQ-050-6/7, AC-M1-3/4)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-050 follow-up: postmortem 헬퍼 — KOSPI 상대수익률 계산
+# ---------------------------------------------------------------------------
+
+
+def _kospi_relative(
+    entry_date: "date",
+    exit_date: "date",
+    trade_return_pct: float,
+    closes_dict: "dict[date, float]",
+) -> "tuple[float, float]":
+    """거래 기간 KOSPI 상대수익률 (relative_5d, relative_20d) 반환.
+
+    동일 보유 기간의 KOSPI 수익률을 거래 수익률에서 빼서 초과수익률을 구한다.
+    closes_dict 가 비어 있거나 시작·종료 종가를 찾을 수 없으면 (0.0, 0.0) 반환.
+
+    Args:
+        entry_date:        진입일.
+        exit_date:         청산일.
+        trade_return_pct:  거래 수익률 % (RoundTrip.return_pct).
+        closes_dict:       {date: close} — benchmark.kospi_closes() 결과.
+
+    Returns:
+        (relative_5d, relative_20d) — 동일 기간 초과수익률로 양쪽 모두 동일 값.
+    """
+    if not closes_dict:
+        return 0.0, 0.0
+
+    sorted_dates = sorted(closes_dict.keys())
+
+    # 시작 종가: entry_date 이후 최초 거래일
+    start_close: float | None = None
+    for d in sorted_dates:
+        if d >= entry_date:
+            start_close = closes_dict[d]
+            break
+
+    # 종료 종가: exit_date 이후 최초 거래일 (없으면 마지막 가용 종가)
+    end_close: float | None = None
+    for d in sorted_dates:
+        if d >= exit_date:
+            end_close = closes_dict[d]
+            break
+    if end_close is None and sorted_dates:
+        end_close = closes_dict[sorted_dates[-1]]
+
+    if start_close is None or end_close is None or start_close == 0.0:
+        return 0.0, 0.0
+
+    kospi_ret = (end_close / start_close - 1.0) * 100.0
+    relative = trade_return_pct - kospi_ret
+    return relative, relative
+
+
+def _kospi_forward_relative(
+    decision_date: "date",
+    closes_dict: "dict[date, float]",
+    *,
+    trading_days: int = 20,
+) -> float:
+    """미진입 결정 기준 이후 N거래일 KOSPI 수익률 반환.
+
+    결정일 종가 대비 N거래일 후 종가를 구한다.
+    데이터 부재 시 0.0 반환 (graceful).
+
+    Args:
+        decision_date:  결정 날짜.
+        closes_dict:    {date: close} — benchmark.kospi_closes() 결과.
+        trading_days:   몇 거래일 후를 참조할지 (기본 20).
+
+    Returns:
+        KOSPI N거래일 수익률 %.
+    """
+    if not closes_dict:
+        return 0.0
+
+    sorted_dates = sorted(closes_dict.keys())
+
+    # 결정일 이후 최초 거래일 종가를 시작으로 사용
+    start_idx: int | None = None
+    for i, d in enumerate(sorted_dates):
+        if d >= decision_date:
+            start_idx = i
+            break
+    if start_idx is None:
+        return 0.0
+
+    # N거래일 후 종가 인덱스
+    end_idx = min(start_idx + trading_days, len(sorted_dates) - 1)
+    if end_idx <= start_idx:
+        return 0.0
+
+    start_close = closes_dict[sorted_dates[start_idx]]
+    end_close = closes_dict[sorted_dates[end_idx]]
+    if not start_close:
+        return 0.0
+
+    return (end_close / start_close - 1.0) * 100.0
+
+
 # @MX:ANCHOR: [AUTO] fetch_postmortem — postmortem 분류 단일 읽기 진입점.
 # @MX:REASON: 대시보드·테스트 모두 이 함수를 소비(fan_in ≥ 3 예상). 구형 stub 대체.
 def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
-    """persona_decisions → 어댑터 → classify_decision_outcome → 4분류 + 페르소나 귀인.
+    """persona_decisions → 라운드트립 매칭 → classify_decision_outcome → 4분류 + 귀인.
 
-    REQ-050-6: 올바른 FK(pd.persona_run_id) 사용. pd.run_id 버그 제거.
-    REQ-050-6a: edge.postmortem 재사용, 트레이딩 로직 복제 없음.
-    REQ-050-7: 최근 N일 제한 + TTL 캐시.
+    SPEC-050 follow-up 수정사항:
+    - prob_* (강세/기준/약세 확률) 컬럼 제거 → mig 033 없이도 동작 (문제 1 해결).
+    - 라운드트립 매칭 구현 → relative_5d/20d 실값 계산 (문제 2 해결).
+    - KOSPI 상대수익률 계산 — 데이터 없으면 0.0 graceful fallback.
 
-    어댑터: raw DB 행 → edge.postmortem.classify_decision_outcome 이 소비하는
-    decision dict 로 변환. relative_5d/20d 는 OHLCV 미조회(대시보드 지연계산 범위 외)
-    → 0.0 으로 graceful fallback (보수적 분류; 알파 계산은 scorecard 가 담당).
+    어댑터 흐름:
+    1. persona_decisions + persona_runs(regime) 조회 (prob_* 제외).
+    2. orders(체결) 조회 → build_roundtrips → RoundTrip 목록.
+    3. benchmark.kospi_closes 로 KOSPI 종가 로드 (캐시 우선, 없으면 0.0 폴백).
+    4. BUY 결정 → 동일 종목 라운드트립 날짜 매칭 → relative_5d/20d 계산.
+    5. HOLD/SELL 결정 또는 라운드트립 없는 BUY → 미진입 경로 (20일 KOSPI 선행).
+    6. classify_decision_outcome 호출 → 4분류 집계 + 페르소나 귀인.
 
     Args:
         days: 최근 N일 이내 결정만 포함.
         limit: DB 조회 최대 행 수.
 
     Returns:
-        dict: distribution(4분류 카운트), per_persona(페르소나별 귀인), total, computed_at.
+        dict: distribution(4분류 카운트), per_persona(페르소나별 귀인), total, days.
+              반환 형태는 PostmortemBreakdown 프론트엔드와 하위호환.
     """
+    from datetime import date as _date
+    from datetime import timedelta
+
+    from trading.edge.benchmark import kospi_closes
     from trading.edge.postmortem import (
         PersonaStats,
         attribute_to_persona,
         classify_decision_outcome,
     )
+    from trading.edge.roundtrips import build_roundtrips
 
     cache_key = f"postmortem:{days}:{limit}"
     cached = _cache_get(_postmortem_cache, cache_key)
     if cached is not None:
         return cached
 
-    # DB 조회 — 올바른 FK: pd.persona_run_id (REQ-050-6)
-    sql = """
+    # -------------------------------------------------------------------------
+    # 쿼리 1: persona_decisions — prob_* 컬럼 제외 (mig 033 미적용 환경 호환)
+    # -------------------------------------------------------------------------
+    decision_sql = """
         SELECT
             pd.id,
             pd.ts,
@@ -462,9 +575,6 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
             pd.side,
             pd.confidence,
             pd.rationale,
-            pd.prob_bull,
-            pd.prob_base,
-            pd.prob_bear,
             pr.regime_at_decision,
             pd.persona_run_id,
             rr.verdict AS risk_verdict
@@ -476,10 +586,79 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
         LIMIT %s
     """
     with ro_connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (str(int(days)), limit))
-        rows = cur.fetchall()
+        cur.execute(decision_sql, (str(int(days)), limit))
+        decision_rows = cur.fetchall()
 
-    # 어댑터: raw rows → 분류 결과 집계
+    # -------------------------------------------------------------------------
+    # 쿼리 2: orders(체결) → build_roundtrips (fetch_confidence_analysis 와 동일 패턴)
+    # -------------------------------------------------------------------------
+    fill_sql = """
+        SELECT
+            o.id,
+            o.ts,
+            o.filled_at,
+            o.side,
+            o.ticker,
+            o.fill_qty,
+            o.fill_price,
+            COALESCE(o.fee, 0) AS fee,
+            pd.confidence,
+            (SELECT rr.verdict FROM risk_reviews rr
+              WHERE rr.decision_id = pd.id
+              ORDER BY rr.ts DESC LIMIT 1) AS verdict
+        FROM orders o
+        LEFT JOIN persona_decisions pd ON pd.id = o.persona_decision_id
+        WHERE o.status IN ('filled', 'partial')
+          AND o.fill_qty IS NOT NULL AND o.fill_qty > 0
+          AND o.fill_price IS NOT NULL
+          AND o.ts >= NOW() - (%s || ' days')::INTERVAL
+        ORDER BY o.ticker, COALESCE(o.filled_at, o.ts), o.id
+    """
+    with ro_connection() as conn, conn.cursor() as cur:
+        cur.execute(fill_sql, (str(int(days)),))
+        fill_rows = cur.fetchall()
+
+    rt_result = build_roundtrips([dict(r) for r in fill_rows])
+
+    # -------------------------------------------------------------------------
+    # KOSPI 종가 로드 — 전체 결정 기간 + 선행 20거래일(≈28일)
+    # -------------------------------------------------------------------------
+    # 결정 날짜 범위 수집
+    decision_dates: list[_date] = []
+    for row in decision_rows:
+        d = dict(row)
+        ts_val = d.get("ts")
+        if hasattr(ts_val, "date"):
+            decision_dates.append(ts_val.date())
+        elif isinstance(ts_val, _date):
+            decision_dates.append(ts_val)
+
+    closes_dict: dict[_date, float] = {}
+    if decision_dates:
+        min_d = min(decision_dates)
+        # 선행 20거래일 여유분 포함(≈28일)
+        max_d = _date.today() + timedelta(days=1)
+        try:
+            closes_list = kospi_closes(min_d, max_d)
+            closes_dict = {d: c for d, c in closes_list}
+        except Exception:  # noqa: BLE001 — KOSPI 조회 실패 graceful 처리
+            LOG.info("fetch_postmortem: KOSPI 종가 조회 실패 — relative_5d/20d=0.0 폴백")
+
+    # -------------------------------------------------------------------------
+    # 라운드트립 인덱스: ticker → list[RoundTrip] (날짜순)
+    # -------------------------------------------------------------------------
+    from collections import defaultdict
+
+    rt_by_ticker: dict[str, list[Any]] = defaultdict(list)
+    for rt in rt_result.roundtrips:
+        rt_by_ticker[rt.ticker].append(rt)
+
+    # 매칭에 사용된 라운드트립 추적 (중복 매칭 방지)
+    used_rt_ids: set[int] = set()
+
+    # -------------------------------------------------------------------------
+    # 분류 집계
+    # -------------------------------------------------------------------------
     distribution: dict[str, int] = {
         "TRUE_POSITIVE": 0,
         "FALSE_POSITIVE": 0,
@@ -488,30 +667,81 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
     }
     per_persona: dict[str, PersonaStats] = {}
 
-    for row in rows:
+    for row in decision_rows:
         d = dict(row)
         persona_name = str(d.get("persona_name") or "unknown")
+        side = str(d.get("side") or "hold").lower()
+        regime = str(d.get("regime_at_decision") or "neutral")
 
-        # 어댑터: decision dict 구성 (edge 순수 함수가 소비하는 형태)
+        ts_val = d.get("ts")
+        if hasattr(ts_val, "date"):
+            dec_date = ts_val.date()
+        elif isinstance(ts_val, _date):
+            dec_date = ts_val
+        else:
+            dec_date = _date.today()
+
+        # 어댑터: decision dict 구성
         decision: dict[str, Any] = {
-            "side": d.get("side"),
+            "side": side,
             "confidence": d.get("confidence"),
-            "signal_dir": d.get("side"),  # side 를 신호 방향으로 사용
+            "signal_dir": side,
             "persona": persona_name,
         }
 
-        # 라운드트립은 대시보드에서 orders 조인 없이 None 으로 처리
-        # (진입 경로 없음 → MISSED 분류 경로 적용)
-        roundtrip_or_none = None
+        roundtrip_dict: dict[str, Any] | None = None
+        relative_5d = 0.0
+        relative_20d = 0.0
 
-        # relative_5d/20d: OHLCV 미조회 → 0.0 graceful fallback
-        regime = str(d.get("regime_at_decision") or "neutral")
+        if side == "buy":
+            # BUY 결정 → 같은 종목 라운드트립 날짜 매칭 (±2일 이내)
+            ticker = str(d.get("ticker") or "")
+            candidates = rt_by_ticker.get(ticker, [])
+            best_rt = None
+            best_delta = 999
+
+            for rt in candidates:
+                rt_id = id(rt)
+                if rt_id in used_rt_ids:
+                    continue
+                delta = abs((rt.entry_date - dec_date).days)
+                if delta <= 2 and delta < best_delta:
+                    best_rt = rt
+                    best_delta = delta
+
+            if best_rt is not None:
+                used_rt_ids.add(id(best_rt))
+                # 라운드트립 dict: classify_decision_outcome 이 소비하는 형태
+                roundtrip_dict = {
+                    "net_pnl": best_rt.net_pnl,
+                    "return_pct": best_rt.return_pct,
+                    "ticker": best_rt.ticker,
+                    "entry_date": best_rt.entry_date,
+                    "exit_date": best_rt.exit_date,
+                }
+                # KOSPI 상대수익률 계산
+                rel5, rel20 = _kospi_relative(
+                    best_rt.entry_date,
+                    best_rt.exit_date,
+                    best_rt.return_pct,
+                    closes_dict,
+                )
+                relative_5d, relative_20d = rel5, rel20
+            else:
+                # BUY 결정이지만 매칭되는 라운드트립 없음 (미체결/진행중)
+                # 미진입 경로: 이후 20거래일 KOSPI 수익률
+                relative_20d = _kospi_forward_relative(dec_date, closes_dict)
+                relative_5d = relative_20d
+        else:
+            # HOLD/SELL 결정 — 미진입 경로
+            relative_20d = _kospi_forward_relative(dec_date, closes_dict)
+            relative_5d = relative_20d
 
         outcome = classify_decision_outcome(
             decision=decision,
-            roundtrip_or_none=roundtrip_or_none,
-            relative_5d=0.0,
-            relative_20d=0.0,
+            roundtrip_or_none=roundtrip_dict,
+            relative_5d=relative_5d,
+            relative_20d=relative_20d,
             regime=regime,
         )
 
