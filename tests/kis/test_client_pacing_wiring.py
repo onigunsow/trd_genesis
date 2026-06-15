@@ -88,7 +88,8 @@ def test_reactive_retry_still_present_beneath_pacer():
         patcher,
         patch.object(c, "_headers", return_value={}),
         patch.object(client_mod._GATE, "acquire"),
-        patch.object(client_mod.time, "sleep") as backoff_sleep,
+        # SPEC-051 REQ-051-A5: backoff sleep은 _sleep_fn seam을 통해 수행됨
+        patch.object(client_mod, "_sleep_fn") as backoff_sleep,
     ):
         resp = c.get("/x", tr_id="VTTC")
 
