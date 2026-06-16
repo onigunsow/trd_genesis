@@ -18,15 +18,17 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from anthropic import Anthropic
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from trading.config import get_settings, project_root
-from trading.db.session import audit, connection, get_system_state
+from trading.db.session import audit, connection, get_system_state, update_system_state
 
 LOG = logging.getLogger(__name__)
 
@@ -516,44 +518,204 @@ def _extract_json(text: str) -> dict[str, Any]:
 # SPEC-015: CLI persona invocation
 # ---------------------------------------------------------------------------
 
-# REQ-FALLBACK-06-4: Consecutive CLI failure counter for auto-disable
+# REQ-FALLBACK-06-4: 자동전환 in-process 카운터 (SPEC-015, 변경 없음)
 _cli_failure_count: int = 0
 _CLI_AUTO_DISABLE_THRESHOLD: int = 3
 
-
-def _reset_cli_failures() -> None:
-    """Reset consecutive failure counter on CLI success."""
-    global _cli_failure_count
-    _cli_failure_count = 0
+# SPEC-TRADING-052 REQ-052-B ADR-003: 조기경고 기본 쿨다운 1시간.
+# SPEC-031의 HALT_NOTIFY_COOLDOWN_SECONDS(6h)보다 짧음 — 무음 크레딧 소진의 시간민감성.
+CLI_DEGRADED_ALERT_COOLDOWN_SECONDS: int = 3600
 
 
-def _record_cli_failure(persona_name: str, reason: str) -> None:
-    """Record a CLI failure and auto-disable if threshold reached.
+# @MX:ANCHOR: [AUTO] SPEC-052 CLI degraded throttle gate (SPEC-031 maybe_notify_halt 동형)
+# @MX:REASON: [AUTO] fan_in >= 3 (call_persona_via_cli 폴백경로·is_cli_mode_active stale경로·뉴스 strict경로); throttle 불변식이 여기 집중됨
+# @MX:SPEC: SPEC-TRADING-052 REQ-052-B ADR-003
+def maybe_send_cli_degraded_alert(
+    cooldown_seconds: int | None = None,
+    now_provider: Callable[[], datetime] | None = None,
+) -> bool:
+    """CLI degraded 조기경고를 쿨다운 throttle로 제한해 발송한다.
 
-    REQ-FALLBACK-06-3: Sends Telegram alert on each failure.
-    REQ-FALLBACK-06-4: Auto-disables cli_personas_enabled after 3 consecutive failures.
+    SPEC-TRADING-052 REQ-052-B1/B2/ADR-003:
+    - cli_degraded_notified_at IS NULL 또는 now - last >= cooldown → 발송 + 타임스탬프 갱신 → True
+    - 쿨다운 내 → throttle → False
+    - 상태는 system_state에 영속(재시작 생존, EC-2).
+    - 텔레그램 실패는 swallow(fail-safe).
+
+    Args:
+        cooldown_seconds: 쿨다운 오버라이드(테스트 seam). None=기본 1h.
+        now_provider: 테스트 clock seam — Callable[[], datetime]. None=wall clock.
+
+    Returns:
+        True=발송됨, False=throttle.
     """
-    global _cli_failure_count
-    _cli_failure_count += 1
+    cooldown = CLI_DEGRADED_ALERT_COOLDOWN_SECONDS if cooldown_seconds is None else cooldown_seconds
+    now = (now_provider or (lambda: datetime.now(UTC)))()
+
+    try:
+        state = get_system_state()
+        last = state.get("cli_degraded_notified_at")
+        if last is not None and (now - last).total_seconds() < cooldown:
+            return False
+        update_system_state(cli_degraded_notified_at=now, updated_by="cli_degraded_alert")
+    except Exception:  # noqa: BLE001
+        LOG.warning("maybe_send_cli_degraded_alert: system_state 접근 실패 — throttle 생략")
+        return False
 
     try:
         from trading.alerts import telegram as tg
         tg.system_briefing(
-            "CLI fallback",
-            f"{persona_name} -> Haiku API ({reason})",
+            "CLI 불건강",
+            "유료 Anthropic API로 비용 누수 중 — 호스트 재인증 필요. "
+            "CLI degraded 상태 감지: cli 인증 만료 또는 워처 stale.",
         )
+    except Exception:  # noqa: BLE001
+        LOG.exception("CLI degraded alert 텔레그램 발송 실패")
+    return True
+
+
+def should_defer_paid_call() -> bool:
+    """strict_cost_zero_mode ON + cli 활성 상태에서 유료 호출을 차단해야 하면 True.
+
+    SPEC-TRADING-052 REQ-052-C1/ADR-001:
+    strict_cost_zero_mode 기본 OFF → 항상 False(기존 동작 보존).
+    ON 이면 system_state.cli_degraded 또는 cli_personas_enabled 활성 여부와 관계 없이
+    차단(defer)이 필요함을 알린다.
+
+    fail-open: DB 실패 시 False 반환 — 차단 실패보다 비용 누수가 낫다는 운영 기본값.
+    """
+    try:
+        state = get_system_state()
+    except Exception:  # noqa: BLE001 — fail open
+        return False
+    if not state.get("strict_cost_zero_mode", False):
+        return False
+    # strict ON: cli_only_mode/cli_personas_enabled 활성 상태에서 차단
+    return bool(state.get("cli_only_mode") or state.get("cli_personas_enabled"))
+
+
+def _persist_cli_degraded(
+    consecutive_failures: int,
+    now_provider: Callable[[], datetime] | None = None,
+) -> None:
+    """system_state에 CLI degraded latch를 영속 기록한다.
+
+    SPEC-TRADING-052 REQ-052-A1/A3/A5:
+    - cli_degraded=True로 latch (REQ-052-A5: in-process 카운터와 독립)
+    - cli_degraded_since = 최초 전이 시각
+    - cli_consecutive_failures = 영속 연속 실패 횟수
+    - DB 실패 시 graceful log, 호출자에게 예외 전파 안 함(REQ-052-A4).
+    """
+    now = (now_provider or (lambda: datetime.now(UTC)))()
+    try:
+        state = get_system_state()
+        # since는 최초 전이 시각을 유지 (기존 latch 중이면 갱신 안 함)
+        since = state.get("cli_degraded_since") or now
+        update_system_state(
+            cli_degraded=True,
+            cli_degraded_since=since,
+            cli_consecutive_failures=consecutive_failures,
+            updated_by="cli_degraded_guard",
+        )
+    except Exception:  # noqa: BLE001
+        LOG.warning(
+            "degraded 영속 기록 DB 실패 — graceful(fail-open 보존). 사이클 계속. "
+            "consecutive_failures=%d",
+            consecutive_failures,
+        )
+
+
+def _persist_cli_healthy() -> None:
+    """system_state에서 CLI degraded 상태를 해제하고 카운터·throttle clock을 리셋한다.
+
+    SPEC-TRADING-052 REQ-052-A2: CLI 성공 / 하트비트 신선 복귀 시 호출.
+    - cli_degraded=False
+    - cli_consecutive_failures=0
+    - cli_degraded_notified_at=None (다음 에피소드 첫 발동이 즉시 발사되게)
+    DB 실패 시 graceful(fail-open 보존).
+    """
+    try:
+        update_system_state(
+            cli_degraded=False,
+            cli_consecutive_failures=0,
+            cli_degraded_since=None,
+            cli_degraded_notified_at=None,
+            updated_by="cli_degraded_guard",
+        )
+    except Exception:  # noqa: BLE001
+        LOG.warning("healthy 복귀 DB 기록 실패 — graceful")
+
+
+def _log_paid_call(*, persona: str, path: str, model: str, reason: str) -> None:
+    """유료 API 발동 구조화 로그 — 세 경로(폴백/직접/뉴스) 동일 스키마.
+
+    SPEC-TRADING-052 REQ-052-D1: persona/path/model/reason 포함.
+    """
+    LOG.warning(
+        "PAID_CALL persona=%s path=%s model=%s reason=%s",
+        persona, path, model, reason,
+    )
+
+
+def _reset_cli_failures() -> None:
+    """in-process 연속 실패 카운터 리셋 + 영속 healthy 복귀.
+
+    SPEC-TRADING-052 REQ-052-A2: CLI 성공 시 호출.
+    """
+    global _cli_failure_count
+    _cli_failure_count = 0
+    _persist_cli_healthy()
+
+
+def _record_cli_failure(
+    persona_name: str,
+    reason: str,
+    now_provider: Callable[[], datetime] | None = None,
+) -> None:
+    """CLI 실패를 기록하고 임계 도달 시 자동전환 + degraded latch.
+
+    REQ-FALLBACK-06-3: per-failure 알림 → SPEC-052 throttled alert로 대체(REQ-052-B3).
+    REQ-FALLBACK-06-4: 3연속 → cli_personas_enabled=False 자동전환 (보존).
+    REQ-052-A1: 영속 degraded latch (in-process 카운터와 독립, ADR-005).
+    REQ-052-B3 [D7]: base.py L541의 per-failure 무throttle system_briefing("CLI fallback")
+                     → maybe_send_cli_degraded_alert throttled alert로 대체.
+                     L557/L558 "CLI auto-disabled" 알림은 그대로 보존.
+    """
+    global _cli_failure_count
+    _cli_failure_count += 1
+    persistent_count = _cli_failure_count  # 영속에 쓸 현재 값
+
+    # SPEC-052 REQ-052-A1: 영속 연속 실패 카운터 + degraded latch 기록
+    # (DB 실패 시 graceful — REQ-052-A4)
+    _persist_cli_degraded(
+        consecutive_failures=persistent_count,
+        now_provider=now_provider,
+    )
+
+    # SPEC-052 REQ-052-B1/B2/B3 [D7]: throttled 조기경고 (per-failure 무throttle 대체)
+    # 기존 L541 tg.system_briefing("CLI fallback", ...) 제거, throttled alert로 대체
+    try:
+        maybe_send_cli_degraded_alert(now_provider=now_provider)
     except Exception:  # noqa: BLE001
         pass
 
+    # REQ-052-D1: 구조화 로그
+    _log_paid_call(
+        persona=persona_name,
+        path="persona_fallback",
+        model=_HAIKU_FALLBACK_MODEL,
+        reason=reason,
+    )
+
     if _cli_failure_count >= _CLI_AUTO_DISABLE_THRESHOLD:
         try:
-            from trading.db.session import update_system_state
             update_system_state(cli_personas_enabled=False, updated_by="auto_disable")
             audit(
                 "CLI_AUTO_DISABLED",
                 actor="call_persona",
                 details={"consecutive_failures": _cli_failure_count},
             )
+            # REQ-052-B3 [D7]: L557/L558 "CLI auto-disabled" 알림은 그대로 보존
             from trading.alerts import telegram as tg
             tg.system_briefing(
                 "CLI auto-disabled",
@@ -561,6 +723,8 @@ def _record_cli_failure(persona_name: str, reason: str) -> None:
             )
         except Exception:  # noqa: BLE001
             pass
+        # [HARD] REQ-052-A5 / ADR-005: in-process 카운터만 리셋, 영속 degraded latch는 건드리지 않음
+        # _persist_cli_healthy()를 호출하지 않음 — degraded는 A2(성공/하트비트)에서만 해제
         _cli_failure_count = 0
 
 
@@ -654,6 +818,32 @@ def call_persona_via_cli(
             "CLI failed for %s (%s), falling back to %s API",
             persona_name, reason, fallback_model,
         )
+
+        # SPEC-TRADING-052 REQ-052-C1/ADR-001: strict_cost_zero_mode ON → defer(스킵)
+        # 기본 OFF에서는 이 블록을 건너뛰어 SPEC-016 기존 동작 보존(REQ-052-C2).
+        if should_defer_paid_call():
+            audit(
+                "CLI_DEGRADED_DEFER",
+                actor="call_persona_via_cli",
+                details={
+                    "persona": persona_name,
+                    "reason": reason,
+                    "path": "persona_fallback",
+                    "strict_cost_zero_mode": True,
+                },
+            )
+            LOG.warning(
+                "strict_cost_zero_mode=True: 유료 폴백 차단(defer). persona=%s reason=%s",
+                persona_name, reason,
+            )
+            # throttle-aligned 알림
+            try:
+                maybe_send_cli_degraded_alert()
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"strict_cost_zero_mode: 유료 폴백 차단됨 — {persona_name} ({reason})"
+            ) from None
 
         # REQ-FALLBACK-06-6: Haiku only fallback
         try:
@@ -761,6 +951,7 @@ def is_cli_mode_active() -> bool:
 
     REQ-ORCH-04-1/2: Reads cli_personas_enabled from system_state.
     REQ-SCHED-07-3: Checks watcher heartbeat before choosing CLI path.
+    SPEC-TRADING-052 REQ-052-A1b: 워처 stale 시 degraded로 마킹(직접경로 사각지대 해소).
     """
     try:
         from trading.db.session import get_system_state
@@ -772,6 +963,9 @@ def is_cli_mode_active() -> bool:
         from trading.personas.cli_bridge import is_watcher_alive
         if not is_watcher_alive():
             LOG.warning("CLI mode enabled but watcher heartbeat stale — using API fallback")
+            # SPEC-TRADING-052 REQ-052-A1b: 워처 stale → degraded 마킹(직접경로 사각지대)
+            # in-process 카운터 미사용(직접경로엔 _record_cli_failure 없음) — 영속 latch 직접 기록
+            _persist_cli_degraded(consecutive_failures=1)
             try:
                 from trading.alerts import telegram as tg
                 tg.system_briefing(
