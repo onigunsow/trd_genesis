@@ -18,7 +18,7 @@ TRADING_DIR="/home/onigunsow/trading"
 CALLS_DIR="$TRADING_DIR/data/persona_calls"
 RESULTS_DIR="$TRADING_DIR/data/persona_results"
 HEARTBEAT_FILE="$TRADING_DIR/data/persona_watcher.heartbeat"
-CLAUDE="/home/onigunsow/.nvm/versions/node/v24.13.0/bin/claude"
+CLAUDE="/home/onigunsow/.local/bin/claude"
 LOG="$TRADING_DIR/logs/persona_watcher.log"
 
 # REQ-RUNNER-03-5: Poll interval (seconds)
