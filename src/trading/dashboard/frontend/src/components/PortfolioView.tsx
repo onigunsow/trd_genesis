@@ -189,10 +189,12 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
     )
   }
 
-  // 종목별 비중 파이 데이터
+  // 종목별 비중 파이 데이터 — 이름이 코드와 다를 때 이름 우선, 같으면 코드만
   const holdingsPieData = data.holdings.map((h, i) => ({
-    name: h.ticker,
+    name: (h.ticker_name && h.ticker_name !== h.ticker) ? h.ticker_name : h.ticker,
     value: parseFloat(h.weight_pct.toFixed(2)),
+    // tooltip 전용 보조 정보 (ticker 코드)
+    _ticker: h.ticker,
     itemStyle: { color: theme.chartPalette[i % theme.chartPalette.length] },
   }))
   // 현금도 파이에 포함
@@ -201,6 +203,7 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
     holdingsPieData.push({
       name: '현금',
       value: parseFloat(data.cash_ratio.toFixed(2)),
+      _ticker: '',
       itemStyle: { color: '#9ca3af' },
     })
   }
@@ -212,7 +215,33 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
     itemStyle: { color: theme.chartPalette[i % theme.chartPalette.length] },
   }))
 
-  const pieOption = (seriesData: typeof holdingsPieData) => ({
+  // 종목별 비중 파이 — 툴팁: "종목명 (코드): 비중%"
+  // _ticker 가 있으면 "이름 (코드): x%" 형식, 현금이면 "현금: x%"
+  const holdingsPieOption = {
+    ...echartsBaseOpts,
+    tooltip: {
+      ...echartsBaseOpts.tooltip,
+      trigger: 'item',
+      formatter: (params: { name: string; value: number; data: { _ticker?: string } }) => {
+        const { name, value, data: d } = params
+        if (d._ticker && d._ticker !== name) {
+          return `${name} (${d._ticker}): ${value}%`
+        }
+        return `${name}: ${value}%`
+      },
+    },
+    series: [{
+      type: 'pie',
+      radius: ['35%', '65%'],
+      center: ['50%', '55%'],
+      data: holdingsPieData,
+      label: { color: theme.textPrimary, fontSize: 11 },
+      emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.1)' } },
+    }],
+  }
+
+  // 섹터별 비중 파이 — 단순 포맷
+  const sectorPieOption = {
     ...echartsBaseOpts,
     tooltip: {
       ...echartsBaseOpts.tooltip,
@@ -223,11 +252,11 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
       type: 'pie',
       radius: ['35%', '65%'],
       center: ['50%', '55%'],
-      data: seriesData,
+      data: sectorPieData,
       label: { color: theme.textPrimary, fontSize: 11 },
       emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.1)' } },
     }],
-  })
+  }
 
   const cardStyle: React.CSSProperties = {
     background: 'var(--bg-card)',
@@ -297,7 +326,7 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
         <div style={cardStyle}>
           <div style={labelStyle}>종목별 비중 (투자비중 = 시가평가액/NAV)</div>
           <ReactECharts
-            option={pieOption(holdingsPieData)}
+            option={holdingsPieOption}
             style={{ height: 240 }}
             notMerge
           />
@@ -310,7 +339,7 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
             </div>
           ) : (
             <ReactECharts
-              option={pieOption(sectorPieData)}
+              option={sectorPieOption}
               style={{ height: 240 }}
               notMerge
             />

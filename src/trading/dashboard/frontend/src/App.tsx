@@ -8,8 +8,7 @@ import StatusBar from './components/StatusBar'
 import PipelineView from './components/PipelineView'
 import ChartsView from './components/ChartsView'
 import NewsView from './components/NewsView'
-import HoldingsTable from './components/HoldingsTable'
-import OrdersTable from './components/OrdersTable'
+import PositionsView from './components/PositionsView'
 import ErrorBoundary from './components/ErrorBoundary'
 import KpiCards from './components/KpiCards'
 import PortfolioView from './components/PortfolioView'
@@ -226,10 +225,10 @@ export default function App() {
 
           {activeView === 'positions' && (
             <ErrorBoundary label="포지션 / 주문">
-              <div style={{ display: 'grid', gap: 24 }}>
-                <HoldingsTable />
-                <OrdersTable />
-              </div>
+              <h2 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: 16, color: 'var(--text-primary)' }}>
+                포지션 현황
+              </h2>
+              <PositionsView />
             </ErrorBoundary>
           )}
         </main>

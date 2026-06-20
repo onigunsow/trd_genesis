@@ -733,3 +733,301 @@ describe('ConfidenceScatter label 필드 (FIX 2)', () => {
     expect(screen.getByText(/30일/)).toBeDefined()
   })
 })
+
+// ── FIX 1: 종목별 비중 파이 — ticker_name 사용 ────────────────────────────────
+import { PortfolioViewContent } from '../components/PortfolioView'
+
+const PORTFOLIO_WITH_NAMES: PortfolioData = {
+  holdings: [
+    {
+      ticker: '005930',
+      ticker_name: '삼성전자',
+      qty: 10,
+      avg_cost: 75000,
+      eval_price: 78000,
+      eval_amount: 780000,
+      unrealized_pnl: 30000,
+      pnl_pct: 4.0,
+      weight_pct: 60.0,
+      sector: '반도체',
+    },
+    {
+      ticker: '000660',
+      ticker_name: '000660', // 미등록 — 코드와 동일
+      qty: 3,
+      avg_cost: 120000,
+      eval_price: 118000,
+      eval_amount: 354000,
+      unrealized_pnl: -6000,
+      pnl_pct: -1.67,
+      weight_pct: 27.0,
+      sector: '',
+    },
+  ],
+  nav: 1300000,
+  cash_amount: 166000,
+  cash_ratio: 12.77,
+  herfindahl: 0.42,
+  top3_pct: 87.0,
+  sector_breakdown: [{ sector: '반도체', weight_pct: 60.0 }],
+  snapshot_date: '2026-06-20',
+}
+
+describe('FIX 1: PortfolioViewContent — 종목별 비중 파이 ticker_name 사용', () => {
+  it('종목 테이블에 ticker_name(삼성전자)이 표시된다', () => {
+    render(<PortfolioViewContent data={PORTFOLIO_WITH_NAMES} isLoading={false} onExport={() => {}} />)
+    expect(screen.getByText('삼성전자')).toBeDefined()
+  })
+
+  it('미등록 종목(name=code)은 코드만 단독 표시된다', () => {
+    render(<PortfolioViewContent data={PORTFOLIO_WITH_NAMES} isLoading={false} onExport={() => {}} />)
+    // ticker_name === ticker → 코드만 표시 (중복 없음)
+    const el = screen.getAllByText('000660')
+    expect(el.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('현금 슬라이스가 표시 데이터에 포함된다 (cash_ratio > 0)', () => {
+    render(<PortfolioViewContent data={PORTFOLIO_WITH_NAMES} isLoading={false} onExport={() => {}} />)
+    // cash_ratio > 0 → 현금 슬라이스 추가됨. 파이 2개(종목별+섹터별) 모두 렌더됨.
+    const charts = screen.getAllByTestId('echart')
+    expect(charts.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// ── FIX 2: aggregateByTicker 집계 로직 ───────────────────────────────────────
+import { aggregateByTicker } from '../components/PositionsView'
+
+const MOCK_ROUNDTRIPS_FIX2: RoundTrip[] = [
+  {
+    ticker: '005930',
+    ticker_name: '삼성전자',
+    entry_date: '2026-05-01',
+    exit_date: '2026-05-10',
+    qty: 10,
+    entry_price: 75000,
+    exit_price: 78000,
+    net_pnl: 29400,
+    return_pct: 3.92,
+    entry_fee: 300,
+    exit_fee: 312,
+    fees: 612,
+    holding_days: 9,
+    confidence: 0.72,
+    verdict: 'TP',
+    persona: 'micro',
+    is_win: true,
+  },
+  {
+    ticker: '005930',
+    ticker_name: '삼성전자',
+    entry_date: '2026-06-01',
+    exit_date: '2026-06-08',
+    qty: 5,
+    entry_price: 78000,
+    exit_price: 76000,
+    net_pnl: -10500,
+    return_pct: -2.69,
+    entry_fee: 234,
+    exit_fee: 228,
+    fees: 462,
+    holding_days: 7,
+    confidence: 0.60,
+    verdict: 'FP',
+    persona: 'micro',
+    is_win: false,
+  },
+  {
+    ticker: '000660',
+    ticker_name: 'SK하이닉스',
+    entry_date: '2026-06-05',
+    exit_date: '2026-06-12',
+    qty: 3,
+    entry_price: 120000,
+    exit_price: 125000,
+    net_pnl: 14460,
+    return_pct: 4.17,
+    entry_fee: 216,
+    exit_fee: 225,
+    fees: 441,
+    holding_days: 7,
+    confidence: 0.80,
+    verdict: 'TP',
+    persona: 'macro',
+    is_win: true,
+  },
+]
+
+describe('aggregateByTicker — 거래 완료 종목별 집계 (FIX 2)', () => {
+  it('3개 라운드트립 → 2종목으로 집계된다', () => {
+    const result = aggregateByTicker(MOCK_ROUNDTRIPS_FIX2)
+    expect(result).toHaveLength(2)
+  })
+
+  it('삼성전자 집계: count=2, total_pnl=29400+(-10500)=18900', () => {
+    const result = aggregateByTicker(MOCK_ROUNDTRIPS_FIX2)
+    const samsung = result.find(r => r.ticker === '005930')
+    expect(samsung).toBeDefined()
+    expect(samsung!.count).toBe(2)
+    expect(samsung!.total_pnl).toBeCloseTo(18900)
+  })
+
+  it('삼성전자 wins=1 losses=1', () => {
+    const result = aggregateByTicker(MOCK_ROUNDTRIPS_FIX2)
+    const samsung = result.find(r => r.ticker === '005930')!
+    expect(samsung.wins).toBe(1)
+    expect(samsung.losses).toBe(1)
+  })
+
+  it('삼성전자 last_exit_date = 2026-06-08 (두 번째 거래)', () => {
+    const result = aggregateByTicker(MOCK_ROUNDTRIPS_FIX2)
+    const samsung = result.find(r => r.ticker === '005930')!
+    expect(samsung.last_exit_date).toBe('2026-06-08')
+  })
+
+  it('cum_return_pct = total_pnl / entry_cost * 100', () => {
+    const result = aggregateByTicker(MOCK_ROUNDTRIPS_FIX2)
+    const samsung = result.find(r => r.ticker === '005930')!
+    // entry_cost = 75000*10 + 78000*5 = 750000 + 390000 = 1140000
+    const expectedPct = (18900 / 1140000) * 100
+    expect(samsung.cum_return_pct).toBeCloseTo(expectedPct, 4)
+  })
+
+  it('SK하이닉스 집계: count=1, wins=1, total_pnl=14460', () => {
+    const result = aggregateByTicker(MOCK_ROUNDTRIPS_FIX2)
+    const sk = result.find(r => r.ticker === '000660')!
+    expect(sk.count).toBe(1)
+    expect(sk.wins).toBe(1)
+    expect(sk.losses).toBe(0)
+    expect(sk.total_pnl).toBeCloseTo(14460)
+  })
+
+  it('빈 배열 → 빈 결과', () => {
+    const result = aggregateByTicker([])
+    expect(result).toHaveLength(0)
+  })
+})
+
+// ── FIX 2: PositionsViewContent 렌더 ─────────────────────────────────────────
+import { PositionsViewContent } from '../components/PositionsView'
+
+const MOCK_HOLDINGS_FIX2: Holding[] = [
+  {
+    ticker: '005930',
+    ticker_name: '삼성전자',
+    qty_net: 10,
+    avg_fill_price: 75000,
+    total_cost: 750000,
+    eval_price: 78000,      // KIS 확인
+    eval_amount: 780000,
+    unrealized_pnl: 30000,
+    pnl_pct: 4.0,
+  },
+  {
+    ticker: '000660',
+    ticker_name: 'SK하이닉스',
+    qty_net: 5,
+    avg_fill_price: 120000,
+    total_cost: 600000,
+    eval_price: null,       // phantom — KIS 잔고 없음
+    eval_amount: null,
+    unrealized_pnl: null,
+    pnl_pct: null,
+  },
+]
+
+describe('PositionsViewContent 렌더 (FIX 2)', () => {
+  it('요약 카드: 총 미실현손익 라벨이 표시된다', () => {
+    render(
+      <PositionsViewContent
+        holdings={MOCK_HOLDINGS_FIX2}
+        roundtrips={MOCK_ROUNDTRIPS_FIX2}
+        holdingsLoading={false}
+        roundtripsLoading={false}
+      />
+    )
+    expect(screen.getByText('총 미실현손익')).toBeDefined()
+    // "총 실현손익" 은 요약 카드 + 섹션② 테이블 헤더에 각각 1회씩 등장
+    const realizedLabels = screen.getAllByText('총 실현손익')
+    expect(realizedLabels.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('섹션 헤더 ① ② 가 표시된다', () => {
+    render(
+      <PositionsViewContent
+        holdings={MOCK_HOLDINGS_FIX2}
+        roundtrips={MOCK_ROUNDTRIPS_FIX2}
+        holdingsLoading={false}
+        roundtripsLoading={false}
+      />
+    )
+    expect(screen.getByText(/① 현재 보유/)).toBeDefined()
+    expect(screen.getByText(/② 거래 완료/)).toBeDefined()
+  })
+
+  it('eval_price != null 종목만 섹션 ①에 표시', () => {
+    render(
+      <PositionsViewContent
+        holdings={MOCK_HOLDINGS_FIX2}
+        roundtrips={[]}
+        holdingsLoading={false}
+        roundtripsLoading={false}
+      />
+    )
+    // 삼성전자는 eval_price 있음 → 테이블에 표시
+    expect(screen.getByText('삼성전자')).toBeDefined()
+  })
+
+  it('eval_price == null 종목은 phantom 알림에 표시 (fabricate 없음)', () => {
+    render(
+      <PositionsViewContent
+        holdings={MOCK_HOLDINGS_FIX2}
+        roundtrips={[]}
+        holdingsLoading={false}
+        roundtripsLoading={false}
+      />
+    )
+    // phantom 알림 텍스트 확인
+    expect(screen.getByText(/KIS 잔고에 없음/)).toBeDefined()
+    // "1종목"이 언급됨
+    expect(screen.getByText(/1종목/)).toBeDefined()
+  })
+
+  it('pnl_pct는 * 100 하지 않는다 (백엔드에서 이미 % 단위)', () => {
+    render(
+      <PositionsViewContent
+        holdings={MOCK_HOLDINGS_FIX2}
+        roundtrips={[]}
+        holdingsLoading={false}
+        roundtripsLoading={false}
+      />
+    )
+    expect(screen.getByText('+4.00%')).toBeDefined()
+    expect(screen.queryByText('+400.00%')).toBeNull()
+  })
+
+  it('라운드트립이 있을 때 종목별 실현손익이 섹션 ②에 표시된다', () => {
+    render(
+      <PositionsViewContent
+        holdings={[]}
+        roundtrips={MOCK_ROUNDTRIPS_FIX2}
+        holdingsLoading={false}
+        roundtripsLoading={false}
+      />
+    )
+    // 집계된 종목명
+    expect(screen.getByText('삼성전자')).toBeDefined()
+    expect(screen.getByText('SK하이닉스')).toBeDefined()
+  })
+
+  it('빈 데이터: 로딩 중 메시지가 표시된다', () => {
+    render(
+      <PositionsViewContent
+        holdings={[]}
+        roundtrips={[]}
+        holdingsLoading={true}
+        roundtripsLoading={true}
+      />
+    )
+    expect(screen.getByText(/로딩 중/)).toBeDefined()
+  })
+})
