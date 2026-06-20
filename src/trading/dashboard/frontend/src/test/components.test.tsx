@@ -301,15 +301,19 @@ describe('NewsView', () => {
   })
 })
 
-// ── AC-M2-4: 다크 테마 CSS 변수 적용 확인 ────────────────────────────────────
-describe('다크 테마', () => {
-  it('AC-M2-4: index.css 에 --bg 다크 색상 변수가 정의된다', async () => {
+// ── AC-7/REQ-054-B1: 라이트 테마 CSS 변수 적용 확인 (다크→라이트 전환) ────────
+describe('라이트 테마 (REQ-054-B1, AC-7)', () => {
+  it('AC-7: index.css/theme.ts 가 라이트 팔레트를 정의한다 (#f6f8fa 계열 배경)', async () => {
     // CSS 변수가 정의되어 있는지 확인 (jsdom 에서 CSS 파일은 파싱하지 않으므로
     // theme.ts 의 값으로 간접 검증)
     const { theme } = await import('../theme')
-    expect(theme.bg).toBe('#0d1117')
-    expect(theme.bgPanel).toBe('#161b22')
-    expect(theme.border).toBe('#30363d')
+    // REQ-054-B1: 라이트 팔레트 — 연회색 배경, 흰 카드
+    expect(theme.bg).toBe('#f6f8fa')
+    expect(theme.bgCard).toBe('#ffffff')
+    expect(theme.bgPanel).toBe('#ffffff')
+    // 다크 값 아님을 확인
+    expect(theme.bg).not.toBe('#0d1117')
+    expect(theme.border).toBe('#d0d7de')
   })
 })
 

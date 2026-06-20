@@ -208,7 +208,7 @@ class TestScorecardEndpoint:
             "reasons": ["보정 후 기대값 +3000원/거래, 손익비 1.20"],
         }
         with patch(
-            "trading.dashboard.queries.fetch_scorecard", return_value=scorecard_data
+            "trading.dashboard.queries.fetch_scorecard_with_sortino", return_value=scorecard_data
         ):
             resp = client.get("/api/scorecard")
 

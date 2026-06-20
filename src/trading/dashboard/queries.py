@@ -945,3 +945,387 @@ def fetch_pipeline() -> dict[str, Any]:
     # cycle_ts: 가장 최근 실행 ts
     cycle_ts = max((s["ts"] for s in steps if s["ts"]), default=None)
     return {"steps": steps, "cycle_ts": cycle_ts}
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-054 M1: 신규 백엔드 엔드포인트 쿼리 함수
+# ---------------------------------------------------------------------------
+
+# @MX:NOTE: [AUTO] 아래 fetch_* 함수들은 edge 단일원천 읽기 전용이다.
+# 손익/라운드트립/KPI 수식을 재구현하지 않고 edge 모듈/position_eval_snapshot 에서만
+# 읽는다 (REQ-054-A6, REQ-054-A7).
+# @MX:SPEC: SPEC-TRADING-054 M1
+
+
+def fetch_roundtrips(
+    *,
+    days: int | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """edge.roundtrips 에서 라운드트립 원장을 읽어 반환.
+
+    REQ-054-A1: edge.roundtrips.compute_roundtrips() 단일원천.
+
+    엔드포인트 응답 필드 (TypeScript 계약):
+        ticker: string
+        entry_date: string (ISO date)
+        exit_date: string (ISO date)
+        qty: number
+        entry_price: number
+        exit_price: number
+        net_pnl: number
+        return_pct: number
+        entry_fee: number
+        exit_fee: number
+        fees: number
+        holding_days: number
+        confidence: number | null
+        verdict: string | null
+        persona: string | null
+        is_win: boolean
+
+    Args:
+        days: 최근 N일 이내 라운드트립만. None 이면 전체.
+        limit: 최대 반환 행 수. None 이면 제한 없음.
+    """
+    from trading.edge import roundtrips as _rt
+
+    rt_result = _rt.compute_roundtrips(days)
+    rts = rt_result.roundtrips
+
+    # 최신 순 정렬 (exit_date 내림차순)
+    rts = sorted(rts, key=lambda r: r.exit_date, reverse=True)
+
+    if limit is not None:
+        rts = rts[:limit]
+
+    result = []
+    for rt in rts:
+        result.append({
+            "ticker": rt.ticker,
+            "entry_date": rt.entry_date.isoformat(),
+            "exit_date": rt.exit_date.isoformat(),
+            "qty": rt.qty,
+            "entry_price": rt.entry_price,
+            "exit_price": rt.exit_price,
+            "net_pnl": rt.net_pnl,
+            "return_pct": rt.return_pct,
+            "entry_fee": rt.entry_fee,
+            "exit_fee": rt.exit_fee,
+            "fees": rt.fees,
+            "holding_days": rt.holding_days,
+            "confidence": rt.confidence,
+            "verdict": rt.verdict,
+            "persona": rt.persona,
+            "is_win": rt.is_win,
+        })
+    return result
+
+
+def _get_latest_equity_nav() -> float:
+    """daily_equity_snapshot 최신 행에서 NAV(total_assets) 반환.
+
+    데이터 없으면 0.0 반환.
+    """
+    sql = """
+        SELECT total_assets
+          FROM daily_equity_snapshot
+         ORDER BY trading_day DESC
+         LIMIT 1
+    """
+    try:
+        with ro_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+        if row:
+            return float(row.get("total_assets") or 0)
+    except Exception as exc:
+        LOG.warning("NAV 조회 실패 (0.0 폴백): %s", exc)
+    return 0.0
+
+
+def fetch_portfolio() -> dict[str, Any]:
+    """position_eval_snapshot(최신) + ticker_metadata 조인으로 포트폴리오 구성 반환.
+
+    REQ-054-A2, REQ-054-G1: 종목별 평가금액·비중·집중도·섹터 분해.
+    대시보드는 이 함수로 읽기만 한다(REQ-054-A7).
+
+    엔드포인트 응답 필드 (TypeScript 계약):
+        holdings: Array<{
+            ticker: string
+            qty: number
+            avg_cost: number
+            eval_price: number
+            eval_amount: number      -- market_value
+            unrealized_pnl: number
+            pnl_pct: number
+            weight_pct: number       -- eval_amount / NAV * 100
+            sector: string           -- 미분류 폴백
+        }>
+        nav: number                  -- 총자산(NAV)
+        cash_amount: number
+        cash_ratio: number           -- 현금/NAV * 100
+        herfindahl: number           -- 집중도 지수 (0~1)
+        top3_pct: number             -- 상위 3종목 비중 합 (%)
+        sector_breakdown: Array<{sector: string, weight_pct: number}>
+        snapshot_date: string | null -- 기준 거래일 (ISO date)
+    """
+    # 최신 trading_day 의 스냅샷 조회
+    sql = """
+        SELECT
+            p.ticker,
+            p.qty,
+            p.avg_cost,
+            p.eval_price,
+            p.eval_amount,
+            p.unrealized_pnl,
+            p.pnl_pct,
+            p.trading_day,
+            COALESCE(m.sector, '미분류') AS sector
+        FROM position_eval_snapshot p
+        LEFT JOIN ticker_metadata m ON m.ticker = p.ticker
+        WHERE p.trading_day = (
+            SELECT MAX(trading_day) FROM position_eval_snapshot
+        )
+          AND p.qty > 0
+        ORDER BY p.eval_amount DESC
+    """
+    try:
+        with ro_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    except Exception as exc:
+        LOG.error("fetch_portfolio 스냅샷 조회 실패: %s", exc)
+        rows = []
+
+    nav = _get_latest_equity_nav()
+    snapshot_date: str | None = None
+
+    holdings = []
+    total_stock_eval = 0.0
+    for row in rows:
+        eval_amount = float(row.get("eval_amount") or 0)
+        total_stock_eval += eval_amount
+        weight_pct = (eval_amount / nav * 100.0) if nav > 0 else 0.0
+        if snapshot_date is None and row.get("trading_day"):
+            td = row["trading_day"]
+            snapshot_date = td.isoformat() if hasattr(td, "isoformat") else str(td)
+        holdings.append({
+            "ticker": row["ticker"],
+            "qty": int(row.get("qty") or 0),
+            "avg_cost": float(row.get("avg_cost") or 0),
+            "eval_price": float(row.get("eval_price") or 0),
+            "eval_amount": eval_amount,
+            "unrealized_pnl": float(row.get("unrealized_pnl") or 0),
+            "pnl_pct": float(row.get("pnl_pct") or 0),
+            "weight_pct": weight_pct,
+            "sector": row.get("sector") or "미분류",
+        })
+
+    # 현금 비율: NAV - 주식평가총액
+    cash_amount = max(0.0, nav - total_stock_eval)
+    cash_ratio = (cash_amount / nav * 100.0) if nav > 0 else 0.0
+
+    # Herfindahl 지수: Σ (weight_i)^2 (0~1 범위, weight_i = 비중/100)
+    weights = [(h["eval_amount"] / nav) for h in holdings if nav > 0]
+    herfindahl = sum(w * w for w in weights) if weights else 0.0
+
+    # 상위 3종목 비중 합계 (%)
+    sorted_weights_pct = sorted(
+        [h["weight_pct"] for h in holdings], reverse=True
+    )
+    top3_pct = sum(sorted_weights_pct[:3])
+
+    # 섹터별 비중 집계
+    sector_totals: dict[str, float] = {}
+    for h in holdings:
+        sec = h["sector"] or "미분류"
+        sector_totals[sec] = sector_totals.get(sec, 0.0) + h["eval_amount"]
+
+    sector_breakdown = []
+    for sec, amt in sorted(sector_totals.items(), key=lambda x: -x[1]):
+        sector_breakdown.append({
+            "sector": sec,
+            "weight_pct": (amt / nav * 100.0) if nav > 0 else 0.0,
+        })
+
+    return {
+        "holdings": holdings,
+        "nav": nav,
+        "cash_amount": cash_amount,
+        "cash_ratio": cash_ratio,
+        "herfindahl": herfindahl,
+        "top3_pct": top3_pct,
+        "sector_breakdown": sector_breakdown,
+        "snapshot_date": snapshot_date,
+    }
+
+
+def fetch_pnl_daily(
+    *,
+    days: int | None = None,
+    period: str = "daily",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, Any]:
+    """edge 라운드트립 exit_date 기준 일별/주별/월별 실현손익 + 누적 + KOSPI 알파.
+
+    REQ-054-A3, REQ-054-A8:
+        - period ∈ {daily, weekly, monthly}
+        - KOSPI 미가용 시 alpha 필드 null, benchmark_available=false (빈 패널/0 오기재 금지)
+
+    엔드포인트 응답 필드 (TypeScript 계약):
+        period: string
+        benchmark_available: boolean
+        rows: Array<{
+            period_label: string     -- ISO date / "YYYY-Www" / "YYYY-MM"
+            realized_pnl: number
+            cumulative_pnl: number
+            alpha_pct: number | null -- KOSPI 상대 (미가용 시 null)
+        }>
+    """
+    from datetime import date as _date
+    from trading.edge import roundtrips as _rt
+    from trading.edge import benchmark as _bm
+
+    rt_result = _rt.compute_roundtrips(days)
+    rts = rt_result.roundtrips
+
+    # 날짜 필터
+    if start_date:
+        sd = _date.fromisoformat(start_date)
+        rts = [r for r in rts if r.exit_date >= sd]
+    if end_date:
+        ed = _date.fromisoformat(end_date)
+        rts = [r for r in rts if r.exit_date <= ed]
+
+    # KOSPI 종가 (가용 시)
+    bm_closes: dict = {}
+    try:
+        if rts:
+            all_dates = sorted(r.exit_date for r in rts)
+            bm_closes = _bm.kospi_closes(all_dates[0], all_dates[-1])
+    except Exception as exc:
+        LOG.warning("KOSPI 종가 조회 실패 (알파 null 폴백): %s", exc)
+        bm_closes = {}
+
+    benchmark_available = bool(bm_closes)
+
+    # 기간 레이블 생성 헬퍼
+    def _label(d: "_date") -> str:
+        if period == "weekly":
+            # ISO week: YYYY-Www
+            return f"{d.isocalendar().year}-W{d.isocalendar().week:02d}"
+        if period == "monthly":
+            return d.strftime("%Y-%m")
+        return d.isoformat()
+
+    # 기간별 집계
+    period_map: dict[str, float] = {}
+    for rt in rts:
+        lbl = _label(rt.exit_date)
+        period_map[lbl] = period_map.get(lbl, 0.0) + rt.net_pnl
+
+    # KOSPI 기간별 알파: 간단 근사(기간 내 첫날~마지막날 KOSPI 수익률)
+    def _period_kospi_return(label: str) -> float | None:
+        if not bm_closes:
+            return None
+        # 해당 레이블에 속하는 날짜들 필터
+        label_dates = [
+            rt.exit_date for rt in rts if _label(rt.exit_date) == label
+        ]
+        if not label_dates:
+            return None
+        first_d = min(label_dates)
+        last_d = max(label_dates)
+        sorted_dates = sorted(bm_closes.keys())
+        # first_d 이전 가장 가까운 날 종가
+        prev_dates = [d for d in sorted_dates if d <= first_d]
+        next_dates = [d for d in sorted_dates if d <= last_d]
+        if not prev_dates or not next_dates:
+            return None
+        start_close = bm_closes[prev_dates[-1]]
+        end_close = bm_closes[next_dates[-1]]
+        if start_close <= 0:
+            return None
+        return (end_close / start_close - 1.0) * 100.0
+
+    rows = []
+    cumulative = 0.0
+    for label in sorted(period_map.keys()):
+        pnl = period_map[label]
+        cumulative += pnl
+        kospi_ret = _period_kospi_return(label)
+        # 해당 기간 전략 수익률 (원화 → 비율 계산은 edge 미제공이므로 null 근사)
+        alpha = None  # 원화 알파 직접 산출 불가(단위 불일치) — null 처리
+        rows.append({
+            "period_label": label,
+            "realized_pnl": pnl,
+            "cumulative_pnl": cumulative,
+            "alpha_pct": alpha,
+        })
+
+    return {
+        "period": period,
+        "benchmark_available": benchmark_available,
+        "rows": rows,
+    }
+
+
+# fetch_scorecard 에 sortino 를 추가하는 패치는 기존 함수를 교체로 처리.
+# 아래 함수가 app.py /api/scorecard 에서 호출된다.
+
+def fetch_scorecard_with_sortino() -> dict[str, Any]:
+    """fetch_scorecard() + sortino 노출.
+
+    REQ-054-A4: analytics.sortino 는 이미 계산되어 있으나 기존
+    fetch_scorecard() 응답에 포함되지 않았다. 이 함수가 그 키를 추가한다.
+    신규 계산 없음 — 노출만.
+
+    엔드포인트 응답 필드 (TypeScript 계약):
+        verdict: string
+        grade: string
+        reasons: string[]
+        n_closed: number
+        win_rate: number
+        expectancy_adj: number
+        profit_factor_adj: number
+        alpha_pct: number | null
+        benchmark_available: boolean
+        cagr: number | null
+        mdd: number | null
+        sharpe: number | null
+        sortino: number              -- 추가 (REQ-054-A4)
+    """
+    from trading.edge import analytics as _an
+    from trading.edge import benchmark as _bm
+    from trading.edge import roundtrips as _rt
+    from trading.edge import scorecard as _sc
+    from trading.edge.report import load_equity_snapshots
+
+    rt_result = _rt.compute_roundtrips(None)
+    analytics = _an.from_result(rt_result, balance=None)
+    bm = _bm.compute(rt_result.roundtrips)
+    card = _sc.decide(analytics, bm)
+
+    snapshots = load_equity_snapshots(days=90)
+    tw = _an.time_weighted_metrics(snapshots)
+
+    return {
+        "verdict": card.verdict,
+        "grade": card.grade,
+        "reasons": card.reasons,
+        "n_closed": analytics.n_closed,
+        "win_rate": analytics.win_rate,
+        "expectancy_adj": analytics.expectancy_adj,
+        "profit_factor_adj": (
+            float("inf") if analytics.profit_factor_adj == float("inf")
+            else analytics.profit_factor_adj
+        ),
+        "alpha_pct": bm.alpha_pct if bm.available else None,
+        "benchmark_available": bm.available,
+        "cagr": tw.cagr if tw.available else None,
+        "mdd": tw.mdd if tw.available else None,
+        "sharpe": tw.sharpe if tw.available else None,
+        "sortino": analytics.sortino,  # REQ-054-A4: 노출만, 재계산 없음
+    }

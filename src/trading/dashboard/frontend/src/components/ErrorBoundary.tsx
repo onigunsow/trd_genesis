@@ -1,5 +1,5 @@
-// 에러 격리: 한 패널/컴포넌트가 런타임 에러로 죽어도 전체 앱이 블랭크되지 않도록
-// React Error Boundary 로 감싼다. (REQ-050-12 비차단 원칙의 렌더 레벨 보강)
+// REQ-054-B4: 에러 격리 — 한 패널의 런타임 오류가 전체 화면을 검게 만들지 않도록
+// React Error Boundary 로 각 주요 패널을 개별 격리
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 interface Props {
@@ -28,9 +28,9 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div
           style={{
-            border: '1px solid #f8514955',
-            background: '#161b22',
-            color: '#f85149',
+            border: '1px solid #fca5a5',
+            background: '#fef2f2',
+            color: '#cf222e',
             padding: '16px',
             borderRadius: 8,
             margin: 8,
@@ -40,7 +40,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
             {this.props.label ?? '패널'} 렌더 오류 (나머지 대시보드는 정상)
           </div>
-          <div style={{ color: '#8b949e', fontFamily: 'monospace', fontSize: '0.75rem' }}>
+          <div style={{ color: '#656d76', fontFamily: 'monospace', fontSize: '0.75rem' }}>
             {this.state.message}
           </div>
         </div>

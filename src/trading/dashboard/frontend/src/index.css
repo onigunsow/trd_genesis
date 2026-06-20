@@ -1,4 +1,5 @@
-/* REQ-050-10: 다크 전문 금융 테마 글로벌 스타일 */
+/* REQ-054-B1/B2: 라이트 전문 팔레트 CSS 변수 토큰
+   전문 자산운용 도구 — 연회색 배경, 흰 카드, 파랑/초록/빨강 강조 */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -6,25 +7,44 @@
 }
 
 :root {
-  --bg: #0d1117;
-  --bg-panel: #161b22;
-  --bg-card: #1c2128;
-  --bg-hover: #21262d;
-  --border: #30363d;
-  --border-light: #21262d;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #6e7681;
-  --accent-blue: #58a6ff;
-  --accent-green: #3fb950;
-  --accent-red: #f85149;
-  --accent-yellow: #e3b341;
-  --accent-purple: #a371f7;
-  --buy: #3fb950;
-  --sell: #f85149;
-  --halt: #da3633;
+  /* 배경 계층 */
+  --bg: #f6f8fa;
+  --bg-panel: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f3f4f6;
+
+  /* 경계선 */
+  --border: #d0d7de;
+  --border-light: #e8ecf0;
+
+  /* 텍스트 */
+  --text-primary: #1f2328;
+  --text-secondary: #656d76;
+  --text-muted: #9ca3af;
+
+  /* 강조색 */
+  --accent-blue: #0969da;
+  --accent-green: #1a7f37;
+  --accent-red: #cf222e;
+  --accent-yellow: #9a6700;
+  --accent-purple: #8250df;
+
+  /* 상태 */
+  --buy: #1a7f37;
+  --sell: #cf222e;
+  --halt: #cf222e;
+
+  /* 그림자 */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.10);
+
+  /* 폰트 */
   --font-mono: 'Courier New', 'Consolas', monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif;
+
+  /* 사이드바 */
+  --sidebar-width: 220px;
+  --radius: 8px;
 }
 
 html, body, #root {
@@ -51,3 +71,19 @@ html, body, #root {
 .text-blue { color: var(--accent-blue); }
 .text-muted { color: var(--text-muted); }
 .text-secondary { color: var(--text-secondary); }
+
+/* 카드 공통 */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+}
+
+/* 반응형: 768px 이하 가로 오버플로 방지 (REQ-054-B3) */
+@media (max-width: 768px) {
+  html, body, #root {
+    overflow-x: hidden;
+  }
+}

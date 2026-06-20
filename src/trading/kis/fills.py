@@ -26,6 +26,8 @@ import json
 import logging
 from typing import Any
 
+import datetime
+
 from trading.db.session import connection
 from trading.kis.account import balance
 from trading.kis.client import KisClient
@@ -257,6 +259,73 @@ def _mirror_positions(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-054 M1.5: 종목별 평가 스냅샷 writer (REQ-054-A9)
+# ---------------------------------------------------------------------------
+
+# @MX:ANCHOR: [AUTO] _upsert_eval_snapshot 은 트레이딩 루프가 대시보드 데이터를
+# 공급하는 유일한 경계 지점이다 (fan_in: reconcile_from_balance → 단일 경로).
+# @MX:REASON: 결정/사이징/리스크 로직을 변경하지 않고 "이미 가져온 KIS 잔고 평가값을
+# 저장만" 한다는 불변 계약을 지켜야 한다. 이 함수가 트레이딩 로직을 건드리면
+# SPEC-054 ADR-004 위반이다.
+# @MX:SPEC: SPEC-TRADING-054 REQ-054-A9 ADR-004
+def _upsert_eval_snapshot(holdings: list[dict[str, Any]]) -> None:
+    """KIS inquire-balance 종목별 평가값을 position_eval_snapshot 에 upsert.
+
+    Args:
+        holdings: account.balance() 반환값의 'holdings' 리스트.
+                  각 항목: ticker, qty, avg_cost, current_price,
+                           eval_amount, pnl_amount, pnl_pct.
+
+    주의사항:
+        - Asia/Seoul 기준 오늘 날짜를 trading_day 로 사용한다.
+        - 쓰기 실패는 이 함수 내에서 흡수(log only) — 트레이딩 흐름 불영향.
+        - 대시보드는 이 테이블을 읽기전용으로만 접근한다(REQ-054-A7).
+    """
+    import zoneinfo  # 파이썬 표준 라이브러리 — 외부 의존 없음
+
+    KST = zoneinfo.ZoneInfo("Asia/Seoul")
+    today = datetime.datetime.now(KST).date()
+
+    _SQL = """
+        INSERT INTO position_eval_snapshot
+            (trading_day, ticker, qty, avg_cost, eval_price,
+             eval_amount, unrealized_pnl, pnl_pct, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (trading_day, ticker) DO UPDATE SET
+            qty            = EXCLUDED.qty,
+            avg_cost       = EXCLUDED.avg_cost,
+            eval_price     = EXCLUDED.eval_price,
+            eval_amount    = EXCLUDED.eval_amount,
+            unrealized_pnl = EXCLUDED.unrealized_pnl,
+            pnl_pct        = EXCLUDED.pnl_pct,
+            updated_at     = NOW()
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            for h in holdings:
+                ticker = h.get("ticker", "")
+                if not ticker:
+                    continue
+                cur.execute(_SQL, (
+                    today,
+                    ticker,
+                    h.get("qty", 0),
+                    h.get("avg_cost", 0),
+                    h.get("current_price", 0),   # prpr
+                    h.get("eval_amount", 0),      # evlu_amt
+                    h.get("pnl_amount", 0),       # evlu_pfls_amt
+                    h.get("pnl_pct", 0.0),        # evlu_pfls_rt
+                ))
+        LOG.info(
+            "SPEC-054 position_eval_snapshot upsert: %d 종목 (trading_day=%s)",
+            len(holdings), today,
+        )
+    except Exception as exc:
+        # 스냅샷 저장 실패는 트레이딩을 막지 않는다(격리).
+        LOG.error("SPEC-054 _upsert_eval_snapshot 실패 (무시): %s", exc)
+
+
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -316,6 +385,13 @@ def reconcile_from_balance(
     except Exception as exc:  # log + count, never crash the cron
         summary["errors"] += 1
         LOG.exception("SPEC-029 reconcile_from_balance failed: %s", exc)
+
+    # SPEC-TRADING-054 REQ-054-A9: 이미 가져온 KIS 잔고 평가값을 position_eval_snapshot
+    # 에 upsert 한다. 결정/사이징/리스크 로직은 불변 — 저장만 수행.
+    # 트레이딩 루프의 유일한 대시보드 데이터 공급 지점 (@MX:ANCHOR).
+    # 쓰기 실패는 격리(except 블록)되어 트레이딩 흐름에 영향을 주지 않는다.
+    if not dry_run and holdings:
+        _upsert_eval_snapshot(holdings)
 
     LOG.info(
         "SPEC-029 reconcile queried=%d transitioned=%d positions_synced=%d "

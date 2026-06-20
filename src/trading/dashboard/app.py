@@ -17,12 +17,14 @@ SPEC-TRADING-050 M1 확장 엔드포인트:
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from trading.dashboard import queries
@@ -137,9 +139,12 @@ def get_equity(days: int = 90) -> list[dict[str, Any]]:
 
 @app.get("/api/scorecard", tags=["scorecard"])
 def get_scorecard() -> dict[str, Any]:
-    """엣지 검증 스코어카드 (verdict, grade, alpha, CAGR, MDD, Sharpe)."""
+    """엣지 검증 스코어카드 (verdict, grade, alpha, CAGR, MDD, Sharpe, sortino).
+
+    REQ-054-A4: sortino 필드 추가 (edge.analytics 에서 이미 계산된 값 노출만).
+    """
     try:
-        return queries.fetch_scorecard()
+        return queries.fetch_scorecard_with_sortino()
     except Exception as exc:
         LOG.error("fetch_scorecard failed: %s", exc)
         raise HTTPException(status_code=503, detail="스코어카드 계산 실패") from exc
@@ -231,3 +236,163 @@ def get_pipeline() -> dict[str, Any]:
     except Exception as exc:
         LOG.error("fetch_pipeline failed: %s", exc)
         raise HTTPException(status_code=503, detail="pipeline 조회 실패") from exc
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-054 M1: 신규 엔드포인트
+# ---------------------------------------------------------------------------
+
+# @MX:NOTE: [AUTO] 아래 엔드포인트는 edge 단일원천 읽기 전용이다.
+# 손익/KPI 수식을 재구현하지 않고 edge 모듈 / position_eval_snapshot 만 읽는다.
+# 모든 DB 접근은 ro_connection 경유 (REQ-054-A7).
+# @MX:SPEC: SPEC-TRADING-054 M1
+
+
+@app.get("/api/roundtrips", tags=["analytics"])
+def get_roundtrips(
+    days: int | None = Query(default=None, description="최근 N일 필터"),
+    limit: int = Query(default=500, le=2000, description="최대 반환 행 수"),
+) -> list[dict[str, Any]]:
+    """라운드트립 거래 원장.
+
+    REQ-054-A1: edge.roundtrips.compute_roundtrips() 단일원천.
+
+    응답 필드:
+        ticker, entry_date, exit_date, qty, entry_price, exit_price,
+        net_pnl, return_pct, entry_fee, exit_fee, fees, holding_days,
+        confidence, verdict, persona, is_win
+    """
+    try:
+        return queries.fetch_roundtrips(days=days, limit=limit)
+    except Exception as exc:
+        LOG.error("fetch_roundtrips failed: %s", exc)
+        raise HTTPException(status_code=503, detail="라운드트립 조회 실패") from exc
+
+
+@app.get("/api/portfolio", tags=["portfolio"])
+def get_portfolio() -> dict[str, Any]:
+    """포트폴리오 구성·집중도·섹터 분해.
+
+    REQ-054-A2, REQ-054-G1: position_eval_snapshot(최신) + ticker_metadata 조인.
+    대시보드 읽기전용 — ro_connection 경유 (REQ-054-A7).
+
+    응답 필드:
+        holdings[]: {ticker, qty, avg_cost, eval_price, eval_amount,
+                     unrealized_pnl, pnl_pct, weight_pct, sector}
+        nav, cash_amount, cash_ratio, herfindahl, top3_pct,
+        sector_breakdown[]: {sector, weight_pct},
+        snapshot_date
+    """
+    try:
+        return queries.fetch_portfolio()
+    except Exception as exc:
+        LOG.error("fetch_portfolio failed: %s", exc)
+        raise HTTPException(status_code=503, detail="포트폴리오 조회 실패") from exc
+
+
+@app.get("/api/pnl-daily", tags=["analytics"])
+def get_pnl_daily(
+    days: int | None = Query(default=None, description="최근 N일 필터"),
+    period: str = Query(default="daily", pattern="^(daily|weekly|monthly)$"),
+    start_date: str | None = Query(default=None, description="시작일 (ISO date)"),
+    end_date: str | None = Query(default=None, description="종료일 (ISO date)"),
+) -> dict[str, Any]:
+    """기간별 실현손익 + 누적 + KOSPI 알파.
+
+    REQ-054-A3, REQ-054-A8: period ∈ {daily, weekly, monthly}.
+    KOSPI 미가용 시 alpha_pct=null, benchmark_available=false (REQ-054-A8).
+
+    응답 필드:
+        period, benchmark_available,
+        rows[]: {period_label, realized_pnl, cumulative_pnl, alpha_pct}
+    """
+    if period not in ("daily", "weekly", "monthly"):
+        raise HTTPException(status_code=422, detail="period 는 daily|weekly|monthly")
+    try:
+        return queries.fetch_pnl_daily(
+            days=days,
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except Exception as exc:
+        LOG.error("fetch_pnl_daily failed: %s", exc)
+        raise HTTPException(status_code=503, detail="PnL 조회 실패") from exc
+
+
+_CSV_DATASETS = frozenset({"roundtrips", "portfolio", "pnl-daily"})
+
+# REQ-054-A5: dataset 경로 파라미터로 {dataset}.csv 형태 지원
+# Content-Disposition: attachment 로 파일 다운로드 유도.
+# 행 소스는 fetch_* 재호출 — 별도 계산 경로 없음(ADR-003).
+@app.get("/api/export/{dataset}", tags=["export"])
+def get_export(dataset: str) -> StreamingResponse:
+    """CSV 내보내기.
+
+    REQ-054-A5: dataset ∈ {roundtrips, portfolio, pnl-daily}.
+    Content-Type: text/csv, Content-Disposition: attachment.
+    행 값 = 동일 fetch_* 함수 재호출(단일원천, REQ-054-A6).
+
+    응답: text/csv 스트림
+    """
+    # .csv 확장자 포함 허용: "roundtrips.csv" → "roundtrips"
+    clean = dataset.removesuffix(".csv")
+    if clean not in _CSV_DATASETS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"dataset '{dataset}' 미지원. {sorted(_CSV_DATASETS)} 중 선택.",
+        )
+
+    try:
+        if clean == "roundtrips":
+            data = queries.fetch_roundtrips()
+            if not data:
+                fieldnames = [
+                    "ticker", "entry_date", "exit_date", "qty",
+                    "entry_price", "exit_price", "net_pnl", "return_pct",
+                    "entry_fee", "exit_fee", "fees", "holding_days",
+                    "confidence", "verdict", "persona", "is_win",
+                ]
+            else:
+                fieldnames = list(data[0].keys())
+            rows_iter = data
+
+        elif clean == "portfolio":
+            portfolio = queries.fetch_portfolio()
+            rows_iter = portfolio.get("holdings", [])
+            if not rows_iter:
+                fieldnames = [
+                    "ticker", "qty", "avg_cost", "eval_price", "eval_amount",
+                    "unrealized_pnl", "pnl_pct", "weight_pct", "sector",
+                ]
+            else:
+                fieldnames = list(rows_iter[0].keys())
+
+        else:  # pnl-daily
+            pnl = queries.fetch_pnl_daily()
+            rows_iter = pnl.get("rows", [])
+            if not rows_iter:
+                fieldnames = [
+                    "period_label", "realized_pnl", "cumulative_pnl", "alpha_pct",
+                ]
+            else:
+                fieldnames = list(rows_iter[0].keys())
+
+    except Exception as exc:
+        LOG.error("get_export(%s) 데이터 조회 실패: %s", dataset, exc)
+        raise HTTPException(status_code=503, detail="CSV 내보내기 실패") from exc
+
+    def _generate():
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows_iter:
+            writer.writerow(row)
+        yield buf.getvalue()
+
+    filename = f"{clean}.csv"
+    return StreamingResponse(
+        _generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

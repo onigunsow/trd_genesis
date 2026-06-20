@@ -26,6 +26,12 @@ from trading.db.session import connection
 class RoundTrip:
     """FIFO 로 매칭된 매수→매도 1쌍(청크). 가격은 주당 단가, 수수료는 청크 안분분."""
 
+    # @MX:ANCHOR: [AUTO] RoundTrip 은 report·queries·postmortem·신규 엔드포인트 3개 등
+    # 다수(fan_in >= 3) 호출자가 의존하는 공유 데이터클래스다.
+    # @MX:REASON: FIFO 매칭·net_pnl 정의·필드 계약이 불변이어야 단일원천 원칙이 유지된다.
+    # ADR-001 에 따라 persona 필드 추가 — 기존 계산 로직은 불변.
+    # @MX:SPEC: SPEC-TRADING-054 ADR-001
+
     ticker: str
     entry_date: date
     exit_date: date
@@ -36,6 +42,7 @@ class RoundTrip:
     exit_fee: float             # 청산 수수료(매도 fee 의 청크 안분분)
     confidence: float | None    # 진입 의사결정 confidence (없으면 None)
     verdict: str | None         # 진입 위험 게이트 verdict APPROVE/HOLD/REJECT (없으면 None)
+    persona: str | None = None  # 진입 의사결정 페르소나 이름 (ADR-001, 없으면 None)
 
     @property
     def cost_basis(self) -> float:
@@ -94,6 +101,7 @@ class _BuyLot:
     entry_date: date
     confidence: float | None
     verdict: str | None
+    persona: str | None = None  # ADR-001: 진입 페르소나 이름
 
 
 @dataclass
@@ -156,6 +164,7 @@ def build_roundtrips(rows: Iterable[dict[str, Any]]) -> RoundTripResult:
                         else None
                     ),
                     verdict=row.get("verdict"),
+                    persona=row.get("persona"),  # ADR-001: 진입 페르소나
                 )
             )
         elif side == "sell":
@@ -178,6 +187,7 @@ def build_roundtrips(rows: Iterable[dict[str, Any]]) -> RoundTripResult:
                         exit_fee=sell_fee_per_share * matched,
                         confidence=lot.confidence,
                         verdict=lot.verdict,
+                        persona=lot.persona,  # ADR-001: 진입 페르소나 전파
                     )
                 )
                 lot.qty -= matched
@@ -209,6 +219,7 @@ _FILL_SQL = """
     SELECT o.id, o.ts, o.filled_at, o.side, o.ticker,
            o.fill_qty, o.fill_price, o.fee,
            pd.confidence,
+           pd.persona,
            (SELECT rr.verdict FROM risk_reviews rr
              WHERE rr.decision_id = pd.id
              ORDER BY rr.ts DESC LIMIT 1) AS verdict

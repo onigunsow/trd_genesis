@@ -1,4 +1,6 @@
-// REQ-050-13: 모든 API 응답에 대한 TypeScript 타입 정의
+// REQ-054-F1: 모든 API 응답에 대한 TypeScript 타입 정의
+// CRITICAL: 필드명/타입이 백엔드 JSON과 정확히 일치해야 함 (black-screen 방지)
+// NUMERIC→number 변환은 db.py 로더에서 보장 — 모든 숫자 필드는 number 타입 사용
 
 // ── /api/status ────────────────────────────────────────────────────────────
 export interface SystemStatus {
@@ -64,6 +66,7 @@ export interface EquityPoint {
 }
 
 // ── /api/scorecard ─────────────────────────────────────────────────────────
+// REQ-054-A4: sortino 필드 추가 (edge.analytics 산출값 노출)
 export interface Scorecard {
   verdict: string
   grade: string
@@ -74,6 +77,7 @@ export interface Scorecard {
   cagr: number | null
   mdd: number | null
   sharpe: number | null
+  sortino: number        // REQ-054-A4: edge.analytics 에서 노출
   n_closed: number
   benchmark_available?: boolean
   reasons?: string[]
@@ -163,4 +167,73 @@ export interface PipelineData {
   steps: PipelineStep[]
   halt_state: boolean
   halt_reason: string | null
+}
+
+// ── /api/roundtrips ────────────────────────────────────────────────────────
+// REQ-054-A1: edge.roundtrips.RoundTrip[] 를 그대로 반영 (ADR-001: persona 포함)
+// CRITICAL: 필드명이 백엔드와 정확히 일치해야 함
+export interface RoundTrip {
+  ticker: string
+  entry_date: string
+  exit_date: string
+  qty: number
+  entry_price: number
+  exit_price: number
+  net_pnl: number
+  return_pct: number
+  entry_fee: number
+  exit_fee: number
+  fees: number
+  holding_days: number
+  confidence: number | null
+  verdict: string | null
+  persona: string | null    // ADR-001: edge RoundTrip.persona 확장 적용
+  is_win: boolean
+}
+
+// ── /api/portfolio ─────────────────────────────────────────────────────────
+// REQ-054-A2: position_eval_snapshot + equity + ticker_metadata 조인 결과
+// CRITICAL: NUMERIC→number 변환은 db.py 로더 보장
+export interface PortfolioHolding {
+  ticker: string
+  qty: number
+  avg_cost: number
+  eval_price: number
+  eval_amount: number
+  unrealized_pnl: number
+  pnl_pct: number
+  weight_pct: number
+  sector: string
+}
+
+export interface SectorBreakdown {
+  sector: string
+  weight_pct: number
+}
+
+export interface PortfolioData {
+  holdings: PortfolioHolding[]
+  nav: number
+  cash_amount: number
+  cash_ratio: number
+  herfindahl: number
+  top3_pct: number
+  sector_breakdown: SectorBreakdown[]
+  snapshot_date: string | null
+}
+
+// ── /api/pnl-daily ─────────────────────────────────────────────────────────
+// REQ-054-A3: 기간별 실현손익 + 누적 + KOSPI 상대
+// 주의: alpha_pct 는 백엔드 한계로 현재 null 반환 — UI 는 null 을 그대로 표시 (가짜 데이터 금지)
+export interface PnlDailyRow {
+  period_label: string
+  realized_pnl: number
+  cumulative_pnl: number
+  alpha_pct: number | null   // 현재 백엔드 한계로 null — 전체기간 알파는 scorecard 에서 별도 표시
+}
+
+export interface PnlDailyResponse {
+  period: string
+  benchmark_available: boolean
+  rows: PnlDailyRow[]
 }
