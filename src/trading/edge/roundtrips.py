@@ -219,12 +219,13 @@ _FILL_SQL = """
     SELECT o.id, o.ts, o.filled_at, o.side, o.ticker,
            o.fill_qty, o.fill_price, o.fee,
            pd.confidence,
-           pd.persona,
+           pr.persona_name AS persona,
            (SELECT rr.verdict FROM risk_reviews rr
              WHERE rr.decision_id = pd.id
              ORDER BY rr.ts DESC LIMIT 1) AS verdict
       FROM orders o
       LEFT JOIN persona_decisions pd ON pd.id = o.persona_decision_id
+      LEFT JOIN persona_runs pr ON pr.id = pd.persona_run_id
      WHERE o.mode = 'paper'
        AND o.status IN ('filled', 'partial')
        AND o.fill_qty IS NOT NULL AND o.fill_qty > 0
