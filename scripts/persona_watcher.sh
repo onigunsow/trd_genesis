@@ -14,6 +14,12 @@
 #   bash scripts/start_watcher.sh            # background with PID tracking
 set -uo pipefail
 
+# REQ-053-E1: flock 단일 인스턴스 가드 — 고아 이전 인스턴스의 중복 처리 방지.
+# REQ-053-E2: 두 번째 인스턴스는 즉시 exit 0 (systemd Restart 루프 방지, E3).
+# 락 FD는 프로세스 종료 시 자동 해제 → 정상 재시작 시 새 인스턴스가 즉시 획득.
+exec 200>/tmp/persona_watcher.lock
+flock -n 200 || { echo "[$(date '+%Y-%m-%d %H:%M:%S')] persona_watcher already running — exiting" >&2; exit 0; }
+
 TRADING_DIR="/home/onigunsow/trading"
 CALLS_DIR="$TRADING_DIR/data/persona_calls"
 RESULTS_DIR="$TRADING_DIR/data/persona_results"

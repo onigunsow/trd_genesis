@@ -13,8 +13,16 @@ set -euo pipefail
 TRADING_DIR="/home/onigunsow/trading"
 PENDING="$TRADING_DIR/data/pending_analysis.json"
 RESULTS="$TRADING_DIR/data/analysis_results.json"
-CLAUDE="/home/onigunsow/.nvm/versions/node/v24.13.0/bin/claude"
 LOG="$TRADING_DIR/logs/analyze_news.log"
+
+# REQ-053-A1: claude CLI 경로 견고 해소 — (1) command -v, (2) .local/bin 폴백
+# REQ-053-A2: 어느 쪽도 없으면 ERROR 로그 후 non-zero 종료(유료 API 경로 미발동)
+CLAUDE="$(command -v claude 2>/dev/null || true)"
+[ -x "$CLAUDE" ] || CLAUDE="/home/onigunsow/.local/bin/claude"
+if [ ! -x "$CLAUDE" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: claude CLI binary not found (command -v / .local/bin) — aborting, NO paid API" >> "$LOG"
+    exit 1
+fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"

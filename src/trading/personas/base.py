@@ -88,6 +88,11 @@ def is_cli_only_mode() -> bool:
     SPEC-016 column (``cli_only_mode``) and the legacy SPEC-015 column
     (``cli_personas_enabled``) as equivalent.
 
+    SPEC-TRADING-053 REQ-053-B1 (ADR-004 strict 인지화): ``strict_cost_zero_mode``
+    ON인 경우에도 True 반환 — 단일 SSOT 수정으로 데코레이터(analyzer/_llm_text)와
+    scheduler.py:204가 strict ON에서 동시에 차단된다. blast-radius: 4개 호출자
+    (block_if_cli_only_mode x2, scheduler:204, 직접 호출).
+
     Fall-open behaviour: if ``get_system_state`` itself raises (e.g. DB outage),
     this returns ``False``. That mirrors the decorator's fail-open — a DB problem
     must not wedge the only working path (here, the Haiku fallback proceeds).
@@ -100,7 +105,12 @@ def is_cli_only_mode() -> bool:
             exc,
         )
         return False
-    return bool(state.get("cli_only_mode") or state.get("cli_personas_enabled"))
+    # REQ-053-B1: strict_cost_zero_mode ON도 차단 조건에 포함 (ADR-004 SSOT)
+    return bool(
+        state.get("cli_only_mode")
+        or state.get("cli_personas_enabled")
+        or state.get("strict_cost_zero_mode")
+    )
 
 
 def block_if_cli_only_mode(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -244,6 +254,37 @@ def call_persona(
 
     Persists to persona_runs (REQ-PERSONA-04-2).
     """
+    # REQ-053-G1 (ADR-006 주 방어, D-CRIT-1): should_defer_paid_call() 진입점 가드.
+    # [HARD] 배치 제약(D3): 반드시 try:(263) 이전에 위치해야 한다.
+    # try: 안에서 raise하면 내부 except(393)이 RuntimeError를 삼켜 PersonaResult(error=...)로
+    # 변환하고 디스패처가 빈 결과를 유효 결정으로 오인한다(REQ-053-G2가 막으려는 것).
+    # 6개 디스패처는 call_persona에 로컬 try/except가 없으므로 raise가 상위 경계
+    # (scheduler _wrap runner.py:158 / orchestrator 1123-1125)에서 흡수 → cost-0 사이클 스킵.
+    if should_defer_paid_call():
+        # REQ-053-G3/F2: 차단 시 CLI_DEGRADED_DEFER audit emit (raise 직전, D4)
+        LOG.warning(
+            "CLI_DEGRADED_DEFER strict_cost_zero_mode=True: 유료 직접호출 차단 "
+            "persona=%s model=%s",
+            persona_name, model,
+        )
+        try:
+            audit(
+                "CLI_DEGRADED_DEFER",
+                actor="call_persona",
+                details={
+                    "persona": persona_name,
+                    "model": model,
+                    "path": "call_persona_direct",
+                    "strict_cost_zero_mode": True,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(
+            f"strict_cost_zero_mode: 직접 유료 호출 차단됨 — {persona_name} "
+            "(REQ-053-G, call_persona 진입점 가드)"
+        ) from None
+
     s = get_settings()
     if s.anthropic.api_key is None:
         raise RuntimeError("ANTHROPIC_API_KEY missing — cannot call persona")
@@ -277,6 +318,10 @@ def call_persona(
         if tools:
             api_kwargs["tools"] = tools
 
+        # REQ-053-F1 (G3): messages.create 직전 PAID_CALL 구조화 로그 (5지점 계측 #2)
+        _log_paid_call(
+            persona=persona_name, path="call_persona_direct", model=model, reason="direct_api"
+        )
         msg = client.messages.create(**api_kwargs)
 
         # Accumulate usage from first call
@@ -350,6 +395,11 @@ def call_persona(
                 messages.append({"role": "user", "content": tool_results})
 
                 api_kwargs["messages"] = messages
+                # REQ-053-F1: messages.create 직전 PAID_CALL 계측 (5지점 #3, tool 재시도)
+                _log_paid_call(
+                    persona=persona_name, path="call_persona_tool_retry", model=model,
+                    reason="tool_retry",
+                )
                 msg = client.messages.create(**api_kwargs)
 
                 # Accumulate usage from tool round
@@ -405,6 +455,11 @@ def call_persona(
             LOG.warning("could not parse persona JSON (attempt 1): %s", e)
             # Retry: ask LLM to fix its JSON (single retry, no tool-use)
             try:
+                # REQ-053-F1: messages.create 직전 PAID_CALL 계측 (5지점 #4, JSON retry)
+                _log_paid_call(
+                    persona=persona_name, path="call_persona_json_retry", model=model,
+                    reason="json_retry",
+                )
                 retry_msg = client.messages.create(
                     model=model,
                     max_tokens=max_tokens,
@@ -522,6 +577,10 @@ def _extract_json(text: str) -> dict[str, Any]:
 _cli_failure_count: int = 0
 _CLI_AUTO_DISABLE_THRESHOLD: int = 3
 
+# SPEC-TRADING-053 REQ-053-C3 (ADR-005): strict fail-closed in-process 캐시.
+# None = 콜드스타트(미확정) → fail-open(False), True/False = 직전 관측 상태.
+_LAST_KNOWN_STRICT: bool | None = None
+
 # SPEC-TRADING-052 REQ-052-B ADR-003: 조기경고 기본 쿨다운 1시간.
 # SPEC-031의 HALT_NOTIFY_COOLDOWN_SECONDS(6h)보다 짧음 — 무음 크레딧 소진의 시간민감성.
 CLI_DEGRADED_ALERT_COOLDOWN_SECONDS: int = 3600
@@ -575,23 +634,38 @@ def maybe_send_cli_degraded_alert(
 
 
 def should_defer_paid_call() -> bool:
-    """strict_cost_zero_mode ON + cli 활성 상태에서 유료 호출을 차단해야 하면 True.
+    """strict_cost_zero_mode ON에서 유료 호출을 차단해야 하면 True.
 
-    SPEC-TRADING-052 REQ-052-C1/ADR-001:
-    strict_cost_zero_mode 기본 OFF → 항상 False(기존 동작 보존).
-    ON 이면 system_state.cli_degraded 또는 cli_personas_enabled 활성 여부와 관계 없이
-    차단(defer)이 필요함을 알린다.
+    SPEC-TRADING-053 REQ-053-C1 (ADR-005 strict fail-closed 분리):
+    strict ON이면 cli_personas_enabled/cli_only_mode 값과 무관하게 True 반환.
+    strict OFF → False (REQ-052-C2 불변, SPEC-016 폴백 보존).
 
-    fail-open: DB 실패 시 False 반환 — 차단 실패보다 비용 누수가 낫다는 운영 기본값.
+    DB 예외 처리 (REQ-053-C3 ADR-005):
+    - 콜드스타트(_LAST_KNOWN_STRICT=None) + DB 예외 → False(fail-open, D-new4)
+      실제 strict-OFF 시스템의 SPEC-016 폴백을 막지 않기 위함(REQ-052-C2 HARD 우선).
+    - last-known strict ON + DB 예외 → True(fail-closed)
+    - last-known strict OFF + DB 예외 → False
     """
+    global _LAST_KNOWN_STRICT
     try:
         state = get_system_state()
-    except Exception:  # noqa: BLE001 — fail open
+        # 성공 시 캐시 갱신
+        _LAST_KNOWN_STRICT = bool(state.get("strict_cost_zero_mode", False))
+    except Exception:  # noqa: BLE001 — DB 예외
+        # REQ-053-C3 (D-new4): 콜드스타트(빈 캐시) → fail-open
+        if _LAST_KNOWN_STRICT is None:
+            return False
+        # last-known ON → fail-closed, last-known OFF → fail-open
+        if _LAST_KNOWN_STRICT:
+            LOG.warning(
+                "should_defer_paid_call: DB 장애 + last-known strict ON "
+                "→ fail-closed(True). reason=db_unavailable_strict_failclosed",
+            )
+        return _LAST_KNOWN_STRICT
+    if not _LAST_KNOWN_STRICT:
         return False
-    if not state.get("strict_cost_zero_mode", False):
-        return False
-    # strict ON: cli_only_mode/cli_personas_enabled 활성 상태에서 차단
-    return bool(state.get("cli_only_mode") or state.get("cli_personas_enabled"))
+    # REQ-053-C1: strict ON → cli 플래그와 무관하게 True
+    return True
 
 
 def _persist_cli_degraded(
@@ -708,23 +782,33 @@ def _record_cli_failure(
     )
 
     if _cli_failure_count >= _CLI_AUTO_DISABLE_THRESHOLD:
+        # REQ-053-D1: strict ON → auto-disable 부수효과(cli_personas=False·audit·TG) 생략.
+        # 카운터 리셋은 strict와 무관하게 항상 수행 (E5: 무한 누적 방지, D-new3).
+        strict = False
         try:
-            update_system_state(cli_personas_enabled=False, updated_by="auto_disable")
-            audit(
-                "CLI_AUTO_DISABLED",
-                actor="call_persona",
-                details={"consecutive_failures": _cli_failure_count},
-            )
-            # REQ-052-B3 [D7]: L557/L558 "CLI auto-disabled" 알림은 그대로 보존
-            from trading.alerts import telegram as tg
-            tg.system_briefing(
-                "CLI auto-disabled",
-                f"CLI mode auto-disabled after {_cli_failure_count} consecutive failures",
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        # [HARD] REQ-052-A5 / ADR-005: in-process 카운터만 리셋, 영속 degraded latch는 건드리지 않음
-        # _persist_cli_healthy()를 호출하지 않음 — degraded는 A2(성공/하트비트)에서만 해제
+            strict = bool(get_system_state().get("strict_cost_zero_mode", False))
+        except Exception:  # noqa: BLE001 — fail-open: strict 판정 실패 시 기존 동작
+            strict = False
+
+        if not strict:
+            # REQ-053-D2: strict OFF에서는 기존 자동전환 동작 불변
+            try:
+                update_system_state(cli_personas_enabled=False, updated_by="auto_disable")
+                audit(
+                    "CLI_AUTO_DISABLED",
+                    actor="call_persona",
+                    details={"consecutive_failures": _cli_failure_count},
+                )
+                # REQ-052-B3 [D7]: L557/L558 "CLI auto-disabled" 알림은 그대로 보존
+                from trading.alerts import telegram as tg
+                tg.system_briefing(
+                    "CLI auto-disabled",
+                    f"CLI mode auto-disabled after {_cli_failure_count} consecutive failures",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # [HARD] REQ-053-D(D-new3)/REQ-052-A5: 카운터 리셋은 strict와 무관하게 항상.
+        # 영속 degraded latch는 건드리지 않음 — degraded는 A2(성공/하트비트)에서만 해제.
         _cli_failure_count = 0
 
 
@@ -952,6 +1036,8 @@ def is_cli_mode_active() -> bool:
     REQ-ORCH-04-1/2: Reads cli_personas_enabled from system_state.
     REQ-SCHED-07-3: Checks watcher heartbeat before choosing CLI path.
     SPEC-TRADING-052 REQ-052-A1b: 워처 stale 시 degraded로 마킹(직접경로 사각지대 해소).
+    SPEC-TRADING-053 REQ-053-D4: strict ON이면 워처 stale에도 False를 반환하지 않음(보조 방어).
+      디스패처를 call_persona_via_cli로 라우팅하여 거기서 should_defer_paid_call이 차단.
     """
     try:
         from trading.db.session import get_system_state
@@ -962,6 +1048,14 @@ def is_cli_mode_active() -> bool:
         # REQ-SCHED-07-5: Check watcher heartbeat staleness
         from trading.personas.cli_bridge import is_watcher_alive
         if not is_watcher_alive():
+            # REQ-053-D4 (보조 방어): strict ON이면 워처 stale에도 False로 빠지지 않음.
+            # call_persona_via_cli로 라우팅 → 거기서 should_defer_paid_call이 유료 호출 차단.
+            if state.get("strict_cost_zero_mode", False):
+                LOG.warning(
+                    "strict_cost_zero_mode=True: 워처 stale이나 False 차단 — "
+                    "call_persona_via_cli로 라우팅(should_defer가 거기서 차단). REQ-053-D4"
+                )
+                return True
             LOG.warning("CLI mode enabled but watcher heartbeat stale — using API fallback")
             # SPEC-TRADING-052 REQ-052-A1b: 워처 stale → degraded 마킹(직접경로 사각지대)
             # in-process 카운터 미사용(직접경로엔 _record_cli_failure 없음) — 영속 latch 직접 기록

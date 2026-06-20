@@ -433,6 +433,12 @@ def _llm_text(data: dict[str, Any]) -> str:
     if s.anthropic.api_key is None:
         raise RuntimeError("ANTHROPIC_API_KEY missing")
     client = Anthropic(api_key=s.anthropic.api_key.get_secret_value())
+    # REQ-053-F1: messages.create 직전 PAID_CALL 계측 (5지점 #5, daily_report _llm_text)
+    from trading.personas.base import _log_paid_call
+    _log_paid_call(
+        persona="daily_report", path="llm_text_sonnet",
+        model="claude-sonnet-4-6", reason="daily_summary",
+    )
     msg = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1500,

@@ -232,6 +232,11 @@ def _call_haiku(batch: list[dict]) -> tuple[list[dict] | None, int, int]:
 
     prompt = build_analysis_prompt(batch)
 
+    # REQ-053-F1: messages.create 직전 PAID_CALL 계측 (5지점 #1, analyzer haiku)
+    from trading.personas.base import _log_paid_call
+    _log_paid_call(
+        persona="news_analyzer", path="analyzer_haiku", model=HAIKU_MODEL, reason="news_analysis"
+    )
     response = client.messages.create(
         model=HAIKU_MODEL,
         max_tokens=4096,  # Increased from 2048: prevent truncation with complex schema
