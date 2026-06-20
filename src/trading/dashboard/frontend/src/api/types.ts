@@ -50,12 +50,18 @@ export interface Order {
 }
 
 // ── /api/holdings ──────────────────────────────────────────────────────────
+// CRITICAL: eval_price/eval_amount/unrealized_pnl/pnl_pct 는 KIS 잔고 스냅샷에 없는 경우 null
+// null 은 브로커-원장 드리프트를 의미 — 절대 fabricate 하지 말 것, "—" 로 표시
 export interface Holding {
   ticker: string
   ticker_name: string  // REQ-054-F2: 한국어 종목명 (미등록 시 코드와 동일)
   qty_net: number
   avg_fill_price: number | null
   total_cost: number | null
+  eval_price: number | null      // KIS 잔고 스냅샷 현재가 (없으면 null)
+  eval_amount: number | null     // 평가금액 = eval_price * qty_net (없으면 null)
+  unrealized_pnl: number | null  // 미실현 손익 (없으면 null)
+  pnl_pct: number | null         // 손익률 % (예: 6.2 = 6.2%) — 백엔드에서 이미 % 단위
 }
 
 // ── /api/equity ────────────────────────────────────────────────────────────
@@ -138,10 +144,12 @@ export interface PostmortemResult {
 }
 
 // ── /api/confidence-analysis ───────────────────────────────────────────────
+// CRITICAL: 백엔드 _bucket_dict 는 "label" 필드를 반환함 (bucket 아님)
+// queries.py _bucket_dict: { "label": b.label, "n": b.n, "win_rate": b.win_rate, "avg_return_pct": b.avg_return_pct }
 export interface ConfidenceBucket {
-  bucket: string
-  count: number
-  avg_return: number | null
+  label: string          // 버킷 레이블 (예: "HIGH", "MED-HIGH" 등) — 백엔드 필드명 "label"
+  n: number              // 백엔드 필드명 "n" (count 아님)
+  avg_return_pct: number | null  // 백엔드 필드명 "avg_return_pct" (avg_return 아님)
   win_rate: number | null
 }
 
@@ -150,6 +158,8 @@ export interface ConfidenceAnalysis {
   pearson: number | null
   spearman: number | null
   days: number
+  n_with_conf?: number
+  none_count?: number
 }
 
 // ── /api/pipeline ──────────────────────────────────────────────────────────

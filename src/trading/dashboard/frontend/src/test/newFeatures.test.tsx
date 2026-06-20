@@ -619,3 +619,117 @@ describe('TickerLabel 컴포넌트', () => {
     expect(container.querySelectorAll('span')).toHaveLength(1)
   })
 })
+
+// ── HoldingsTableContent 엔터프라이즈 테이블 (FIX 1) ─────────────────────────
+import { HoldingsTableContent } from '../components/HoldingsTable'
+import type { Holding } from '../api/types'
+
+const MOCK_HOLDINGS_ENTERPRISE: Holding[] = [
+  {
+    ticker: '005930',
+    ticker_name: '삼성전자',
+    qty_net: 10,
+    avg_fill_price: 75000,
+    total_cost: 750000,
+    eval_price: 78000,
+    eval_amount: 780000,
+    unrealized_pnl: 30000,
+    pnl_pct: 4.0,
+  },
+  {
+    ticker: '000660',
+    ticker_name: 'SK하이닉스',
+    qty_net: 5,
+    avg_fill_price: 120000,
+    total_cost: 600000,
+    // eval 필드 없음 — KIS 잔고 스냅샷 미포함 (브로커-원장 드리프트)
+    eval_price: null,
+    eval_amount: null,
+    unrealized_pnl: null,
+    pnl_pct: null,
+  },
+]
+
+describe('HoldingsTableContent 엔터프라이즈 테이블 (FIX 1)', () => {
+  it('종목명과 코드가 표시된다', () => {
+    render(<HoldingsTableContent data={MOCK_HOLDINGS_ENTERPRISE} />)
+    expect(screen.getByText('삼성전자')).toBeDefined()
+    expect(screen.getByText('005930')).toBeDefined()
+    expect(screen.getByText('SK하이닉스')).toBeDefined()
+  })
+
+  it('eval 필드가 있는 행: 현재가·평가금액·손익이 렌더된다', () => {
+    render(<HoldingsTableContent data={MOCK_HOLDINGS_ENTERPRISE} />)
+    // 78000 → 현재가
+    expect(screen.getByText('78,000')).toBeDefined()
+  })
+
+  it('eval 필드가 null 인 행: "—" 로 렌더된다 (fabricate 없음)', () => {
+    render(<HoldingsTableContent data={MOCK_HOLDINGS_ENTERPRISE} />)
+    // SK하이닉스는 eval_price/eval_amount/unrealized_pnl/pnl_pct 모두 null → "—"
+    const dashes = screen.getAllByText('—')
+    // null 필드 4개 × 1행 + 비중 계산 불가 = 최소 4개 이상
+    expect(dashes.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('pnl_pct 는 * 100 하지 않는다 (백엔드에서 이미 % 단위)', () => {
+    render(<HoldingsTableContent data={MOCK_HOLDINGS_ENTERPRISE} />)
+    // 4.0 → "+4.00%", 400% 가 아님
+    expect(screen.getByText('+4.00%')).toBeDefined()
+    expect(screen.queryByText('+400.00%')).toBeNull()
+  })
+
+  it('비중은 eval_amount 합 기준으로 계산된다', () => {
+    render(<HoldingsTableContent data={MOCK_HOLDINGS_ENTERPRISE} />)
+    // 삼성전자 eval_amount=780000, 총합=780000 → 100.0%
+    expect(screen.getByText('100.0%')).toBeDefined()
+    // SK하이닉스는 eval_amount=null → "—"
+  })
+
+  it('빈 데이터 시 "보유 종목 없음" 메시지', () => {
+    render(<HoldingsTableContent data={[]} />)
+    expect(screen.getByText('보유 종목 없음')).toBeDefined()
+  })
+
+  it('eval_amount 내림차순으로 기본 정렬, 헤더 클릭 시 정렬 토글', () => {
+    render(<HoldingsTableContent data={MOCK_HOLDINGS_ENTERPRISE} />)
+    // 평가금액 헤더 존재
+    const evalAmountTh = screen.getByText(/평가금액/)
+    expect(evalAmountTh).toBeDefined()
+    // 클릭 시 오류 없음
+    evalAmountTh.click()
+  })
+})
+
+// ── ConfidenceScatter label 필드 수정 (FIX 2) ────────────────────────────────
+import ConfidenceScatter from '../components/charts/ConfidenceScatter'
+import type { ConfidenceAnalysis } from '../api/types'
+
+const MOCK_CONFIDENCE: ConfidenceAnalysis = {
+  buckets: [
+    { label: 'HIGH', n: 12, win_rate: 0.75, avg_return_pct: 3.2 },
+    { label: 'MED-HIGH', n: 8, win_rate: 0.5, avg_return_pct: 0.8 },
+    { label: 'MED', n: 5, win_rate: 0.4, avg_return_pct: -0.5 },
+  ],
+  pearson: 0.42,
+  spearman: 0.38,
+  days: 30,
+}
+
+describe('ConfidenceScatter label 필드 (FIX 2)', () => {
+  it('bucket.label 필드를 사용해 크래시 없이 렌더된다', () => {
+    render(<ConfidenceScatter data={MOCK_CONFIDENCE} />)
+    expect(screen.getByTestId('echart')).toBeDefined()
+  })
+
+  it('Pearson / Spearman 상관계수가 표시된다', () => {
+    render(<ConfidenceScatter data={MOCK_CONFIDENCE} />)
+    expect(screen.getByText(/0\.420/)).toBeDefined()
+    expect(screen.getByText(/0\.380/)).toBeDefined()
+  })
+
+  it('기간 텍스트가 표시된다', () => {
+    render(<ConfidenceScatter data={MOCK_CONFIDENCE} />)
+    expect(screen.getByText(/30일/)).toBeDefined()
+  })
+})

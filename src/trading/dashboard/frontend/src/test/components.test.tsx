@@ -237,7 +237,18 @@ const MOCK_TRENDS: TrendPoint[] = [
   { keyword: '반도체', trend_date: '2026-06-14', mention_count: 15, sentiment_positive: 8, sentiment_neutral: 5, sentiment_negative: 2, sentiment_avg: 0.6 },
 ]
 
-const MOCK_HOLDINGS = [{ ticker: '005930', ticker_name: '삼성전자', qty_net: 10, avg_fill_price: 75000, total_cost: 750000 }]
+// Holding 타입 업데이트: eval_price/eval_amount/unrealized_pnl/pnl_pct nullable 필드 포함
+const MOCK_HOLDINGS = [{
+  ticker: '005930',
+  ticker_name: '삼성전자',
+  qty_net: 10,
+  avg_fill_price: 75000,
+  total_cost: 750000,
+  eval_price: 76000,
+  eval_amount: 760000,
+  unrealized_pnl: 10000,
+  pnl_pct: 1.33,
+}]
 
 describe('NewsView', () => {
   beforeEach(() => {

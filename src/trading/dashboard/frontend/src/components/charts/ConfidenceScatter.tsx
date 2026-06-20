@@ -9,9 +9,10 @@ interface Props {
 
 export default function ConfidenceScatter({ data }: Props) {
   const buckets = data.buckets
-  const labels = buckets.map((b) => b.bucket)
+  // FIX: 백엔드 필드명은 "label" (bucket 아님), "n" (count 아님)
+  const labels = buckets.map((b) => b.label)
   const winRates = buckets.map((b) => b.win_rate != null ? +(b.win_rate * 100).toFixed(1) : null)
-  const counts = buckets.map((b) => b.count)
+  const counts = buckets.map((b) => b.n)
 
   const option = {
     ...echartsBaseOpts,
