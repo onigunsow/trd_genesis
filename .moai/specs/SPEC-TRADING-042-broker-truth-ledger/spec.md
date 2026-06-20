@@ -139,3 +139,40 @@ related_specs:
 | REQ-042-C1~C3 | C in-flight 락 | watchdog poll/kis_sell, position_action_markers | AC-3 |
 | REQ-042-D1~D3 | D 실현 P&L | edge/roundtrips, daily_equity_snapshot(mig 026), SPEC-041 자산 정합 | AC-4 |
 | 공통 | live 안전·정직성 | live_unlocked 게이트, audit_log | AC-1~5 공통 |
+
+---
+
+## REMEDIATION (2026-06-21) — 구현 후 독립 감사 + 잔존 결함
+
+**상태 정정: 본 SPEC은 이미 구현·병합됨**(commit b123d8f, SPEC-045가 A모듈 live seam 확장 8161ff2). 모듈 A/B/C/D 코드 실재:
+`kis/broker_truth.py`·`order_resolver.py`·`sell_lock.py`·`edge/realized_pnl.py` + 배선(orchestrator.py:1037-1083, position_watchdog.py:485-512, scheduler/runner.py, cli.py, smoke_gate.py). 따라서 잔여 작업은 신규 구현이 아니라 **remediation**이다.
+
+### plan-auditor 감사 (2026-06-21, 점수 0.62 FAIL) — 잔존 결함
+- **D1 [CRITICAL]**: 유령 `synthetic=true filled` **매수** 주문을 4모듈 누구도 교정 안 함(order.py:154-166 `_synthetic_fill` 생성, broker_truth `clamp_sell_to_confirmed`는 매도 게이트만, order_resolver는 `submitted`만 처리). positions는 reconcile되나 orders 순매수 집계는 드리프트 잔존(086790 13 filled vs 10 held; 000270/071050/064350 net>0 0held). **라이브 DB 6/20~21 실측 확인.**
+- **D2 [CRITICAL]**: AC-5("positions=KIS divergence 0")가 positions만 봐서 **orders 드리프트 미감지**. → AC-5에 "fetch_holdings(orders-agg) == positions 보유" 추가 필요.
+- **D3 [CRITICAL/자본보존]**: `resolve_stuck_orders`가 scheduler/runner.py에 **미등록**(CLI/smoke만). submitted 매도 락(sell_lock.py:77-89)이 resolver 실행 전엔 자가해소 안 됨 → 진짜 손절 영구 차단(REQ-042-C2 위반). → 세션 중 5분 주기 작업 등록(paper-first).
+- **D5 [MAJOR]**: 라이브 체결조회 TR_ID(broker_truth.py:249-255 `TTTC8001R`/`CTSC9115R` = `[확인 필요]`) **미검증** → 운영자 실계좌 검증 전 live 체결확인 미작동(실패는 안전: 위조 없음, expired 처리).
+- **D6 [MAJOR]**: realized P&L이 roundtrips.py:226-234 `orders`(synthetic 필터 없음) 산출 → 유령 lot이 FIFO 원가순서 오염. D1에 종속.
+- **D4 [해소]**: mig **031 라이브 적용 확인**(orders CHECK에 expired 포함). SPEC 본문 "최신 029→031 예약"은 stale(현재 적용 037). 신규 마이그레이션 불필요.
+- **D7 [MINOR]**: watchdog는 canonical clamp 대신 `_confirm_qty`+min 중복 가드(phantom-safe 확인, 일관성만 위험).
+
+### 정리 순서 (위험 낮은 것부터)
+1. **[완료 2026-06-21]** 대시보드 `fetch_holdings` → orders집계에서 **positions(truth)** 로 전환(commit ddf29db, 읽기전용·무위험). 유령 표시 제거.
+2. **[완료]** mig 031 적용 확인.
+3. **D3** resolver 5분 주기 등록(scheduler/runner.py), paper-first, `STUCK_ORDER_EXPIRED` audit 관측.
+4. **D1/D6** 유령 매수 수렴: KIS-확인 보유 초과 synthetic filled 매수를 **append-only 교정 lot**으로 수렴(과거 filled 행 절대 UPDATE/DELETE 금지 — edge/scorecard 파생물 보호). paper-only 게이트.
+5. **D2** AC-5에 orders-agg==positions 단언 추가 후 풀세션 게이트 재실행.
+6. **D5** 운영자 실계좌로 `TTTC8001R` 검증 후 live confirm_fills 승격(M5 게이트).
+
+### Q-1~Q-5 해소 (감사 권고)
+- Q-1 reconcile cadence: TTL 45s(broker_truth.py:68) pre-sell+post-submit. 유지(rate budget 내).
+- Q-2 합성: 좁은 paper fallback 유지(KIS paper 당일 매도 미보고) + D1 수렴 추가.
+- Q-3 resolve window 900s; **cancel TR는 미구현(expire-only)이 go-live 안전 선택**.
+- Q-4 in-flight 락 300s 쿨다운 — **D3 수정 후에만** 안전(미수정 시 submitted leg 영구잔존).
+- Q-5 realized_pnl 증분 cumulative(idempotent) — D1/D6 정리 후.
+
+### 라이브 안전 판정
+**현 상태 live 전환 불가.** 신규 매도 가드는 견고(read-only clamp, live 합성 no-op, live_unlocked 불변, confirm_fills 위조 없음). 단 3블로커: D3(resolver 미스케줄→손절 차단), D1+D2(드리프트 잔존·게이트 맹점), D5(live TR 미검증). **D3 수정 + D1/D2 닫고 클린 풀-paper세션 통과 전엔 AC-5 실통과 아님.**
+
+### 데이터 정리 안전 [HARD]
+`orders`의 `filled` synthetic 행을 **절대 in-place 변경/삭제 금지** — edge roundtrips·realized_pnl·scorecard가 전부 파생. 교정은 **append-only 보정 lot**으로만. 기존 `cleanup_stuck_orders`는 `submitted`만 건드려 안전(그래서 드리프트는 못 고침).
