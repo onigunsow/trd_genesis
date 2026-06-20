@@ -21,6 +21,7 @@ import psycopg
 from typing import Any
 
 from trading.dashboard.db import ro_connection
+from trading.kis.kis_ticker_info import lookup_names_from_db, resolve_ticker_name
 
 LOG = logging.getLogger(__name__)
 
@@ -155,7 +156,17 @@ def fetch_recent_decisions(*, limit: int = 50) -> list[dict[str, Any]]:
         cur.execute(sql, (limit,))
         rows = cur.fetchall()
 
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+
+    # ticker_name 보강: ticker_metadata 에서 일괄 조회 (KIS/pykrx 호출 없음)
+    tickers = [r["ticker"] for r in result if r.get("ticker")]
+    db_names = lookup_names_from_db(tickers)
+    for row in result:
+        row["ticker_name"] = resolve_ticker_name(
+            row.get("ticker") or "", db_names=db_names
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +197,15 @@ def fetch_recent_orders(*, limit: int = 50) -> list[dict[str, Any]]:
         for f in _SENSITIVE_FIELDS:
             row.pop(f, None)
         result.append(row)
+
+    # ticker_name 보강: ticker_metadata 에서 일괄 조회 (KIS/pykrx 호출 없음)
+    tickers = [r["ticker"] for r in result if r.get("ticker")]
+    db_names = lookup_names_from_db(tickers)
+    for row in result:
+        row["ticker_name"] = resolve_ticker_name(
+            row.get("ticker") or "", db_names=db_names
+        )
+
     return result
 
 
@@ -219,7 +239,17 @@ def fetch_holdings() -> list[dict[str, Any]]:
         cur.execute(sql)
         rows = cur.fetchall()
 
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+
+    # ticker_name 보강: ticker_metadata 에서 일괄 조회 (KIS/pykrx 호출 없음)
+    tickers = [r["ticker"] for r in result if r.get("ticker")]
+    db_names = lookup_names_from_db(tickers)
+    for row in result:
+        row["ticker_name"] = resolve_ticker_name(
+            row.get("ticker") or "", db_names=db_names
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -999,10 +1029,15 @@ def fetch_roundtrips(
     if limit is not None:
         rts = rts[:limit]
 
+    # ticker_name 보강: ticker_metadata 에서 일괄 조회 (KIS/pykrx 호출 없음)
+    tickers = [rt.ticker for rt in rts]
+    db_names = lookup_names_from_db(tickers)
+
     result = []
     for rt in rts:
         result.append({
             "ticker": rt.ticker,
+            "ticker_name": resolve_ticker_name(rt.ticker, db_names=db_names),
             "entry_date": rt.entry_date.isoformat(),
             "exit_date": rt.exit_date.isoformat(),
             "qty": rt.qty,
@@ -1101,6 +1136,10 @@ def fetch_portfolio() -> dict[str, Any]:
     nav = _get_latest_equity_nav()
     snapshot_date: str | None = None
 
+    # ticker_name 보강: ticker_metadata 에서 일괄 조회 (KIS/pykrx 호출 없음)
+    all_tickers = [dict(r)["ticker"] for r in rows if dict(r).get("ticker")]
+    db_names = lookup_names_from_db(all_tickers)
+
     holdings = []
     total_stock_eval = 0.0
     for row in rows:
@@ -1110,8 +1149,10 @@ def fetch_portfolio() -> dict[str, Any]:
         if snapshot_date is None and row.get("trading_day"):
             td = row["trading_day"]
             snapshot_date = td.isoformat() if hasattr(td, "isoformat") else str(td)
+        ticker = row["ticker"]
         holdings.append({
-            "ticker": row["ticker"],
+            "ticker": ticker,
+            "ticker_name": resolve_ticker_name(ticker, db_names=db_names),
             "qty": int(row.get("qty") or 0),
             "avg_cost": float(row.get("avg_cost") or 0),
             "eval_price": float(row.get("eval_price") or 0),

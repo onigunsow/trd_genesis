@@ -6,6 +6,7 @@ import { useState, useCallback, useMemo } from 'react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { RoundTrip } from '../api/types'
+import { TickerLabel } from '../utils/ticker'
 
 // 포맷 헬퍼
 const fmtKrw = (v: number): string => {
@@ -29,11 +30,12 @@ interface FilterState {
 
 export function filterRoundtrips(rows: RoundTrip[], filter: FilterState): RoundTrip[] {
   return rows.filter(r => {
-    // 검색 — ticker, persona, verdict
+    // 검색 — ticker, ticker_name, persona, verdict
     if (filter.search) {
       const q = filter.search.toLowerCase()
       const match =
         r.ticker.toLowerCase().includes(q) ||
+        (r.ticker_name ?? '').toLowerCase().includes(q) ||
         (r.persona ?? '').toLowerCase().includes(q) ||
         (r.verdict ?? '').toLowerCase().includes(q)
       if (!match) return false
@@ -127,7 +129,7 @@ export function RoundtripLedgerContent({ data, isLoading, onExport }: RoundtripL
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
         <input
           type="text"
-          placeholder="종목/페르소나/verdict 검색..."
+          placeholder="종목명·코드/페르소나/verdict 검색..."
           value={filter.search}
           onChange={e => setFilter(f => ({ ...f, search: e.target.value }))}
           style={{
@@ -239,7 +241,7 @@ export function RoundtripLedgerContent({ data, isLoading, onExport }: RoundtripL
                   }}
                 >
                   <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600, color: 'var(--accent-blue)' }}>
-                    {r.ticker}
+                    <TickerLabel ticker={r.ticker} tickerName={r.ticker_name} />
                   </td>
                   <td style={{ ...tdStyle, textAlign: 'left', fontSize: '0.72rem' }}>{r.entry_date}</td>
                   <td style={{ ...tdStyle, textAlign: 'left', fontSize: '0.72rem' }}>{r.exit_date}</td>

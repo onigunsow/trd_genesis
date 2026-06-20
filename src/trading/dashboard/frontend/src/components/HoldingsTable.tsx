@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import { theme } from '../theme'
+import { TickerLabel } from '../utils/ticker'
 
 const s = {
   title: { fontSize: '0.7rem', color: '#8b949e', textTransform: 'uppercase' as const, letterSpacing: '0.08em', marginBottom: 10, borderBottom: '1px solid #21262d', paddingBottom: 6 },
@@ -41,7 +42,7 @@ export default function HoldingsTable() {
           <tbody>
             {data.map((h) => (
               <tr key={h.ticker}>
-                <td style={s.td}><strong>{h.ticker}</strong></td>
+                <td style={s.td}><strong><TickerLabel ticker={h.ticker} tickerName={h.ticker_name} /></strong></td>
                 <td style={{ ...s.td, textAlign: 'right' }}>{fmt(h.qty_net)}</td>
                 <td style={{ ...s.td, textAlign: 'right' }}>{fmt(h.avg_fill_price)}</td>
                 <td style={{ ...s.td, textAlign: 'right' }}>{fmt(h.total_cost)}</td>

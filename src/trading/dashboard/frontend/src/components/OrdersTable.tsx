@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import { theme } from '../theme'
+import { TickerLabel } from '../utils/ticker'
 
 const PILL: Record<string, { bg: string; color: string }> = {
   filled:    { bg: '#1f4f2e', color: '#3fb950' },
@@ -59,7 +60,7 @@ export default function OrdersTable() {
               return (
                 <tr key={i}>
                   <td style={{ ...s.td, color: '#8b949e' }}>{fmtTs(o.ts)}</td>
-                  <td style={s.td}><strong>{o.ticker}</strong></td>
+                  <td style={s.td}><strong><TickerLabel ticker={o.ticker} tickerName={o.ticker_name} /></strong></td>
                   <td style={{ ...s.td, color: o.side === 'buy' ? '#3fb950' : '#f85149', fontWeight: 600 }}>
                     {o.side?.toUpperCase()}
                   </td>

@@ -6,6 +6,7 @@
 import React from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { vi, describe, it, expect, afterEach } from 'vitest'
+import { formatTicker, TickerLabel } from '../utils/ticker'
 
 // echarts-for-react 모킹 — jsdom 환경에서 Canvas 불가
 vi.mock('echarts-for-react', () => {
@@ -40,6 +41,7 @@ describe('api/client — 신규 엔드포인트 타입 계약 (AC-14)', () => {
     const mock: RoundTrip[] = [
       {
         ticker: '005930',
+        ticker_name: '삼성전자',
         entry_date: '2026-05-01',
         exit_date: '2026-05-10',
         qty: 10,
@@ -62,6 +64,7 @@ describe('api/client — 신규 엔드포인트 타입 계약 (AC-14)', () => {
     expect(result).toHaveLength(1)
     // 필드명 계약 검증
     expect(result[0].ticker).toBe('005930')
+    expect(result[0].ticker_name).toBe('삼성전자')
     expect(result[0].entry_price).toBe(75000)
     expect(result[0].exit_price).toBe(78000)
     expect(result[0].net_pnl).toBe(29400)
@@ -80,6 +83,7 @@ describe('api/client — 신규 엔드포인트 타입 계약 (AC-14)', () => {
     const mock: RoundTrip[] = [
       {
         ticker: '000660',
+        ticker_name: '000660',  // 미등록 종목 → 코드와 동일
         entry_date: '2026-06-01',
         exit_date: '2026-06-05',
         qty: 5,
@@ -109,6 +113,7 @@ describe('api/client — 신규 엔드포인트 타입 계약 (AC-14)', () => {
       holdings: [
         {
           ticker: '005930',
+          ticker_name: '삼성전자',
           qty: 10,
           avg_cost: 75000,
           eval_price: 78000,
@@ -131,6 +136,7 @@ describe('api/client — 신규 엔드포인트 타입 계약 (AC-14)', () => {
     const result = await api.fetchPortfolio()
     expect(result.holdings).toHaveLength(1)
     expect(result.holdings[0].ticker).toBe('005930')
+    expect(result.holdings[0].ticker_name).toBe('삼성전자')
     expect(result.holdings[0].qty).toBe(10)
     expect(result.holdings[0].avg_cost).toBe(75000)
     expect(result.holdings[0].eval_price).toBe(78000)
@@ -154,6 +160,7 @@ describe('api/client — 신규 엔드포인트 타입 계약 (AC-14)', () => {
       holdings: [
         {
           ticker: '999999',
+          ticker_name: '999999',  // 미등록 → 코드와 동일
           qty: 1,
           avg_cost: 10000,
           eval_price: 10000,
@@ -236,6 +243,7 @@ import { filterRoundtrips, sortRoundtrips } from '../components/RoundtripLedger'
 const MOCK_ROUNDTRIPS: RoundTrip[] = [
   {
     ticker: '005930',
+    ticker_name: '삼성전자',
     entry_date: '2026-05-01',
     exit_date: '2026-05-10',
     qty: 10,
@@ -254,6 +262,7 @@ const MOCK_ROUNDTRIPS: RoundTrip[] = [
   },
   {
     ticker: '000660',
+    ticker_name: 'SK하이닉스',
     entry_date: '2026-06-01',
     exit_date: '2026-06-05',
     qty: 5,
@@ -278,10 +287,22 @@ describe('filterRoundtrips (AC-13: 엔터프라이즈 테이블 필터)', () => 
     expect(result).toHaveLength(2)
   })
 
-  it('ticker 검색 — 005930 → 1건', () => {
+  it('ticker 코드 검색 — 005930 → 1건', () => {
     const result = filterRoundtrips(MOCK_ROUNDTRIPS, { search: '005930', startDate: '', endDate: '', winOnly: null })
     expect(result).toHaveLength(1)
     expect(result[0].ticker).toBe('005930')
+  })
+
+  it('ticker_name 한국어 검색 — 삼성전자 → 1건', () => {
+    const result = filterRoundtrips(MOCK_ROUNDTRIPS, { search: '삼성전자', startDate: '', endDate: '', winOnly: null })
+    expect(result).toHaveLength(1)
+    expect(result[0].ticker).toBe('005930')
+  })
+
+  it('ticker_name 한국어 부분 검색 — SK → 1건', () => {
+    const result = filterRoundtrips(MOCK_ROUNDTRIPS, { search: 'SK', startDate: '', endDate: '', winOnly: null })
+    expect(result).toHaveLength(1)
+    expect(result[0].ticker).toBe('000660')
   })
 
   it('persona 검색 — micro → 1건', () => {
@@ -344,8 +365,8 @@ describe('sortRoundtrips (AC-13: 엔터프라이즈 테이블 정렬)', () => {
 
   it('null 값이 있어도 정렬 오류 없음 (null 은 마지막)', () => {
     const withNull: RoundTrip[] = [
-      { ...MOCK_ROUNDTRIPS[0], persona: null },
-      { ...MOCK_ROUNDTRIPS[1], persona: 'macro' },
+      { ...MOCK_ROUNDTRIPS[0], ticker_name: '삼성전자', persona: null },
+      { ...MOCK_ROUNDTRIPS[1], ticker_name: 'SK하이닉스', persona: 'macro' },
     ]
     const result = sortRoundtrips(withNull, 'persona', 'asc')
     expect(result[result.length - 1].persona).toBeNull()
@@ -420,9 +441,9 @@ import { PortfolioViewContent } from '../components/PortfolioView'
 
 const MOCK_PORTFOLIO: PortfolioData = {
   holdings: [
-    { ticker: '005930', qty: 10, avg_cost: 75000, eval_price: 78000, eval_amount: 780000, unrealized_pnl: 30000, pnl_pct: 4.0, weight_pct: 40.0, sector: '반도체' },
-    { ticker: '000660', qty: 5, avg_cost: 120000, eval_price: 118000, eval_amount: 590000, unrealized_pnl: -10000, pnl_pct: -1.67, weight_pct: 30.0, sector: '반도체' },
-    { ticker: '999999', qty: 1, avg_cost: 10000, eval_price: 10000, eval_amount: 10000, unrealized_pnl: 0, pnl_pct: 0, weight_pct: 5.0, sector: '' },
+    { ticker: '005930', ticker_name: '삼성전자', qty: 10, avg_cost: 75000, eval_price: 78000, eval_amount: 780000, unrealized_pnl: 30000, pnl_pct: 4.0, weight_pct: 40.0, sector: '반도체' },
+    { ticker: '000660', ticker_name: 'SK하이닉스', qty: 5, avg_cost: 120000, eval_price: 118000, eval_amount: 590000, unrealized_pnl: -10000, pnl_pct: -1.67, weight_pct: 30.0, sector: '반도체' },
+    { ticker: '999999', ticker_name: '999999', qty: 1, avg_cost: 10000, eval_price: 10000, eval_amount: 10000, unrealized_pnl: 0, pnl_pct: 0, weight_pct: 5.0, sector: '' },
   ],
   nav: 2000000,
   cash_amount: 620000,
@@ -444,8 +465,12 @@ describe('PortfolioViewContent 렌더 (AC-9)', () => {
     expect(screen.getByText('집중도 (Herfindahl)')).toBeDefined()
   })
 
-  it('종목 테이블에 ticker가 표시된다', () => {
+  it('종목 테이블에 ticker_name과 코드가 표시된다', () => {
     render(<PortfolioViewContent data={MOCK_PORTFOLIO} isLoading={false} onExport={() => {}} />)
+    // 한국어 종목명
+    expect(screen.getByText('삼성전자')).toBeDefined()
+    expect(screen.getByText('SK하이닉스')).toBeDefined()
+    // 코드 (보조 텍스트)
     expect(screen.getByText('005930')).toBeDefined()
     expect(screen.getByText('000660')).toBeDefined()
   })
@@ -468,12 +493,20 @@ describe('PortfolioViewContent 렌더 (AC-9)', () => {
     expect(screen.getByText(/포트폴리오 데이터 없음/)).toBeDefined()
   })
 
-  it('종목 검색 필터 동작', () => {
+  it('코드 검색 필터 동작', () => {
     render(<PortfolioViewContent data={MOCK_PORTFOLIO} isLoading={false} onExport={() => {}} />)
-    const searchInput = screen.getByPlaceholderText('종목/섹터 검색...')
+    const searchInput = screen.getByPlaceholderText('종목명·코드/섹터 검색...')
     fireEvent.change(searchInput, { target: { value: '005930' } })
-    // 005930 은 남아있어야 함
     expect(screen.getByText('005930')).toBeDefined()
+  })
+
+  it('한국어 종목명 검색 필터 동작', () => {
+    render(<PortfolioViewContent data={MOCK_PORTFOLIO} isLoading={false} onExport={() => {}} />)
+    const searchInput = screen.getByPlaceholderText('종목명·코드/섹터 검색...')
+    fireEvent.change(searchInput, { target: { value: '삼성전자' } })
+    expect(screen.getByText('삼성전자')).toBeDefined()
+    // SK하이닉스는 필터링되어야 함
+    expect(screen.queryByText('SK하이닉스')).toBeNull()
   })
 
   it('CSV 내보내기 버튼이 있다', () => {
@@ -513,8 +546,11 @@ describe('라이트 테마 토큰 (AC-7, REQ-054-B2)', () => {
 import { RoundtripLedgerContent } from '../components/RoundtripLedger'
 
 describe('RoundtripLedgerContent 렌더 (AC-12)', () => {
-  it('행이 표시된다 — ticker, 페르소나, verdict', () => {
+  it('행이 표시된다 — ticker_name, 코드, 페르소나, verdict', () => {
     render(<RoundtripLedgerContent data={MOCK_ROUNDTRIPS} isLoading={false} onExport={() => {}} />)
+    // 종목명이 표시됨
+    expect(screen.getByText('삼성전자')).toBeDefined()
+    // 코드가 보조 텍스트로 표시됨
     expect(screen.getByText('005930')).toBeDefined()
     expect(screen.getByText('micro')).toBeDefined()
     expect(screen.getByText('TP')).toBeDefined()
@@ -536,5 +572,50 @@ describe('RoundtripLedgerContent 렌더 (AC-12)', () => {
   it('승/패 필터 버튼이 있다', () => {
     render(<RoundtripLedgerContent data={MOCK_ROUNDTRIPS} isLoading={false} onExport={() => {}} />)
     expect(screen.getByRole('button', { name: '전체' })).toBeDefined()
+  })
+})
+
+// ── formatTicker / TickerLabel 단위 테스트 (REQ-054-F2) ──────────────────────
+
+describe('formatTicker 헬퍼', () => {
+  it('이름 ≠ 코드 → "이름 (코드)" 형태', () => {
+    expect(formatTicker('055550', '신한지주')).toBe('신한지주 (055550)')
+  })
+
+  it('이름 = 코드 (미등록) → 코드만', () => {
+    expect(formatTicker('055550', '055550')).toBe('055550')
+  })
+
+  it('ticker_name 이 null → 코드만', () => {
+    expect(formatTicker('055550', null)).toBe('055550')
+  })
+
+  it('ticker_name 이 undefined → 코드만', () => {
+    expect(formatTicker('055550', undefined)).toBe('055550')
+  })
+
+  it('ticker_name 이 빈 문자열 → 코드만', () => {
+    expect(formatTicker('055550', '')).toBe('055550')
+  })
+})
+
+describe('TickerLabel 컴포넌트', () => {
+  it('이름 ≠ 코드 → 이름과 코드를 각각 렌더', () => {
+    render(<TickerLabel ticker="055550" tickerName="신한지주" />)
+    expect(screen.getByText('신한지주')).toBeDefined()
+    expect(screen.getByText('055550')).toBeDefined()
+  })
+
+  it('이름 = 코드 (미등록) → 코드만 단일 span 렌더', () => {
+    const { container } = render(<TickerLabel ticker="055550" tickerName="055550" />)
+    expect(screen.getByText('055550')).toBeDefined()
+    // span 이 하나 (column flex 없이)
+    expect(container.querySelectorAll('span')).toHaveLength(1)
+  })
+
+  it('ticker_name null → 코드만 단일 span 렌더', () => {
+    const { container } = render(<TickerLabel ticker="055550" tickerName={null} />)
+    expect(screen.getByText('055550')).toBeDefined()
+    expect(container.querySelectorAll('span')).toHaveLength(1)
   })
 })

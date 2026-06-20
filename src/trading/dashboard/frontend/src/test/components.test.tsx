@@ -49,6 +49,7 @@ const MOCK_DECISIONS: Decision[] = [
     persona_name: 'micro',
     cycle_kind: 'pre_market',
     ticker: '005930',
+    ticker_name: '삼성전자',
     side: 'buy',
     qty: 10,
     confidence: 0.72,
@@ -67,6 +68,7 @@ const MOCK_DECISIONS: Decision[] = [
     persona_name: 'micro',
     cycle_kind: 'pre_market',
     ticker: '000660',
+    ticker_name: 'SK하이닉스',
     side: 'sell',
     qty: 5,
     confidence: 0.55,
@@ -235,7 +237,7 @@ const MOCK_TRENDS: TrendPoint[] = [
   { keyword: '반도체', trend_date: '2026-06-14', mention_count: 15, sentiment_positive: 8, sentiment_neutral: 5, sentiment_negative: 2, sentiment_avg: 0.6 },
 ]
 
-const MOCK_HOLDINGS = [{ ticker: '005930', qty_net: 10, avg_fill_price: 75000, total_cost: 750000 }]
+const MOCK_HOLDINGS = [{ ticker: '005930', ticker_name: '삼성전자', qty_net: 10, avg_fill_price: 75000, total_cost: 750000 }]
 
 describe('NewsView', () => {
   beforeEach(() => {

@@ -3,6 +3,7 @@ import { useState, useCallback } from 'react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { SystemStatus, Decision } from '../api/types'
+import { formatTicker } from '../utils/ticker'
 
 interface Props {
   status: SystemStatus | null
@@ -272,7 +273,7 @@ export default function PipelineView({ status }: Props) {
                   <span style={d.side === 'buy' ? s.sideBuy : s.sideSell}>
                     {d.side?.toUpperCase() ?? '—'}
                   </span>
-                  {' '}<strong>{d.ticker ?? '—'}</strong>
+                  {' '}<strong>{d.ticker ? formatTicker(d.ticker, d.ticker_name) : '—'}</strong>
                   {d.qty != null && <span style={{ color: '#8b949e' }}> {d.qty}주</span>}
                   {d.confidence != null && (
                     <span style={{ color: '#6e7681', marginLeft: 8 }}>

@@ -21,6 +21,7 @@ export interface Decision {
   persona_name: string
   cycle_kind: string
   ticker: string | null
+  ticker_name: string | null  // REQ-054-F2: 한국어 종목명 (미등록 시 코드와 동일)
   side: 'buy' | 'sell' | null
   qty: number | null
   confidence: number | null
@@ -41,6 +42,7 @@ export interface Decision {
 export interface Order {
   ts: string
   ticker: string
+  ticker_name: string  // REQ-054-F2: 한국어 종목명 (미등록 시 코드와 동일)
   side: 'buy' | 'sell'
   qty: number
   fill_price: number | null
@@ -50,6 +52,7 @@ export interface Order {
 // ── /api/holdings ──────────────────────────────────────────────────────────
 export interface Holding {
   ticker: string
+  ticker_name: string  // REQ-054-F2: 한국어 종목명 (미등록 시 코드와 동일)
   qty_net: number
   avg_fill_price: number | null
   total_cost: number | null
@@ -174,6 +177,7 @@ export interface PipelineData {
 // CRITICAL: 필드명이 백엔드와 정확히 일치해야 함
 export interface RoundTrip {
   ticker: string
+  ticker_name: string  // REQ-054-F2: 한국어 종목명 (미등록 시 코드와 동일)
   entry_date: string
   exit_date: string
   qty: number
@@ -196,6 +200,7 @@ export interface RoundTrip {
 // CRITICAL: NUMERIC→number 변환은 db.py 로더 보장
 export interface PortfolioHolding {
   ticker: string
+  ticker_name: string  // REQ-054-F2: 한국어 종목명 (미등록 시 코드와 동일)
   qty: number
   avg_cost: number
   eval_price: number

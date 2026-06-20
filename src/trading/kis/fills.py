@@ -326,6 +326,46 @@ def _upsert_eval_snapshot(holdings: list[dict[str, Any]]) -> None:
         LOG.error("SPEC-054 _upsert_eval_snapshot 실패 (무시): %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-054 follow-up: 보유 종목명 ticker_metadata 업킵
+# ---------------------------------------------------------------------------
+
+def _upsert_held_ticker_names(holdings: list[dict[str, Any]]) -> None:
+    """KIS balance prdt_name(종목명)을 ticker_metadata.name 에 upsert.
+
+    account.balance() holdings 에는 prdt_name 이 포함되어 있다(line 62).
+    대시보드가 종목명을 즉시 표시할 수 있도록 reconcile 마다 name 을 갱신한다.
+    오류는 이 함수 내에서 흡수 — 트레이딩 흐름 불영향.
+    대시보드 읽기 경로(lookup_names_from_db)는 ticker_metadata 만 읽는다.
+
+    Args:
+        holdings: account.balance() 반환값의 'holdings' 리스트.
+                  각 항목에 ticker(pdno)·name(prdt_name) 이 포함된다.
+    """
+    _SQL = """
+        INSERT INTO ticker_metadata (ticker, name, sector, industry, updated_at)
+        VALUES (%s, %s, '미분류', '', NOW())
+        ON CONFLICT (ticker) DO UPDATE SET
+            name       = CASE WHEN EXCLUDED.name != '' THEN EXCLUDED.name
+                              ELSE ticker_metadata.name END,
+            updated_at = NOW()
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            count = 0
+            for h in holdings:
+                ticker = h.get("ticker", "")
+                name = h.get("name", "")
+                if not ticker or not name:
+                    continue
+                cur.execute(_SQL, (ticker, name))
+                count += 1
+        LOG.info("SPEC-054 held ticker_metadata.name upsert: %d 종목", count)
+    except Exception as exc:
+        # 종목명 저장 실패는 트레이딩을 막지 않는다 (격리).
+        LOG.error("SPEC-054 _upsert_held_ticker_names 실패 (무시): %s", exc)
+
+
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -392,6 +432,12 @@ def reconcile_from_balance(
     # 쓰기 실패는 격리(except 블록)되어 트레이딩 흐름에 영향을 주지 않는다.
     if not dry_run and holdings:
         _upsert_eval_snapshot(holdings)
+
+    # SPEC-TRADING-054 follow-up: 보유 종목명을 KIS balance prdt_name 으로
+    # ticker_metadata.name 에 upsert (held 종목만, 즉각적, 오류 격리).
+    # 결정/사이징/리스크 로직에 영향 없음.
+    if not dry_run and holdings:
+        _upsert_held_ticker_names(holdings)
 
     LOG.info(
         "SPEC-029 reconcile queried=%d transitioned=%d positions_synced=%d "

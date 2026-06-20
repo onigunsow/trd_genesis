@@ -8,6 +8,7 @@ import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { PortfolioData, PortfolioHolding } from '../api/types'
 import { theme, echartsBaseOpts } from '../theme'
+import { TickerLabel } from '../utils/ticker'
 
 // 원화 포맷 헬퍼
 const fmtKrw = (v: number): string => {
@@ -37,8 +38,11 @@ function HoldingsTableEnterprize({ holdings }: HoldingsTableProps) {
   }
 
   const filtered = holdings
-    .filter(h => h.ticker.toLowerCase().includes(search.toLowerCase()) ||
-                 h.sector.toLowerCase().includes(search.toLowerCase()))
+    .filter(h =>
+      h.ticker.toLowerCase().includes(search.toLowerCase()) ||
+      (h.ticker_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
+      h.sector.toLowerCase().includes(search.toLowerCase())
+    )
     .sort((a, b) => {
       const av = a[sortKey] as number | string
       const bv = b[sortKey] as number | string
@@ -75,7 +79,7 @@ function HoldingsTableEnterprize({ holdings }: HoldingsTableProps) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <input
           type="text"
-          placeholder="종목/섹터 검색..."
+          placeholder="종목명·코드/섹터 검색..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           style={{
@@ -130,7 +134,7 @@ function HoldingsTableEnterprize({ holdings }: HoldingsTableProps) {
               filtered.map(h => (
                 <tr key={h.ticker} style={{ background: 'var(--bg-card)' }}>
                   <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600, color: 'var(--accent-blue)' }}>
-                    {h.ticker}
+                    <TickerLabel ticker={h.ticker} tickerName={h.ticker_name} />
                   </td>
                   <td style={{ ...tdStyle, textAlign: 'left', color: 'var(--text-secondary)' }}>
                     {h.sector || '미분류'}
