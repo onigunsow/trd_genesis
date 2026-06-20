@@ -219,42 +219,30 @@ def fetch_holdings() -> list[dict[str, Any]]:
 
     ticker 별 qty_net > 0 인 행만 반환.
     """
-    # SPEC-054: 최신 position_eval_snapshot 을 LEFT JOIN 해
-    # 현재가/평가금/평가손익/손익% 를 함께 반환(엔터프라이즈 보유 현황).
-    # 스냅샷 미적재 종목은 NULL → 프론트에서 '-' 폴백.
+    # SPEC-042 D1 교정: 보유 진실원은 KIS-동기화된 `positions`(broker-truth 캐시)다.
+    # 과거엔 orders 순매수 집계를 썼으나, 합성(synthetic) 매수가 orders 를 부풀려
+    # 유령 보유를 노출시켰다(086790 13 vs 10 등). positions 는 reconcile_from_balance
+    # 로 KIS 잔고와 정합되므로 이것을 단일 소스로 삼는다. 평가 데이터는 최신
+    # position_eval_snapshot LEFT JOIN. avg_cost·qty 는 positions 가 권위.
     sql = """
-        WITH agg AS (
-            SELECT
-                ticker,
-                SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) AS qty_net,
-                ROUND(
-                    SUM(CASE WHEN side = 'buy' THEN fill_price::BIGINT * qty ELSE 0 END)::NUMERIC
-                    / NULLIF(SUM(CASE WHEN side = 'buy' THEN qty ELSE 0 END), 0)
-                ) AS avg_fill_price,
-                SUM(CASE WHEN side = 'buy' THEN fill_price::BIGINT * qty ELSE 0 END) AS total_cost
-            FROM orders
-            WHERE status = 'filled'
-              AND fill_price IS NOT NULL
-            GROUP BY ticker
-            HAVING SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) > 0
-        ),
-        latest AS (
+        WITH latest AS (
             SELECT ticker, eval_price, eval_amount, unrealized_pnl, pnl_pct
             FROM position_eval_snapshot
             WHERE trading_day = (SELECT MAX(trading_day) FROM position_eval_snapshot)
         )
         SELECT
-            a.ticker,
-            a.qty_net,
-            a.avg_fill_price,
-            a.total_cost,
+            p.ticker,
+            p.qty                       AS qty_net,
+            p.avg_cost                  AS avg_fill_price,
+            (p.qty * p.avg_cost)        AS total_cost,
             l.eval_price,
             l.eval_amount,
             l.unrealized_pnl,
             l.pnl_pct
-        FROM agg a
-        LEFT JOIN latest l ON l.ticker = a.ticker
-        ORDER BY a.ticker
+        FROM positions p
+        LEFT JOIN latest l ON l.ticker = p.ticker
+        WHERE p.qty > 0
+        ORDER BY p.ticker
     """
     with ro_connection() as conn, conn.cursor() as cur:
         cur.execute(sql)
