@@ -8,7 +8,7 @@ import KeywordTrends from './charts/KeywordTrends'
 
 const s = {
   grid: { display: 'grid', gap: 20 },
-  sectionTitle: { fontSize: '0.7rem', color: '#8b949e', textTransform: 'uppercase' as const, letterSpacing: '0.08em', marginBottom: 10, borderBottom: '1px solid #21262d', paddingBottom: 6 },
+  sectionTitle: { fontSize: '0.7rem', color: theme.textSecondary, textTransform: 'uppercase' as const, letterSpacing: '0.08em', marginBottom: 10, borderBottom: `1px solid ${theme.border}`, paddingBottom: 6 },
   filterRow: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' as const },
   filterBtn: (active: boolean) => ({
     padding: '4px 12px',
@@ -21,7 +21,7 @@ const s = {
     fontFamily: theme.fontSans,
   }),
   clusterCard: (relevant: boolean) => ({
-    background: relevant ? '#1a2040' : theme.bgPanel,
+    background: relevant ? '#f0f6ff' : theme.bgPanel,
     border: `1px solid ${relevant ? theme.accentBlue + '55' : theme.borderLight}`,
     borderRadius: 8,
     padding: '12px 14px',
@@ -34,17 +34,18 @@ const s = {
     padding: '1px 7px',
     borderRadius: 10,
     fontSize: '0.68rem',
-    background: s === 'positive' ? '#1f4f2e' : s === 'negative' ? '#3d1f1f' : '#21262d',
-    color: s === 'positive' ? '#3fb950' : s === 'negative' ? '#f85149' : '#8b949e',
+    background: s === 'positive' ? '#e6f4ea' : s === 'negative' ? '#ffeef0' : theme.bgHover,
+    color: s === 'positive' ? theme.accentGreen : s === 'negative' ? theme.accentRed : theme.textSecondary,
+    border: `1px solid ${s === 'positive' ? theme.accentGreen + '44' : s === 'negative' ? theme.accentRed + '44' : theme.borderLight}`,
   }),
   tickerBadge: (linked: boolean) => ({
     display: 'inline-block',
     padding: '1px 7px',
     borderRadius: 10,
     fontSize: '0.68rem',
-    background: linked ? theme.accentBlue + '33' : '#21262d',
-    color: linked ? theme.accentBlue : '#8b949e',
-    border: linked ? `1px solid ${theme.accentBlue}55` : 'none',
+    background: linked ? theme.accentBlue + '18' : theme.bgHover,
+    color: linked ? theme.accentBlue : theme.textSecondary,
+    border: linked ? `1px solid ${theme.accentBlue}55` : `1px solid ${theme.borderLight}`,
     fontFamily: theme.fontMono,
     fontWeight: linked ? 600 as const : 400 as const,
   }),
@@ -62,12 +63,12 @@ const s = {
     width: 7,
     height: 7,
     borderRadius: '50%',
-    background: score == null ? '#6e7681' : score >= 4 ? '#f85149' : score >= 3 ? '#e3b341' : '#3fb950',
+    background: score == null ? theme.textMuted : score >= 4 ? theme.accentRed : score >= 3 ? theme.accentYellow : theme.accentGreen,
     verticalAlign: 'middle',
     marginRight: 3,
   }),
-  empty: { color: '#6e7681', fontSize: '0.8rem', padding: '12px 0' },
-  error: { color: '#f85149', fontSize: '0.75rem', padding: '6px 0' },
+  empty: { color: theme.textMuted, fontSize: '0.8rem', padding: '12px 0' },
+  error: { color: theme.accentRed, fontSize: '0.75rem', padding: '6px 0' },
 }
 
 export default function NewsView() {

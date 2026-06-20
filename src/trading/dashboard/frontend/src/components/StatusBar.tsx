@@ -1,5 +1,6 @@
 // REQ-050-15/18: 시스템 상태바 — regime/risk/halt/cool_down/late_cycle 색상 코딩
 import type { SystemStatus } from '../api/types'
+import { theme } from '../theme'
 
 interface Props {
   status: SystemStatus | null
@@ -8,8 +9,8 @@ interface Props {
 const styles = {
   bar: {
     padding: '6px 20px',
-    background: '#161b22',
-    borderBottom: '1px solid #30363d',
+    background: theme.bgPanel,
+    borderBottom: `1px solid ${theme.border}`,
     display: 'flex',
     alignItems: 'center',
     flexWrap: 'wrap' as const,
@@ -18,7 +19,7 @@ const styles = {
   },
   haltBanner: {
     padding: '7px 20px',
-    background: '#da3633',
+    background: theme.halt,
     color: '#fff',
     fontWeight: 'bold' as const,
     textAlign: 'center' as const,
@@ -29,13 +30,13 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: 5,
-    color: '#8b949e',
+    color: theme.textSecondary,
   },
   dot: (active: boolean, halt: boolean) => ({
     width: 7,
     height: 7,
     borderRadius: '50%',
-    background: halt ? '#da3633' : active ? '#3fb950' : '#8b949e',
+    background: halt ? theme.halt : active ? theme.ok : theme.textMuted,
     display: 'inline-block',
     flexShrink: 0,
   }),
@@ -44,34 +45,35 @@ const styles = {
     padding: '1px 7px',
     borderRadius: 10,
     fontSize: '0.7rem',
-    background: color + '22',
+    background: color + '18',
     color: color,
     fontFamily: 'var(--font-mono)',
     fontWeight: 600 as const,
+    border: `1px solid ${color}33`,
   }),
 }
 
 function regimeColor(regime: string | null | undefined): string {
-  if (!regime) return '#8b949e'
+  if (!regime) return theme.textSecondary
   const r = regime.toUpperCase()
-  if (r.includes('BULL')) return '#3fb950'
-  if (r.includes('BEAR')) return '#f85149'
-  return '#e3b341'
+  if (r.includes('BULL')) return theme.accentGreen
+  if (r.includes('BEAR')) return theme.accentRed
+  return theme.accentYellow
 }
 
 function riskColor(risk: string | null | undefined): string {
-  if (!risk) return '#8b949e'
+  if (!risk) return theme.textSecondary
   const r = risk.toUpperCase()
-  if (r === 'HIGH') return '#f85149'
-  if (r === 'LOW') return '#3fb950'
-  return '#e3b341'
+  if (r === 'HIGH') return theme.accentRed
+  if (r === 'LOW') return theme.accentGreen
+  return theme.accentYellow
 }
 
 export default function StatusBar({ status }: Props) {
   if (!status) {
     return (
       <div style={styles.bar}>
-        <span style={{ color: '#6e7681' }}>상태 로딩 중...</span>
+        <span style={{ color: theme.textMuted }}>상태 로딩 중...</span>
       </div>
     )
   }
@@ -93,7 +95,7 @@ export default function StatusBar({ status }: Props) {
         {/* 활성 점 + 모드 */}
         <span style={styles.item}>
           <span style={styles.dot(!isHalt, isHalt)} />
-          <span style={{ color: isHalt ? '#f85149' : '#e6edf3' }}>
+          <span style={{ color: isHalt ? theme.accentRed : theme.textPrimary }}>
             {status.trading_mode || '—'}
           </span>
         </span>

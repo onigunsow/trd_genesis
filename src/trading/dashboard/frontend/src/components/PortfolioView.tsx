@@ -197,9 +197,10 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
   }))
   // 현금도 파이에 포함
   if (data.cash_ratio > 0) {
+    // cash_ratio 는 백엔드에서 이미 % 단위 (예: 61.0 = 61%). * 100 불필요.
     holdingsPieData.push({
       name: '현금',
-      value: parseFloat((data.cash_ratio * 100).toFixed(2)),
+      value: parseFloat(data.cash_ratio.toFixed(2)),
       itemStyle: { color: '#9ca3af' },
     })
   }
@@ -272,7 +273,7 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
         <div>
           <div style={labelStyle}>현금 비율</div>
           <div style={{ fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-            {(data.cash_ratio * 100).toFixed(1)}%
+            {data.cash_ratio.toFixed(1)}%
           </div>
           <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{fmtKrw(data.cash_amount)}</div>
         </div>

@@ -4,6 +4,7 @@ import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { SystemStatus, Decision } from '../api/types'
 import { formatTicker } from '../utils/ticker'
+import { theme } from '../theme'
 
 interface Props {
   status: SystemStatus | null
@@ -25,19 +26,19 @@ const s = {
   container: { display: 'grid', gap: 20 },
   sectionTitle: {
     fontSize: '0.7rem',
-    color: '#8b949e',
+    color: theme.textSecondary,
     textTransform: 'uppercase' as const,
     letterSpacing: '0.08em',
     marginBottom: 10,
-    borderBottom: '1px solid #21262d',
+    borderBottom: `1px solid ${theme.border}`,
     paddingBottom: 6,
   },
   haltNote: {
     padding: '10px 14px',
-    background: '#3d1f1f',
-    border: '1px solid #da3633',
+    background: '#ffeef0',
+    border: `1px solid ${theme.accentRed}`,
     borderRadius: 6,
-    color: '#f85149',
+    color: theme.accentRed,
     fontSize: '0.8rem',
     marginBottom: 12,
   },
@@ -50,8 +51,8 @@ const s = {
   },
   stepCard: (status: string) => ({
     minWidth: 120,
-    background: status === 'completed' ? '#1a2e1a' : status === 'running' ? '#1a2040' : '#1c2128',
-    border: `1px solid ${status === 'completed' ? '#3fb950' : status === 'running' ? '#58a6ff' : '#30363d'}`,
+    background: status === 'completed' ? '#f0fff4' : status === 'running' ? '#f0f6ff' : theme.bgCard,
+    border: `1px solid ${status === 'completed' ? theme.accentGreen : status === 'running' ? theme.accentBlue : theme.border}`,
     borderRadius: 8,
     padding: '10px 12px',
     fontSize: '0.75rem',
@@ -59,18 +60,18 @@ const s = {
   }),
   stepName: {
     fontWeight: 600 as const,
-    color: '#e6edf3',
+    color: theme.textPrimary,
     marginBottom: 4,
   },
   stepMeta: {
-    color: '#8b949e',
+    color: theme.textSecondary,
     fontSize: '0.68rem',
   },
   arrow: {
     display: 'flex',
     alignItems: 'center',
     padding: '0 6px',
-    color: '#30363d',
+    color: theme.border,
     fontSize: '1.1rem',
     marginTop: 14,
     flexShrink: 0,
@@ -79,26 +80,26 @@ const s = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: status === 'completed' ? '#3fb950' : status === 'running' ? '#58a6ff' : '#6e7681',
+    background: status === 'completed' ? theme.accentGreen : status === 'running' ? theme.accentBlue : theme.textMuted,
     display: 'inline-block',
     marginRight: 5,
   }),
   decisionList: { display: 'grid', gap: 8 },
   decisionRow: (selected: boolean) => ({
     padding: '10px 14px',
-    background: selected ? '#1a2040' : '#161b22',
-    border: `1px solid ${selected ? '#58a6ff' : '#21262d'}`,
+    background: selected ? '#f0f6ff' : theme.bgCard,
+    border: `1px solid ${selected ? theme.accentBlue : theme.borderLight}`,
     borderRadius: 6,
     cursor: 'pointer',
     fontSize: '0.78rem',
     transition: 'border-color 0.15s',
   }),
-  decisionMeta: { color: '#8b949e', fontSize: '0.7rem', marginBottom: 4 },
-  sideBuy: { color: '#3fb950', fontWeight: 600 as const },
-  sideSell: { color: '#f85149', fontWeight: 600 as const },
+  decisionMeta: { color: theme.textSecondary, fontSize: '0.7rem', marginBottom: 4 },
+  sideBuy: { color: theme.buy, fontWeight: 600 as const },
+  sideSell: { color: theme.sell, fontWeight: 600 as const },
   drilldown: {
-    background: '#1c2128',
-    border: '1px solid #30363d',
+    background: theme.bgCard,
+    border: `1px solid ${theme.border}`,
     borderRadius: 8,
     padding: '14px 16px',
     fontSize: '0.78rem',
@@ -110,29 +111,30 @@ const s = {
     gap: '4px 10px',
     marginBottom: 6,
   },
-  drillLabel: { color: '#8b949e', fontFamily: 'var(--font-mono)', fontSize: '0.7rem' },
-  drillValue: { color: '#e6edf3', wordBreak: 'break-word' as const },
+  drillLabel: { color: theme.textSecondary, fontFamily: 'var(--font-mono)', fontSize: '0.7rem' },
+  drillValue: { color: theme.textPrimary, wordBreak: 'break-word' as const },
   verdictBadge: (v: string | null) => ({
     display: 'inline-block',
     padding: '1px 8px',
     borderRadius: 10,
     fontSize: '0.7rem',
-    background: v === 'APPROVE' ? '#1f4f2e' : v === 'REJECT' ? '#3d1f1f' : '#2f2a10',
-    color: v === 'APPROVE' ? '#3fb950' : v === 'REJECT' ? '#f85149' : '#e3b341',
+    background: v === 'APPROVE' ? '#e6f4ea' : v === 'REJECT' ? '#ffeef0' : '#fff8e1',
+    color: v === 'APPROVE' ? theme.accentGreen : v === 'REJECT' ? theme.accentRed : theme.accentYellow,
     fontFamily: 'var(--font-mono)',
     fontWeight: 600 as const,
+    border: `1px solid ${v === 'APPROVE' ? theme.accentGreen + '55' : v === 'REJECT' ? theme.accentRed + '55' : theme.accentYellow + '55'}`,
   }),
-  empty: { color: '#6e7681', fontSize: '0.8rem', padding: '20px 0', textAlign: 'center' as const },
-  errorNote: { color: '#f85149', fontSize: '0.75rem', padding: '8px 0' },
-  latency: { color: '#6e7681', fontSize: '0.68rem' },
+  empty: { color: theme.textMuted, fontSize: '0.8rem', padding: '20px 0', textAlign: 'center' as const },
+  errorNote: { color: theme.accentRed, fontSize: '0.75rem', padding: '8px 0' },
+  latency: { color: theme.textMuted, fontSize: '0.68rem' },
   raw: {
-    background: '#0d1117',
-    border: '1px solid #21262d',
+    background: theme.bg,
+    border: `1px solid ${theme.border}`,
     borderRadius: 4,
     padding: '6px 8px',
     fontFamily: 'var(--font-mono)',
     fontSize: '0.68rem',
-    color: '#8b949e',
+    color: theme.textSecondary,
     overflowX: 'auto' as const,
     maxHeight: 120,
     overflowY: 'auto' as const,
@@ -227,13 +229,13 @@ export default function PipelineView({ status }: Props) {
                   )}
                   {/* 리스크 가드 배지 */}
                   {status?.halt_state && step.step === 'risk' && (
-                    <div style={{ marginTop: 4, fontSize: '0.65rem', color: '#f85149' }}>HALT</div>
+                    <div style={{ marginTop: 4, fontSize: '0.65rem', color: theme.accentRed }}>HALT</div>
                   )}
                   {status?.cool_down_active && step.step === 'risk' && (
-                    <div style={{ marginTop: 2, fontSize: '0.65rem', color: '#a371f7' }}>COOL-DOWN</div>
+                    <div style={{ marginTop: 2, fontSize: '0.65rem', color: theme.accentPurple }}>COOL-DOWN</div>
                   )}
                   {status?.late_cycle_defense_active && step.step === 'portfolio' && (
-                    <div style={{ marginTop: 2, fontSize: '0.65rem', color: '#e3b341' }}>LATE-CYCLE</div>
+                    <div style={{ marginTop: 2, fontSize: '0.65rem', color: theme.accentYellow }}>LATE-CYCLE</div>
                   )}
                 </div>
                 {i < orderedSteps.length - 1 && <div style={s.arrow}>›</div>}
@@ -274,9 +276,9 @@ export default function PipelineView({ status }: Props) {
                     {d.side?.toUpperCase() ?? '—'}
                   </span>
                   {' '}<strong>{d.ticker ? formatTicker(d.ticker, d.ticker_name) : '—'}</strong>
-                  {d.qty != null && <span style={{ color: '#8b949e' }}> {d.qty}주</span>}
+                  {d.qty != null && <span style={{ color: theme.textSecondary }}> {d.qty}주</span>}
                   {d.confidence != null && (
-                    <span style={{ color: '#6e7681', marginLeft: 8 }}>
+                    <span style={{ color: theme.textMuted, marginLeft: 8 }}>
                       신뢰도 {d.confidence.toFixed(2)}
                     </span>
                   )}
@@ -306,7 +308,7 @@ export default function PipelineView({ status }: Props) {
                     <DrilldownRow label="트리거 컨텍스트" value={d.trigger_context} />
                     {d.response_json && (
                       <div style={{ marginTop: 8 }}>
-                        <div style={{ color: '#8b949e', fontSize: '0.7rem', marginBottom: 4 }}>response_json (raw)</div>
+                        <div style={{ color: theme.textSecondary, fontSize: '0.7rem', marginBottom: 4 }}>response_json (raw)</div>
                         <pre style={s.raw}>{d.response_json}</pre>
                       </div>
                     )}

@@ -15,7 +15,8 @@ const fmtKrw = (v: number): string => {
   if (abs >= 1e4) return `${(v / 1e4).toFixed(0)}만`
   return v.toLocaleString('ko-KR')
 }
-const fmtPct = (v: number): string => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`
+// return_pct 는 백엔드에서 이미 % 단위로 반환 (예: 4.54 = 4.54%). * 100 불필요.
+const fmtPct = (v: number): string => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 const fmtPrice = (v: number): string => v.toLocaleString('ko-KR')
 
 type SortKey = keyof RoundTrip

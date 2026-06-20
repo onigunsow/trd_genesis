@@ -3,6 +3,7 @@
 import { useCallback } from 'react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
+import { theme } from '../theme'
 import EquityChart from './charts/EquityChart'
 import DrawdownChart from './charts/DrawdownChart'
 import ReturnsDistribution from './charts/ReturnsDistribution'
@@ -18,22 +19,23 @@ const s = {
     gap: 16,
   },
   card: {
-    background: '#161b22',
-    border: '1px solid #30363d',
+    background: theme.bgCard,
+    border: `1px solid ${theme.border}`,
     borderRadius: 8,
     padding: '14px 16px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
   },
   cardTitle: {
     fontSize: '0.7rem',
-    color: '#8b949e',
+    color: theme.textSecondary,
     textTransform: 'uppercase' as const,
     letterSpacing: '0.08em',
     marginBottom: 10,
-    borderBottom: '1px solid #21262d',
+    borderBottom: `1px solid ${theme.borderLight}`,
     paddingBottom: 6,
   },
-  errorNote: { color: '#f85149', fontSize: '0.75rem', padding: '8px 0' },
-  empty: { color: '#6e7681', fontSize: '0.8rem', padding: '40px 0', textAlign: 'center' as const },
+  errorNote: { color: theme.accentRed, fontSize: '0.75rem', padding: '8px 0' },
+  empty: { color: theme.textMuted, fontSize: '0.8rem', padding: '40px 0', textAlign: 'center' as const },
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
@@ -112,10 +114,10 @@ export default function ChartsView() {
             ? <div style={s.empty}>데이터 없음 (KOSPI 지수 데이터 미가용)</div>
             : (
               <div style={{ padding: '20px 0', textAlign: 'center' }}>
-                <div style={{ fontSize: '2.2rem', fontWeight: 700, color: scorecard.alpha_pct >= 0 ? '#3fb950' : '#f85149', fontFamily: 'var(--font-mono)' }}>
+                <div style={{ fontSize: '2.2rem', fontWeight: 700, color: scorecard.alpha_pct >= 0 ? theme.accentGreen : theme.accentRed, fontFamily: 'var(--font-mono)' }}>
                   {scorecard.alpha_pct >= 0 ? '+' : ''}{scorecard.alpha_pct.toFixed(2)}%
                 </div>
-                <div style={{ color: '#8b949e', fontSize: '0.75rem', marginTop: 6 }}>vs KOSPI (누적 알파)</div>
+                <div style={{ color: theme.textSecondary, fontSize: '0.75rem', marginTop: 6 }}>vs KOSPI (누적 알파)</div>
               </div>
             )
         ) : !scorecardError && <div style={s.empty}>로딩 중...</div>}
