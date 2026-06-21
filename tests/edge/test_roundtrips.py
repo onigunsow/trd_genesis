@@ -19,11 +19,12 @@ def _buy(ticker, qty, price, fee=0, ts="2026-01-01T10:00:00", oid=1, confidence=
     }
 
 
-def _sell(ticker, qty, price, fee=0, ts="2026-01-05T10:00:00", oid=2):
+def _sell(ticker, qty, price, fee=0, ts="2026-01-05T10:00:00", oid=2, correction=False):
     return {
         "id": oid, "ts": datetime.fromisoformat(ts), "filled_at": None,
         "side": "sell", "ticker": ticker, "fill_qty": qty, "fill_price": price,
         "fee": fee, "confidence": None, "verdict": None,
+        "correction": correction,
     }
 
 
@@ -146,3 +147,85 @@ class TestDecisionAttribution:
         assert len(res.roundtrips) == 1
         assert res.roundtrips[0].ticker == "A"
         assert res.open_qty.get("B") == 10
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-042 D1/D6 — correction 매도 테스트
+# ---------------------------------------------------------------------------
+
+
+class TestCorrectionSell:
+    """correction=TRUE 매도는 FIFO lot 팝만 하고 RoundTrip/unmatched 미생성."""
+
+    def test_correction_sell_pops_lots_no_roundtrip(self):
+        """correction 매도는 lot 을 pop 하되 RoundTrip 생성 없음."""
+        rows = [
+            _buy("A", 10, 100, ts="2026-01-01T10:00:00", oid=1),
+            _sell("A", 3, 100, ts="2026-01-02T10:00:00", oid=2, correction=True),
+        ]
+        res = build_roundtrips(rows)
+        # RoundTrip 미생성
+        assert len(res.roundtrips) == 0
+        # unmatched 미기록
+        assert len(res.unmatched_sells) == 0
+        # 잔여 open_qty = 10 - 3 = 7
+        assert res.open_qty.get("A", 0) == 7
+
+    def test_correction_sell_does_not_affect_subsequent_real_sell(self):
+        """correction 후 실제 매도는 정상 RoundTrip 생성."""
+        rows = [
+            _buy("A", 10, 100, ts="2026-01-01T10:00:00", oid=1),
+            # correction 매도 3주 → open 7주
+            _sell("A", 3, 100, ts="2026-01-02T10:00:00", oid=2, correction=True),
+            # 실제 매도 7주
+            _sell("A", 7, 120, ts="2026-01-03T10:00:00", oid=3, correction=False),
+        ]
+        res = build_roundtrips(rows)
+        assert len(res.roundtrips) == 1
+        rt = res.roundtrips[0]
+        assert rt.qty == 7
+        assert rt.entry_price == 100
+        assert rt.exit_price == 120
+        assert res.open_qty.get("A", 0) == 0
+
+    def test_correction_sell_unmatched_no_record(self):
+        """correction 매도가 book 을 초과해도 unmatched_sells 미기록."""
+        rows = [
+            _buy("A", 2, 100, ts="2026-01-01T10:00:00", oid=1),
+            # correction 3주 (재고 2주 초과)
+            _sell("A", 3, 100, ts="2026-01-02T10:00:00", oid=2, correction=True),
+        ]
+        res = build_roundtrips(rows)
+        assert len(res.roundtrips) == 0
+        assert len(res.unmatched_sells) == 0
+        assert res.open_qty.get("A", 0) == 0
+
+    def test_non_correction_sell_unchanged(self):
+        """correction 미설정 매도는 기존 RoundTrip 로직 그대로."""
+        rows = [
+            _buy("A", 10, 100, ts="2026-01-01T10:00:00", oid=1),
+            _sell("A", 10, 130, ts="2026-01-02T10:00:00", oid=2, correction=False),
+        ]
+        res = build_roundtrips(rows)
+        assert len(res.roundtrips) == 1
+        assert res.roundtrips[0].gross_pnl == (130 - 100) * 10
+
+    def test_realized_pnl_unchanged_by_correction(self):
+        """correction 전/후 실제 매도의 net_pnl 이 동일하다."""
+        # correction 없이 실제 매도만
+        rows_without = [
+            _buy("A", 10, 100, ts="2026-01-01T10:00:00", oid=1),
+            _sell("A", 5, 120, ts="2026-01-05T10:00:00", oid=2, correction=False),
+        ]
+        res_without = build_roundtrips(rows_without)
+
+        # correction 매도 추가 (초과 ghost 5주 → 실제 5주만 남음)
+        rows_with = [
+            _buy("A", 10, 100, ts="2026-01-01T10:00:00", oid=1),
+            _sell("A", 5, 100, ts="2026-01-02T10:00:00", oid=2, correction=True),
+            _sell("A", 5, 120, ts="2026-01-05T10:00:00", oid=3, correction=False),
+        ]
+        res_with = build_roundtrips(rows_with)
+
+        assert len(res_with.roundtrips) == 1
+        assert res_with.roundtrips[0].net_pnl == res_without.roundtrips[0].net_pnl

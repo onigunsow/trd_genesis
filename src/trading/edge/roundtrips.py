@@ -172,6 +172,21 @@ def build_roundtrips(rows: Iterable[dict[str, Any]]) -> RoundTripResult:
             sell_fee_per_share = (fee / qty) if qty else 0.0
             remaining = qty
             book = lots.get(ticker)
+
+            # SPEC-TRADING-042 D1/D6: correction=TRUE 매도는 원장정리 전용.
+            # FIFO lot 을 pop 하되 RoundTrip 미생성·unmatched_sells 미기록.
+            # 실현손익 미발생 → 기존 scorecard/realized_pnl 불변.
+            if row.get("correction"):
+                while remaining > 0 and book:
+                    lot = book[0]
+                    matched = min(remaining, lot.qty)
+                    lot.qty -= matched
+                    remaining -= matched
+                    if lot.qty == 0:
+                        book.popleft()
+                # book 이 비어 있거나 remaining > 0 이어도 unmatched 미기록(원장정리).
+                continue
+
             while remaining > 0 and book:
                 lot = book[0]
                 matched = min(remaining, lot.qty)
@@ -222,7 +237,8 @@ _FILL_SQL = """
            pr.persona_name AS persona,
            (SELECT rr.verdict FROM risk_reviews rr
              WHERE rr.decision_id = pd.id
-             ORDER BY rr.ts DESC LIMIT 1) AS verdict
+             ORDER BY rr.ts DESC LIMIT 1) AS verdict,
+           COALESCE(o.correction, false) AS correction
       FROM orders o
       LEFT JOIN persona_decisions pd ON pd.id = o.persona_decision_id
       LEFT JOIN persona_runs pr ON pr.id = pd.persona_run_id

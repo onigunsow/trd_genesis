@@ -641,6 +641,8 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
     # -------------------------------------------------------------------------
     # 쿼리 2: orders(체결) → build_roundtrips (fetch_confidence_analysis 와 동일 패턴)
     # -------------------------------------------------------------------------
+    # C1[CRITICAL] SPEC-TRADING-042: correction 컬럼 필수 — 미포함 시 교정 SELL 이
+    # 정상 매도로 오인돼 가짜 RoundTrip 생성(거짓그린 실패모드, 감사 반영).
     fill_sql = """
         SELECT
             o.id,
@@ -654,7 +656,8 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
             pd.confidence,
             (SELECT rr.verdict FROM risk_reviews rr
               WHERE rr.decision_id = pd.id
-              ORDER BY rr.ts DESC LIMIT 1) AS verdict
+              ORDER BY rr.ts DESC LIMIT 1) AS verdict,
+            COALESCE(o.correction, false) AS correction
         FROM orders o
         LEFT JOIN persona_decisions pd ON pd.id = o.persona_decision_id
         WHERE o.status IN ('filled', 'partial')
@@ -864,7 +867,9 @@ def fetch_confidence_analysis(*, days: int = 30) -> dict[str, Any]:
     if cached is not None:
         return cached
 
-    # 어댑터: orders + persona_decisions(confidence) + risk_reviews(verdict) 조인
+    # 어댑터: orders + persona_decisions(confidence) + risk_reviews(verdict) 조인.
+    # C1[CRITICAL] SPEC-TRADING-042: correction 컬럼 필수 — 미포함 시 교정 SELL 이
+    # 정상 매도로 오인돼 /api/confidence 오염(감사 C1 반영).
     sql = """
         SELECT
             o.id,
@@ -878,7 +883,8 @@ def fetch_confidence_analysis(*, days: int = 30) -> dict[str, Any]:
             pd.confidence,
             (SELECT rr.verdict FROM risk_reviews rr
               WHERE rr.decision_id = pd.id
-              ORDER BY rr.ts DESC LIMIT 1) AS verdict
+              ORDER BY rr.ts DESC LIMIT 1) AS verdict,
+            COALESCE(o.correction, false) AS correction
         FROM orders o
         LEFT JOIN persona_decisions pd ON pd.id = o.persona_decision_id
         WHERE o.status IN ('filled', 'partial')

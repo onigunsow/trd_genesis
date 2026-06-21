@@ -90,6 +90,21 @@ def _run_fill_sync() -> None:
     )
 
 
+def _run_resolver() -> None:
+    """SPEC-TRADING-042 D3: 5분 주기 order resolver cron.
+
+    submitted 주문이 window(900s)를 초과하면 KIS 확인 후 filled/expired 로 수렴.
+    _run_fill_sync 패턴 미러 (지연 임포트 + KisClient 생성).
+    """
+    from trading.config import get_settings
+    from trading.kis.client import KisClient
+    from trading.kis.order_resolver import resolve_stuck_orders
+
+    client = KisClient(get_settings().trading_mode)
+    result = resolve_stuck_orders(client, dry_run=False)
+    LOG.info("SPEC-042 resolver cron: %s", result)
+
+
 def _run_equity_snapshot() -> None:
     """Edge Validation Phase 0: record one daily equity snapshot at market close.
 
@@ -412,6 +427,16 @@ def main() -> None:
         CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
         id="position_watchdog",
         name="position_watchdog */5 (09-15 KST)",
+    )
+
+    # SPEC-TRADING-042 D3 REQ-042-B1 — submitted 주문 5분 주기 resolver.
+    # minute="2-59/5" 로 position_watchdog(*/5=0,5,10…)와 desync 해
+    # KIS TPS 부하를 분산한다(감사 m3 반영).
+    sched.add_job(
+        lambda: _wrap("order_resolver", _run_resolver),
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="2-59/5", timezone=KST),
+        id="order_resolver",
+        name="order_resolver 2-59/5 (09-15 KST)",
     )
 
     # Daily report 16:00

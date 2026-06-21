@@ -175,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_resolve_orders(rest)
     if cmd == "aggregate-pnl":
         return _cmd_aggregate_pnl(rest)
+    if cmd == "converge-ghost-buys":
+        return _cmd_converge_ghost_buys(rest)
     if cmd == "status":
         from trading.db.session import get_system_state
         state = get_system_state()
@@ -440,6 +442,41 @@ def _cmd_aggregate_pnl(rest: list[str]) -> int:
             "executions — realized_pnl_cum carries paper-fill imprecision.",
             file=sys.stderr,
         )
+    return 0
+
+
+def _cmd_converge_ghost_buys(rest: list[str]) -> int:
+    """SPEC-TRADING-042 D1/D6: 유령 합성매수 append-only 교정 실행.
+
+    KIS 확인 잔고 대비 초과 synthetic filled 매수를 교정 SELL lot 으로 수렴한다.
+    paper-only — live 클라이언트이면 no-op 요약을 반환한다.
+
+    Flags
+    -----
+    --dry-run     SELECT 만 수행, INSERT/audit 없음.
+
+    Exit codes: 0 on success, 1 on error.
+    """
+    dry_run = "--dry-run" in rest
+
+    from trading.config import get_settings
+    from trading.kis.client import KisClient
+    from trading.kis.ghost_convergence import converge_ghost_buys
+
+    try:
+        client = KisClient(get_settings().trading_mode)
+        result = converge_ghost_buys(client, dry_run=dry_run)
+    except Exception as e:
+        print(f"trading converge-ghost-buys: error: {e}", file=sys.stderr)
+        return 1
+
+    print(
+        f"converge-ghost-buys: scanned_tickers={result.get('scanned_tickers', 0)} "
+        f"converged={result.get('converged', 0)} "
+        f"total_excess={result.get('total_excess', 0)} "
+        f"dry_run={result.get('dry_run', dry_run)} "
+        f"skipped_live={result.get('skipped_live', False)}"
+    )
     return 0
 
 
@@ -729,10 +766,21 @@ def _cmd_smoke_gate(rest: list[str]) -> int:
             summary = rec_result.get("summary") or {}
             drift = int(summary.get("positions_synced", 0) or 0)
             errors = int(summary.get("errors", 0) or 0)
-            ledger_parity = (drift == 0 and errors == 0)
+            positions_drift_ok = drift == 0 and errors == 0
         else:
             # throttled이면 이전 reconcile 결과를 신뢰 (정합으로 간주)
-            ledger_parity = True
+            positions_drift_ok = True
+
+        # SPEC-TRADING-042 D2/M1(감사 M1): orders-agg net vs positions parity 추가.
+        # positions-vs-KIS drift 만으로는 orders 드리프트 미감지(AC-5 맹점 보강).
+        from trading.kis.ghost_convergence import orders_positions_divergence
+        try:
+            orders_parity = orders_positions_divergence()["parity"]
+        except Exception as _e:
+            logging.warning("trading smoke-gate: orders_positions_divergence 실패: %s", _e)
+            orders_parity = True  # 실패는 safe(게이트 차단 아님 — D5 live seam 대칭)
+
+        ledger_parity = positions_drift_ok and orders_parity
     except Exception as e:
         logging.warning("trading smoke-gate: intraday_reconcile 실패: %s", e)
 

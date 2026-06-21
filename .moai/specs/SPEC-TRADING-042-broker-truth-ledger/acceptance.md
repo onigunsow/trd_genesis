@@ -58,6 +58,9 @@
 - **When** 세션 종료 시 검증한다.
 - **Then** 아래를 **모두** 만족해야 라이브 스위치를 허용한다:
   - **zero phantom position** — 로컬 `positions` 가 세션 전 구간 KIS 잔고와 정합(divergence 0).
+  - **zero orders drift (D2 remediation)** — `orders` 순매수 집계(`status IN ('filled','partial')`, 교정 매도 포함)가
+    `positions` 보유와 종목별 정합(`orders_positions_divergence().parity == True`). positions-vs-KIS 정합만으론
+    `orders` 드리프트를 못 잡는 맹점을 보강(2026-06-21 감사 D2).
   - **zero stuck submitted** — 세션 종료 시 미해소 submitted 0건.
   - **모든 결정 손절이 체결 확인 또는 명시 취소** — 결정된 모든 stop-loss 가 filled 로 확인되거나
     사유와 함께 cancelled/expired 로 명시 해소(reject 후 방치 0).

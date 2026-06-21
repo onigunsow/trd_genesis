@@ -74,6 +74,8 @@ def _count_synthetic_sell_fills(cur: Any) -> int:
     a live execution. Counting, not arithmetic: the figure does not change any
     realized_pnl_cum value, it only flags paper-fill imprecision in the summary.
     """
+    # SPEC-TRADING-042 M3: correction=TRUE 교정 매도는 합성 카운트에서 제외.
+    # 교정 매도는 원장 정리 전용이며 실현손익에 미영향 — 카운트 오염 방지(감사 M3 반영).
     cur.execute(
         """
         SELECT count(*) AS n
@@ -81,6 +83,7 @@ def _count_synthetic_sell_fills(cur: Any) -> int:
          WHERE side = 'sell'
            AND status IN ('filled', 'partial')
            AND synthetic = TRUE
+           AND COALESCE(correction, false) = FALSE
         """
     )
     row = cur.fetchone() or {}
