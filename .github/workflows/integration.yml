@@ -1,0 +1,68 @@
+# SPEC-TRADING-056 — 실 Postgres 통합테스트 CI
+# 거짓그린(mock이 못 잡는 실 스키마 SQL 오류) 차단을 PR/push마다 자동 실행.
+# postgres 서비스는 prod와 동일한 pgvector/pgvector:pg16 (마이그 011/012가
+# `CREATE EXTENSION vector`를 사용하므로 plain postgres면 migrate 실패).
+#
+# 범위: 통합테스트(tests/integration, -m integration)만. 이들은 connection()이
+# DATABASE_URL/POSTGRES_* 를 직접 읽어 KIS/텔레그램 시크릿 없이 동작(로컬 검증됨).
+# 단위테스트(전체)는 config 필수 시크릿(KIS_*·TELEGRAM_BOT_TOKEN)에 의존하므로
+# 시크릿 주입 없는 본 워크플로우 범위에서 제외(별도 잡/시크릿 설정 시 확장 가능).
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: trading
+          POSTGRES_PASSWORD: trading
+          POSTGRES_DB: trading
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trading"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # conftest 의 _maintenance_dsn() 은 DB명을 'postgres'로 교체해 연결하고
+      # trading_test 를 생성·마이그레이션한다. prod DB 미접촉.
+      DATABASE_URL: postgresql://trading:trading@localhost:5432/trading
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading
+      POSTGRES_DB: trading
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      # config 필수 시크릿 필드(기본값 없음)의 import-time 크래시 방지용 더미.
+      # 통합테스트는 실제 KIS/텔레그램 호출 없음(paper SQL만, trading_test 대상).
+      KIS_PAPER_APP_KEY: dummy
+      KIS_PAPER_APP_SECRET: dummy
+      KIS_PAPER_ACCOUNT: "00000000-00"
+      KIS_LIVE_APP_KEY: dummy
+      KIS_LIVE_APP_SECRET: dummy
+      KIS_LIVE_ACCOUNT: "00000000-00"
+      TELEGRAM_BOT_TOKEN_TRADING: dummy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies (dev extra = pytest)
+        run: uv sync --extra dev
+
+      - name: Integration tests (real Postgres, migrated schema)
+        run: uv run pytest tests/integration/ -m integration -q --no-cov
