@@ -98,3 +98,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra --cov=trading --cov-report=term-missing"
+markers = [
+    "integration: 실 Postgres 필요 (마이그레이션된 실 스키마)",
+]
