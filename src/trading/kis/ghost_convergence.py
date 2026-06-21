@@ -122,14 +122,16 @@ def _insert_correction_sell(
     persona_decision_id=NULL — 교정 행은 LLM 결정이 아님.
     fee=0 — 가상 교정이므로 수수료 없음.
     """
+    # order_type 은 NOT NULL·기본값 없음 + CHECK('market','limit'). 교정 매도는
+    # 지정가가 없으므로 'market'. (라이브 INSERT 가 잡은 누락 — dry-run 은 INSERT 미수행.)
     cur.execute(
         """
         INSERT INTO orders (
-            ticker, side, qty, fill_qty, fill_price, fee,
+            ticker, side, qty, order_type, fill_qty, fill_price, fee,
             status, mode, synthetic, correction,
             ts, filled_at, persona_decision_id
         ) VALUES (
-            %s, 'sell', %s, %s, %s, 0,
+            %s, 'sell', %s, 'market', %s, %s, 0,
             'filled', 'paper', TRUE, TRUE,
             %s, %s, NULL
         )
