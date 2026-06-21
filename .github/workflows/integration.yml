@@ -53,10 +53,10 @@ jobs:
       TELEGRAM_BOT_TOKEN_TRADING: dummy
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Set up Python 3.13
         run: uv python install 3.13
