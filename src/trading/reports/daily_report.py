@@ -572,17 +572,33 @@ def generate_and_send() -> str:
     operational-metrics block (bottom). The narrative is generated via the CLI
     subscription path; on CLI + Haiku double failure it degrades to the
     metrics-only ``_fallback_text`` so the cron never crashes.
+
+    SPEC-TRADING-055 D1 [CRITICAL]: resolver 헬스체크는 리포트 본문·전송을
+    절대 중단할 수 없다.  evaluate_resolver_health() 와
+    maybe_notify_resolver_anomaly() 를 각각 독립 try/except 로 감싸고,
+    예외 발생 시 degraded 라인으로 폴백한다.
     """
+    # SPEC-TRADING-055 D1: resolver 헬스 평가 — 실패해도 리포트 계속.
+    _HEALTH_DEGRADE_PREFIX = "운영점검: 평가 실패"
+    try:
+        from trading.ops.resolver_health import evaluate_resolver_health, summary_line
+        health = evaluate_resolver_health()
+        health_line = summary_line(health)
+    except Exception as _he:
+        LOG.exception("resolver_health 평가 실패 — degraded 라인으로 폴백")
+        health = None
+        health_line = f"{_HEALTH_DEGRADE_PREFIX} — {_he}"
+
     data = _gather_today()
     try:
         narrative = _narrative_text(data)  # REQ-030-3
         # REQ-030-5: narrative headline on top, operational-metrics block below.
-        text = f"{narrative}\n\n———\n{_fallback_text(data)}"
+        text = f"{narrative}\n\n———\n{_fallback_text(data)}\n{health_line}"
     except Exception as e:
         reason = _llm_skip_reason(e)
         LOG.warning("daily report narrative skipped (%s)", reason)
         # REQ-030-6: degrade to metrics-only with a human-readable skip reason.
-        text = _fallback_text(data, skip_reason=reason)
+        text = _fallback_text(data, skip_reason=reason) + f"\n{health_line}"
 
     # Persist
     sql = """
@@ -597,4 +613,14 @@ def generate_and_send() -> str:
         system_briefing("일일 리포트", text)
     except Exception:
         LOG.exception("daily report telegram send failed")
+
+    # SPEC-TRADING-055 D1: 이상 경고 — 리포트 전송 완료 후 별도 발송.
+    # 실패해도 generate_and_send 반환값에 영향 없음.
+    if health is not None:
+        try:
+            from trading.ops.resolver_health import maybe_notify_resolver_anomaly
+            maybe_notify_resolver_anomaly(health)
+        except Exception:
+            LOG.exception("resolver_health 이상 경고 발송 실패 — 리포트 영향 없음")
+
     return text

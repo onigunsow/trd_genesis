@@ -95,14 +95,28 @@ def _run_resolver() -> None:
 
     submitted 주문이 window(900s)를 초과하면 KIS 확인 후 filled/expired 로 수렴.
     _run_fill_sync 패턴 미러 (지연 임포트 + KisClient 생성).
+
+    SPEC-TRADING-055 M1: 발화 성공 시 last_resolver_run 하트비트 기록.
+    소음 0 — 경고/알림은 여기서 절대 발생시키지 않음.
+    장마감 후 일일리포트가 신선도로 미발화를 감지한다.
     """
+    from datetime import UTC, datetime
+
     from trading.config import get_settings
+    from trading.db.session import update_system_state
     from trading.kis.client import KisClient
     from trading.kis.order_resolver import resolve_stuck_orders
 
     client = KisClient(get_settings().trading_mode)
     result = resolve_stuck_orders(client, dry_run=False)
     LOG.info("SPEC-042 resolver cron: %s", result)
+
+    # SPEC-TRADING-055: 하트비트 — resolve 성공(예외 미발생) 시각을 기록.
+    # scanned=0 이어도 "오늘 정상 발화함"을 증명하는 타임스탬프다.
+    update_system_state(
+        last_resolver_run=datetime.now(UTC),
+        updated_by="resolver",
+    )
 
 
 def _run_equity_snapshot() -> None:
