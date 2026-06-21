@@ -62,12 +62,15 @@ def _orders_net_by_ticker(cur: Any) -> dict[str, int]:
 
 
 def _positions_qty_by_ticker(cur: Any) -> dict[str, dict[str, Any]]:
-    """KIS reconcile 결과 positions 테이블에서 ticker 별 qty / avg_cost 반환."""
+    """KIS reconcile 결과 positions 테이블에서 ticker 별 qty / avg_cost 반환.
+
+    positions 는 KIS reconcile 단일 계좌 진실원이라 `mode` 컬럼이 없다
+    (컬럼: id, ticker, qty, avg_cost, last_updated, last_order_id).
+    """
     cur.execute(
         """
         SELECT ticker, qty, avg_cost
           FROM positions
-         WHERE mode = 'paper'
         """
     )
     rows = cur.fetchall() or []
