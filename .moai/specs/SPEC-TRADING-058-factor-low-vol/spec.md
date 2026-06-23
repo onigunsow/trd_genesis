@@ -1,9 +1,9 @@
 ---
 id: SPEC-TRADING-058
 version: 0.2.0
-status: draft
+status: completed
 created: 2026-06-21
-updated: 2026-06-21
+updated: 2026-06-23
 author: oni
 priority: high
 issue_number: null
@@ -14,7 +14,8 @@ labels: [factor, low-volatility, backtest, edge, research, paper-only]
 
 ## HISTORY
 
-- 2026-06-21 v0.2.0 (draft): 적대적 감사(REVISE 0.58, blocking 4건) + 운영자 범위 결정 반영. **범위를 저변동성/저베타 팩터 단독으로 축소**하고, 퀄리티(총수익성) 및 저변동성+퀄리티 결합은 **SPEC-059로 연기**한다. 연기 근거(감사로 검증됨): 퀄리티 입력 데이터가 시스템에 부재 — `fetch_fundamentals`(pykrx_adapter.py:57-89)는 PER/PBR/EPS/BPS/DIV/DPS만 적재하고, `fundamentals` 테이블 스키마(cache.py:117-151)에는 revenue/COGS/total_assets 컬럼이 없어 총수익성 계산이 불가능하다. 저변동성은 OHLCV만으로 산출되며 SPEC-057 M1이 이미 공급하므로 즉시 진행 가능하고, 문헌상 한국 #1 강건 팩터다. 추가 수정: **(B3)** GO 게이트 알파 모순 해소 — `scorecard.decide`가 소비하는 `benchmark.py`의 money-weighted 알파(benchmark.py:120-131, 자기라벨 "시간가중 아님")를 GO 게이트에서 금지하고, `engine.run`의 time-weighted equity-curve를 scorecard 입력으로 변환하는 **신규 어댑터**를 요구사항·인벤토리에 추가. **(B4)** 생존편향 게이트를 fail-CLOSED로 재작성(057 결과 부재/미기록 시 알파 부호보고 금지·bound only). **(M-a)** n 정의를 리밸런스 주기 수로 고정. **(M-b)** Bonferroni + 50% 할인 + scorecard GO를 단일 AND 판정 함수로 합성. **(M-c)** walk-forward를 리밸런스별 반복 point-in-time engine.run으로 정의(단일 full-sample을 OOS로 보고 금지). **(m-1/m-2)** YAML labels 추가, 저변동성 lookback을 단일 고정 기본값(120 거래일)으로 확정. 보존: 생존편향 상속(이제 fail-closed), engine.run 하니스(run_walk_forward 아님), 라이브/페이퍼-전용 3중 [HARD], 리서치 함정 제외 목록, Bonferroni+50%할인 선적용, "알파 없음=유효한 성공" 정직 프레이밍.
+- 2026-06-23 v0.2.0 (completed): **구현·검증·배포 완료**. spec-trading-057-edge-attribution-diagnosis 브랜치에서 M1-3 전체 구현: `factor_lowvol.py`(120일 고정 lookback, OHLCV 순수 함수), `lowvol_portfolio.py`(1/N 등가중 월간 리밸런스, GO 어댑터, fail-closed 생존편향 게이트), `lowvol_validation.py`(walk-forward OOS 반복 point-in-time engine.run + Bonferroni + 50% McLean-Pontiff 할인 + 단일 AND 판정). 오프라인 208 backtest passed, 컨테이너 walk-forward 스모크 PASS. SPEC-057 M1 재사용 확정, SPEC-059(퀄리티+결합) 데이터 준비 대기. 정직 프레이밍("팩터 알파 없음=유효한 성공", 페이퍼 전용) 보존.
+- 2026-06-21 v0.2.0 (draft): 적대적 감사(REVISE 0.58, blocking 4건) + 운영자 범위 결정 반영. **범위를 저변동성/저베타 팩터 단독으로 축소**하고, 퀄리티(총수익성) 및 저변동성+퀄리티 결합은 **SPEC-059로 연기**한다. 연기 근거(감사로 검증됨): 퀄리티 입력 데이터가 시스템에 부재. 저변동성은 OHLCV만으로 산출, 문헌상 한국 #1 강건 팩터. 추가 수정: GO 게이트 알파 모순, 생존편향 게이트 fail-CLOSED, n=리밸런스수, Bonferroni+50%+scorecard GO 단일 AND 판정, walk-forward=반복 point-in-time engine.run.
 - 2026-06-21 v0.1.0 (draft): 최초 작성(저변동성+퀄리티+결합). 측정된 사실(SPEC-051 M2 OOS: LLM 재량 종목선정 expectancy -14,840 KRW/거래, alpha -11%p vs KOSPI, confidence↔PnL Spearman -0.455 = 반예측적)과 회의적 문헌 리뷰를 토대로 기계적(non-LLM) 팩터 전략을 명세. v0.2.0에서 저변동성 단독으로 축소.
 
 ---

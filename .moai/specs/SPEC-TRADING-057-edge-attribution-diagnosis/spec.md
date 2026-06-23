@@ -1,9 +1,9 @@
 ---
 id: SPEC-TRADING-057
 version: 0.2.2
-status: draft
+status: completed
 created: 2026-06-21
-updated: 2026-06-21
+updated: 2026-06-23
 author: oni
 priority: high
 issue_number: null
@@ -13,6 +13,7 @@ issue_number: null
 
 ## HISTORY
 
+- 2026-06-23 v0.2.2 (completed): **구현·검증·배포 완료**. spec-trading-057-edge-attribution-diagnosis 브랜치에서 M1-3 전체 구현: `universe_reconstructor.py`(as-of-date 생존편향-free 유니버스), `historical_loader.py`(point-in-time look-ahead 가드), `feature_alpha_measurer.py`(RSI/PER/foreign Bonferroni 보정), `attribution_report.py`(5컴포넌트+RESIDUAL 분해, n=8 정직성), `entry_alpha_run.py`(CLI). 오프라인 1962 passed, 실 KRX/실 DB end-to-end 검증 PASS. M1-6 as-of-date 멤버십/상폐 OHLCV 회수 가능 확인. 정직 프레이밍(알파 없음=성공)보존.
 - 2026-06-21 v0.2.2 (draft): **M1-6 생존편향 게이트 실증 완료** (trading-app 컨테이너). as-of-date 멤버십(2018 vs 오늘 67종목 상이)·상폐 OHLCV 회수(000030 미상장이나 2018-01 22봉) 모두 가능 → M1-6a(유니버스 재구성) 경로 확정, 다운그레이드 불필요. §2 가정에 실증 결과 기록.
 - 2026-06-21 v0.2.1 (draft): 재감사 PASS 0.84의 비차단 N2 교정 — REQ-057-M1-1·재사용 인벤토리에서 미존재 식별자 `walk_forward.run`을 제거하고, M2 진입-포트폴리오 알파 경로가 `engine.run`(time-weighted portfolio backtest)이며 `run_walk_forward`(출구-룰 스윕)와 별개 하니스임을 명시. 구현 착수 전 교정.
 - 2026-06-21 v0.2.0 (draft): 독립 적대적 감사(REVISE 0.62/1.0) 결함 반영 개정. (D1) 생존편향을 M1 PRECONDITION GATE로 승격(REQ-057-M1-6 신설: pykrx point-in-time 멤버십·상폐 OHLCV 실증 단계 + 불가 시 M2 알파를 "생존편향 상한·부호보고 금지" 강제 다운그레이드). (D2) 다중검정 보호 추가(REQ-057-M2-3에 Bonferroni 보정 + 리밸런스 표본 floor 미달 시 INCONCLUSIVE). (D4) M3 분해 방법론 명시(REQ-057-M3-1: 기계적 등가중 baseline + 순차 counterfactual + RESIDUAL 버킷 합치성 + 비용(b) 필수 정량). (D5) 알파 정의를 time-weighted equity-curve(engine.run)로 고정 + benchmark.py money-weighted와의 관계 명시. (D3) M3 비용모델 보수성 미검증 플래그 추가(세금 0.18% floor·대형주 슬리피지 가정). (D7) REQ-057-M2-1 닫힌 목록화(RSI/PER/foreign=랭킹 가능 score 피처 / market_cap·turnover=유니버스 게이트). 정직성 프레이밍(n=8 종속화·LLM 미검증·재사용 인벤토리)은 검증되어 보존됨. SPEC-058(저변동성+퀄리티 팩터 전략)이 M1 point-in-time 유니버스·과거 OHLCV 파이프라인을 공유 토대로 의존하므로 M1을 진단 전용으로 좁히지 않고 재사용 가능하게 설계.
