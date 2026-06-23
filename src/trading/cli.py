@@ -121,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "exit-backtest":
         from trading.scripts.exit_backtest import main as run
         return run(rest)
+    if cmd == "entry-alpha":
+        from trading.backtest.entry_alpha_run import _cli_main as run
+        return run(rest)
     if cmd == "run-personas":
         from trading.scripts.run_personas import main as run
         return run(rest)
@@ -956,6 +959,7 @@ def _print_help(file=sys.stdout) -> int:
         "  backtest          run rule-based benchmark backtest (M3)\n"
         "  kospi200-backfill 10y KOSPI200 OHLCV backfill (SPEC-037, one-shot)\n"
         "  exit-backtest     deterministic exit-rule parameter sweep (SPEC-037)\n"
+        "  entry-alpha       진입 피처 OOS 알파 측정 rsi/per/foreign (SPEC-057)\n"
         "  run-personas      invoke a persona cycle (M4)\n"
         "  halt              set halt_state=true (M5)\n"
         "  resume            set halt_state=false (M5)\n"
