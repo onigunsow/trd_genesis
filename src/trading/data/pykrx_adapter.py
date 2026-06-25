@@ -25,6 +25,28 @@ LOG = logging.getLogger(__name__)
 SOURCE = "pykrx"
 
 
+def _silence_pykrx_auth_prints() -> None:
+    """pykrx auth 모듈의 bare print() 를 no-op 로 영구 치환한다.
+
+    pykrx 의 ``login_krx`` / 세션 refresh 는 'KRX 로그인 시도...', 'KRX 세션 만료,
+    재로그인 시도...' 등을 bare ``print()`` 로 stdout 에 출력한다. 이 print 는
+    (1) pykrx import 시 1회, (2) 로그인 실패(장외 JSONDecodeError) 후 매 호출 재시도
+    시점에 발생하며, stdout 버퍼링 탓에 좁은 _quiet_pykrx 구간(개별 stock.get_* 호출)을
+    빠져나가 스케줄러 로그를 오염시킨다(2026-06-25 라이브 실측).
+
+    bare ``print`` 는 모듈 전역 → builtins 순으로 해석되므로, auth 모듈 전역에
+    no-op print 를 주입하면 호출 시점과 무관하게 모든 auth print 를 무력화한다.
+    트레이스백·내부 logging 소음은 _quiet_pykrx(fd 리다이렉트)가 별도로 담당한다.
+    """
+    try:
+        from pykrx.website.comm import auth as _auth
+
+        _auth.print = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+    except Exception as exc:
+        # 라이브러리 내부 구조 변경 시 graceful skip
+        LOG.debug("pykrx auth print 침묵화 skip: %s", exc)
+
+
 @contextmanager
 def _quiet_pykrx() -> Generator[None]:
     """pykrx HTTP 호출 구간의 stdout/stderr 소음을 억제하는 컨텍스트 매니저.
@@ -51,6 +73,8 @@ def _quiet_pykrx() -> Generator[None]:
     종목당 ~0.5s)에 다른 스레드가 로깅하면 그 출력도 함께 버려질 수 있다.
     pykrx 호출이 짧고 _run_batch for-loop 안에서 직렬 실행되므로 영향은 미미하다.
     """
+    # auth 모듈 print 를 출처에서 침묵화(버퍼링으로 fd 구간을 빠져나가는 print 대비)
+    _silence_pykrx_auth_prints()
     devnull_fd = os.open(os.devnull, os.O_WRONLY)
     saved_out_fd = os.dup(1)
     saved_err_fd = os.dup(2)

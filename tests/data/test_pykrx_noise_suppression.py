@@ -2,7 +2,7 @@
 
 pykrx는 KRX 세션 만료·재로그인 시도를 bare print()로 stdout에 출력하고,
 내부 로거의 TypeError가 Python '--- Logging error ---' + 전체 트레이스백을
-stderr에 쏟아낸다 (2026-06-25 실측: 17,046 로그라인/일, print×107 + 트레이스백×321).
+stderr에 쏟아낸다 (2026-06-25 실측: 17,046 로그라인/일, print x107 + 트레이스백 x321).
 
 이 테스트는 _quiet_pykrx() 컨텍스트 매니저가:
   1. pykrx 호출 범위 내 stdout/stderr 소음을 완전 억제하는지
@@ -19,15 +19,14 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _make_ohlcv_df() -> pd.DataFrame:
     """테스트용 소형 OHLCV DataFrame 반환."""
+
     import pandas as pd
-    from datetime import date
 
     dates = pd.to_datetime(["2026-06-24"])
     df = pd.DataFrame(
@@ -90,8 +89,8 @@ class TestFetchOhlcvNoiseSuppression:
         monkeypatch.setitem(sys.modules, "pykrx.stock", mock_stock)
 
         # upsert_ohlcv stub — DB 미접촉
-        with patch("trading.data.pykrx_adapter.upsert_ohlcv", return_value=1) as mock_upsert:
-            from trading.data.pykrx_adapter import fetch_ohlcv  # noqa: PLC0415
+        with patch("trading.data.pykrx_adapter.upsert_ohlcv", return_value=1):
+            from trading.data.pykrx_adapter import fetch_ohlcv
 
             result = fetch_ohlcv("005930", date(2026, 6, 24), date(2026, 6, 24))
 
@@ -124,7 +123,7 @@ class TestFetchOhlcvNoiseSuppression:
         monkeypatch.setitem(sys.modules, "pykrx.stock", mock_stock)
 
         with patch("trading.data.pykrx_adapter.upsert_ohlcv", return_value=0):
-            from trading.data.pykrx_adapter import fetch_ohlcv  # noqa: PLC0415
+            from trading.data.pykrx_adapter import fetch_ohlcv
 
             with pytest.raises(ValueError, match="boom"):
                 fetch_ohlcv("005930", date(2026, 6, 24), date(2026, 6, 24))
@@ -153,7 +152,7 @@ class TestFetchFlowsNoiseSuppression:
         monkeypatch.setitem(sys.modules, "pykrx.stock", mock_stock)
 
         with patch("trading.data.pykrx_adapter.upsert_flows", return_value=1):
-            from trading.data.pykrx_adapter import fetch_flows  # noqa: PLC0415
+            from trading.data.pykrx_adapter import fetch_flows
 
             result = fetch_flows("005930", date(2026, 6, 24), date(2026, 6, 24))
 
@@ -195,7 +194,7 @@ class TestFetchKospi200NoiseSuppression:
         monkeypatch.setitem(sys.modules, "pykrx", MagicMock(stock=mock_stock))
         monkeypatch.setitem(sys.modules, "pykrx.stock", mock_stock)
 
-        from trading.data.universe import _fetch_kospi200_from_pykrx  # noqa: PLC0415
+        from trading.data.universe import _fetch_kospi200_from_pykrx
 
         result = _fetch_kospi200_from_pykrx()
 
@@ -208,3 +207,56 @@ class TestFetchKospi200NoiseSuppression:
         assert captured.err == "", (
             f"stderr에 pykrx 소음 잡힘: {captured.err!r}"
         )
+
+
+class TestSilencePykrxAuthPrints:
+    """_silence_pykrx_auth_prints — auth 모듈 bare print 출처 침묵화 검증."""
+
+    def test_auth_print_replaced_with_noop(self, capsys):
+        """auth 모듈에 no-op print 가 주입되어 호출해도 출력이 없어야 한다.
+
+        실 pykrx import 의 import-time 로그인 print 오염을 피하려고 가짜 auth
+        모듈을 sys.modules 에 주입한 뒤 침묵화 함수가 print 를 치환하는지 본다.
+        """
+        import sys as _sys
+        import types
+
+        fake_auth = types.ModuleType("pykrx.website.comm.auth")
+
+        def _real_print(*args, **kwargs):
+            print("KRX 로그인 시도...")
+
+        fake_auth.print = _real_print  # type: ignore[attr-defined]
+        fake_comm = types.ModuleType("pykrx.website.comm")
+        fake_comm.auth = fake_auth  # type: ignore[attr-defined]
+
+        with patch.dict(
+            _sys.modules,
+            {
+                "pykrx.website.comm": fake_comm,
+                "pykrx.website.comm.auth": fake_auth,
+            },
+        ):
+            from trading.data.pykrx_adapter import (
+                _silence_pykrx_auth_prints,
+            )
+
+            _silence_pykrx_auth_prints()
+            # 치환 후 호출 — 아무 출력도 없어야 함
+            fake_auth.print("KRX 세션 만료, 재로그인 시도...")
+
+        captured = capsys.readouterr()
+        assert captured.out == "", f"auth print 침묵화 실패: {captured.out!r}"
+        assert fake_auth.print("x") is None
+
+    def test_silence_is_graceful_when_auth_missing(self):
+        """auth 모듈을 import 할 수 없어도 예외 없이 graceful skip."""
+        import sys as _sys
+
+        with patch.dict(_sys.modules, {"pykrx.website.comm.auth": None}):
+            from trading.data.pykrx_adapter import (
+                _silence_pykrx_auth_prints,
+            )
+
+            # 예외 전파 없이 조용히 통과해야 함
+            _silence_pykrx_auth_prints()
