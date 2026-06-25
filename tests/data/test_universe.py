@@ -242,12 +242,21 @@ class TestKospi200Helper:
 
     def test_read_kospi200_invokes_pykrx_dynamic(self):
         """_read_kospi200_top50 calls pykrx.stock.get_index_portfolio_deposit_file."""
+        from datetime import datetime
+
+        import pytz
+
         from trading.data import universe
 
+        kst = pytz.timezone("Asia/Seoul")
+        # 장중 시간으로 고정해 off-hours 가드를 우회
+        market_now = kst.localize(datetime(2026, 6, 25, 10, 0, 0))
+
         fake_tickers = [f"{i:06d}" for i in range(1, 201)]
-        with patch.object(
-            universe, "_fetch_kospi200_from_pykrx", return_value=fake_tickers
-        ) as m:
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", return_value=fake_tickers) as m,
+            patch.object(universe, "_now_kst", return_value=market_now),
+        ):
             result = universe._read_kospi200_top50()
 
         m.assert_called_once()

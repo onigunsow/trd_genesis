@@ -30,15 +30,29 @@ KOSPI200 source decision (Q-1, 2026-05-11): pykrx dynamic via
 from __future__ import annotations
 
 import logging
+from datetime import datetime, time
+
+import pytz
 
 from trading.db.session import connection
 from trading.personas.context import DEFAULT_WATCHLIST
+from trading.scheduler.calendar import is_trading_day
 from trading.screener.daily_screen import load_screened_tickers
 
 LOG = logging.getLogger(__name__)
 
 KOSPI200_INDEX_CODE = "1028"
 KOSPI200_TOP_N = 50
+
+# KRX 정규장 시간 (KST): 09:00 ~ 15:30
+_KRX_OPEN = time(9, 0)
+_KRX_CLOSE = time(15, 30)
+_KST = pytz.timezone("Asia/Seoul")
+
+
+def _now_kst() -> datetime:
+    """현재 KST 시각 반환. 테스트에서 monkeypatch 용으로 분리."""
+    return datetime.now(_KST)
 
 
 def _read_screened_tickers() -> list[str]:
@@ -81,7 +95,22 @@ def _fetch_kospi200_from_pykrx() -> list[str]:
 
 
 def _read_kospi200_top50() -> list[str]:
-    """Return top-50 KOSPI200 tickers (or [] on failure)."""
+    """Return top-50 KOSPI200 tickers (or [] on failure or off-hours).
+
+    장외 시간 가드: KRX 비거래일이거나 09:00~15:30 KST 범위 밖이면
+    pykrx HTTP 요청을 건너뛰고 [] 를 반환한다.
+    pykrx 는 장외 로그인 시도 시 JSONDecodeError 와 TypeError 스팸을
+    자체 로거로 쏟아내므로 HTTP 호출 자체를 막는 것이 유일한 해결책.
+    """
+    # 장외 시간에는 pykrx 를 건드리지 않음
+    now = _now_kst()
+    if not is_trading_day(now.date()) or not (_KRX_OPEN <= now.time() <= _KRX_CLOSE):
+        LOG.info(
+            "KOSPI200 조회 skip — 장외 시간 (%s KST), pykrx 호출 생략",
+            now.strftime("%H:%M"),
+        )
+        return []
+
     try:
         all_tickers = _fetch_kospi200_from_pykrx()
     except Exception as exc:
