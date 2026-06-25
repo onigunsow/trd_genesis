@@ -88,10 +88,17 @@ def _fetch_kospi200_from_pykrx() -> list[str]:
 
     Indirected through a helper so tests can monkeypatch without invoking the
     real pykrx HTTP call.
+
+    pykrx_adapter._quiet_pykrx() 로 HTTP 호출을 감싸 pykrx의 bare print()/
+    broken-logging 소음이 스케줄러 로그에 섞이지 않도록 한다.
+    예외는 그대로 전파 — _read_kospi200_top50 의 except가 처리함.
     """
     from pykrx import stock  # lazy import (heavy)
 
-    return list(stock.get_index_portfolio_deposit_file(KOSPI200_INDEX_CODE))
+    from trading.data.pykrx_adapter import _quiet_pykrx
+
+    with _quiet_pykrx():
+        return list(stock.get_index_portfolio_deposit_file(KOSPI200_INDEX_CODE))
 
 
 def _read_kospi200_top50() -> list[str]:
