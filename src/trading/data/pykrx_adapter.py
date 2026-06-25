@@ -8,6 +8,8 @@ from __future__ import annotations
 import contextlib
 import io
 import logging
+import os
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import date
@@ -38,13 +40,36 @@ def _quiet_pykrx() -> Generator[None]:
     예외는 억제하지 않고 그대로 전파한다 — 호출자(_run_batch/_safe_collect)가
     except로 잡아 단일 WARNING을 남긴다.
 
-    주의: redirect_stdout/redirect_stderr는 프로세스-글로벌 sys.stdout/sys.stderr를
-    교체한다. pykrx 호출이 _run_batch for-loop 안에서 직렬 실행됨에 의존한다
-    (스레드 없음 — 동시 호출 시 redirect가 충돌할 수 있음).
+    Python 레벨 redirect_stdout/stderr 만으로는 부족하다 — pykrx 내부 트레이스백·
+    logging 핸들러(생성 시점의 원본 stderr fd 에 바인딩)·일부 print 는 sys.stdout/
+    stderr 객체 교체를 우회해 fd 1/2 로 직접 나간다(2026-06-25 라이브 실측). 따라서
+    os.dup2 로 fd 1/2 자체를 /dev/null 로 돌려 모든 채널(print·logging·traceback·
+    C 레벨)을 차단한다. Python 레벨 redirect 도 병행해 우리 코드가 이 구간에서
+    로깅하더라도 throwaway 로 흘려보낸다.
+
+    주의: fd 리다이렉트는 프로세스-글로벌이다. 이 구간(단일 stock.get_* 호출,
+    종목당 ~0.5s)에 다른 스레드가 로깅하면 그 출력도 함께 버려질 수 있다.
+    pykrx 호출이 짧고 _run_batch for-loop 안에서 직렬 실행되므로 영향은 미미하다.
     """
-    with contextlib.redirect_stdout(io.StringIO()):
-        with contextlib.redirect_stderr(io.StringIO()):
-            yield
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_out_fd = os.dup(1)
+    saved_err_fd = os.dup(2)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.dup2(devnull_fd, 1)
+    os.dup2(devnull_fd, 2)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()):
+                yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_out_fd, 1)
+        os.dup2(saved_err_fd, 2)
+        os.close(devnull_fd)
+        os.close(saved_out_fd)
+        os.close(saved_err_fd)
 
 
 def fetch_ohlcv(symbol: str, start: date, end: date) -> int:
