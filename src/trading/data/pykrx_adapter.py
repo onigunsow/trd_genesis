@@ -98,12 +98,24 @@ def _quiet_pykrx() -> Generator[None]:
 
 def fetch_ohlcv(symbol: str, start: date, end: date) -> int:
     """Fetch OHLCV for a Korean ticker and upsert to cache. Returns row count."""
+    # 서킷 브레이커 확인 — OPEN이면 KrxCircuitOpen 발생, pykrx 미호출
+    from trading.data.krx_circuit_breaker import _get_shared_breaker
+
+    breaker = _get_shared_breaker()
+    breaker.check_or_raise()
+
     from pykrx import stock  # lazy import (heavy)
 
     s = start.strftime("%Y%m%d")
     e = end.strftime("%Y%m%d")
-    with _quiet_pykrx():
-        df = stock.get_market_ohlcv_by_date(s, e, symbol)
+    try:
+        with _quiet_pykrx():
+            df = stock.get_market_ohlcv_by_date(s, e, symbol)
+    except Exception:
+        breaker.record_failure()
+        raise
+
+    breaker.record_success()
     if df is None or df.empty:
         return 0
 
@@ -135,12 +147,24 @@ def fetch_incremental(symbol: str, default_start: date) -> int:
 
 def fetch_fundamentals(symbol: str, start: date, end: date) -> int:
     """Fetch daily fundamentals (PER/PBR/EPS/BPS/Div). Upsert to fundamentals table."""
+    # 서킷 브레이커 확인 — OPEN이면 KrxCircuitOpen 발생, pykrx 미호출
+    from trading.data.krx_circuit_breaker import _get_shared_breaker
+
+    breaker = _get_shared_breaker()
+    breaker.check_or_raise()
+
     from pykrx import stock  # lazy import
 
     s = start.strftime("%Y%m%d")
     e = end.strftime("%Y%m%d")
-    with _quiet_pykrx():
-        df = stock.get_market_fundamental_by_date(s, e, symbol)
+    try:
+        with _quiet_pykrx():
+            df = stock.get_market_fundamental_by_date(s, e, symbol)
+    except Exception:
+        breaker.record_failure()
+        raise
+
+    breaker.record_success()
     if df is None or df.empty:
         return 0
 
@@ -172,12 +196,24 @@ def fetch_fundamentals(symbol: str, start: date, end: date) -> int:
 
 def fetch_flows(symbol: str, start: date, end: date) -> int:
     """Fetch daily foreign/institution/individual net trading values."""
+    # 서킷 브레이커 확인 — OPEN이면 KrxCircuitOpen 발생, pykrx 미호출
+    from trading.data.krx_circuit_breaker import _get_shared_breaker
+
+    breaker = _get_shared_breaker()
+    breaker.check_or_raise()
+
     from pykrx import stock  # lazy import
 
     s = start.strftime("%Y%m%d")
     e = end.strftime("%Y%m%d")
-    with _quiet_pykrx():
-        df = stock.get_market_trading_value_by_date(s, e, symbol)
+    try:
+        with _quiet_pykrx():
+            df = stock.get_market_trading_value_by_date(s, e, symbol)
+    except Exception:
+        breaker.record_failure()
+        raise
+
+    breaker.record_success()
     if df is None or df.empty:
         return 0
 

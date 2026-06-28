@@ -235,20 +235,65 @@ def _run_batch(
 # ---------------------------------------------------------------------------
 
 
+def _check_krx_circuit() -> str | None:
+    """KRX 서킷 브레이커 상태를 확인한다.
+
+    OPEN이면 open_until 시각 문자열을 반환, CLOSED이면 None 반환.
+    서킷 모듈 import 실패 시 None 반환(fail-open).
+    """
+    try:
+        from trading.data.krx_circuit_breaker import KrxCircuitOpen, _get_shared_breaker
+
+        try:
+            _get_shared_breaker().check_or_raise()
+            return None
+        except KrxCircuitOpen as exc:
+            return str(exc)
+    except Exception:
+        # krx_circuit_breaker 모듈 자체 import 실패 — fail-open
+        return None
+
+
+def _circuit_open_metrics(label: str, reason: str) -> dict[str, Any]:
+    """서킷 OPEN으로 배치를 조기 종료할 때 반환할 빈 메트릭."""
+    LOG.warning(
+        "%s — KRX 서킷 OPEN, 종목 루프 생략 (%s)",
+        label,
+        reason,
+    )
+    return {
+        "total_tickers": 0,
+        "success_count": 0,
+        "error_count": 0,
+        "timeout_count": 0,
+        "total_rows_upserted": 0,
+        "duration_seconds": 0.0,
+        "circuit_open": True,
+        "circuit_reason": reason,
+    }
+
+
 def refresh_ohlcv() -> dict[str, Any]:
     """REQ-019-1: Daily OHLCV refresh entrypoint."""
+    # 배치 시작 시 서킷 단일 확인 — OPEN이면 종목 루프 없이 조기 종료
+    if (reason := _check_krx_circuit()) is not None:
+        return _circuit_open_metrics("refresh_ohlcv", reason)
     universe = get_data_universe()
     return _run_batch("refresh_ohlcv", _fetch_ohlcv_for_ticker, universe)
 
 
 def refresh_flows() -> dict[str, Any]:
     """REQ-019-2: Daily flows refresh entrypoint."""
+    if (reason := _check_krx_circuit()) is not None:
+        return _circuit_open_metrics("refresh_flows", reason)
     universe = get_data_universe()
     return _run_batch("refresh_flows", _fetch_flows_for_ticker, universe)
 
 
 def refresh_fundamentals() -> dict[str, Any]:
     """REQ-019-3: Weekly fundamentals refresh entrypoint."""
+    if (reason := _check_krx_circuit()) is not None:
+        return _circuit_open_metrics("refresh_fundamentals", reason)
     universe = get_data_universe()
     return _run_batch("refresh_fundamentals", _fetch_fundamentals_for_ticker, universe)
 

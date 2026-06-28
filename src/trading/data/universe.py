@@ -91,14 +91,28 @@ def _fetch_kospi200_from_pykrx() -> list[str]:
 
     pykrx_adapter._quiet_pykrx() 로 HTTP 호출을 감싸 pykrx의 bare print()/
     broken-logging 소음이 스케줄러 로그에 섞이지 않도록 한다.
+    서킷 브레이커 확인 — OPEN이면 KrxCircuitOpen 발생, pykrx 미호출.
     예외는 그대로 전파 — _read_kospi200_top50 의 except가 처리함.
     """
+    # 서킷 브레이커 확인 — OPEN이면 KrxCircuitOpen 발생, pykrx 미호출
+    from trading.data.krx_circuit_breaker import _get_shared_breaker
+
+    breaker = _get_shared_breaker()
+    breaker.check_or_raise()
+
     from pykrx import stock  # lazy import (heavy)
 
     from trading.data.pykrx_adapter import _quiet_pykrx
 
-    with _quiet_pykrx():
-        return list(stock.get_index_portfolio_deposit_file(KOSPI200_INDEX_CODE))
+    try:
+        with _quiet_pykrx():
+            result = list(stock.get_index_portfolio_deposit_file(KOSPI200_INDEX_CODE))
+    except Exception:
+        breaker.record_failure()
+        raise
+
+    breaker.record_success()
+    return result
 
 
 def _read_kospi200_top50() -> list[str]:
