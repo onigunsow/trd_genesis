@@ -30,6 +30,10 @@ from typing import Any
 from trading.alerts import telegram as tg
 from trading.db.session import audit, get_effective_regime
 from trading.personas import portfolio, regime_branch
+from trading.personas.sector_cap_guard import (
+    enforce_sector_cap,
+    get_sectors_from_db,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -48,6 +52,122 @@ def _read_regime() -> tuple[str, str]:
         return ("neutral", "neutral")
 
 _REQUIRED_KEYS = ("adjusted_signals", "rejected")
+
+
+def _build_price_map(signals: list[dict], holdings: list[dict]) -> dict[str, int]:
+    """BUY 신호 종목의 현재가를 보유 잔고에서 추정한다.
+
+    KRX/네트워크 호출 없이 KIS 잔고 기반 추정만 사용한다.
+    보유 없는 신규 종목은 가격 미상으로 처리 → enforce_sector_cap이 fail-open 처리.
+    """
+    price_map: dict[str, int] = {}
+    holdings_by_ticker = {h.get("ticker", ""): h for h in holdings}
+    for sig in signals:
+        if sig.get("side") != "buy":
+            continue
+        t = sig.get("ticker", "")
+        if not t or t in price_map:
+            continue
+        h = holdings_by_ticker.get(t)
+        if not h:
+            continue  # 신규 종목: 가격 미상 → fail-open
+        qty_h = int(h.get("qty", 0) or 0)
+        eval_h = int(h.get("eval_amount", 0) or 0)
+        if qty_h > 0 and eval_h > 0:
+            price_map[t] = eval_h // qty_h
+        elif h.get("avg_cost"):
+            price_map[t] = int(h["avg_cost"])
+    return price_map
+
+
+def _enrich_holdings_with_sector(
+    holdings: list[dict],
+) -> list[dict]:
+    """보유 종목에 sector가 없으면 DB에서 조회해 인젝트한다 (복사본 반환).
+
+    원본 holdings 목록을 수정하지 않는다.
+    """
+    missing = [h.get("ticker", "") for h in holdings if h.get("ticker") and not h.get("sector")]
+    if not missing:
+        return list(holdings)
+    extra = get_sectors_from_db(missing)
+    result = []
+    for h in holdings:
+        t = h.get("ticker", "")
+        if t and not h.get("sector") and t in extra:
+            h = {**h, "sector": extra[t]}
+        result.append(h)
+    return result
+
+
+def _apply_sector_cap_guard(
+    signals: list[dict],
+    sig_ids: list[int],
+    *,
+    holdings: list[dict],
+    total_assets: int,
+    regime: str,
+    cycle_kind: str,
+    res_rejected: list[int] | None,
+) -> tuple[list[dict], list[int]]:
+    """섹터 집중 가드를 적용해 (signals, sig_ids) 쌍을 반환한다.
+
+    fail-open: 예외 발생 시 입력 그대로 반환.
+    """
+    try:
+        buy_tickers = [
+            s.get("ticker", "")
+            for s in signals
+            if s.get("side") == "buy" and s.get("ticker")
+        ]
+        sector_map = get_sectors_from_db(buy_tickers) if buy_tickers else {}
+        price_map = _build_price_map(signals, holdings)
+        holdings_with_sector = _enrich_holdings_with_sector(holdings)
+        sector_cap_pct = regime_branch.adjust_for_regime(regime).sector_cap_pct
+
+        kept_signals, dropped_infos = enforce_sector_cap(
+            signals,
+            holdings=holdings_with_sector,
+            total_portfolio=total_assets,
+            sector_cap_pct=sector_cap_pct,
+            price_map=price_map,
+            sector_map=sector_map,
+        )
+
+        if not dropped_infos:
+            return kept_signals, sig_ids[: len(kept_signals)]
+
+        # 차단된 BUY의 ticker 집합
+        dropped_tickers = {d["ticker"] for d in dropped_infos}
+
+        # sig_ids와 signals는 1:1 대응 — 차단된 ticker의 BUY를 제거
+        new_sig_ids: list[int] = []
+        for sig, sid in zip(signals, sig_ids, strict=False):
+            if sig.get("ticker") in dropped_tickers and sig.get("side") == "buy":
+                if res_rejected is not None:
+                    res_rejected.append(sid)
+                continue
+            new_sig_ids.append(sid)
+
+        try:
+            tg.system_briefing(
+                "섹터 집중 차단",
+                "[{}] {}".format(
+                    cycle_kind,
+                    "; ".join(
+                        "{} {}".format(d["ticker"], d.get("reason", "섹터 cap 초과"))
+                        for d in dropped_infos
+                    ),
+                ),
+            )
+        except Exception:
+            LOG.warning("sector cap 텔레그램 알림 실패 (swallowed)")
+
+        return kept_signals, new_sig_ids
+
+    except Exception as exc:
+        LOG.warning("섹터 cap 가드 실패 (unadjusted fallback): %s", exc)
+        return signals, sig_ids
 
 
 def _apply_mapping(
@@ -129,15 +249,30 @@ def _apply_portfolio_adjustment(
         signal<->sig_id alignment preserved. On skip/failure, the unchanged
         input lists are returned.
     """
-    # REQ-034-5: holdings < 5 -> skip entirely (no persona call, cost 0).
+    # SPEC-TRADING-035 REQ-035-4: read the macro regime once (used by cash-floor
+    # guard, sector cap guard, and portfolio persona input).
+    regime, risk_appetite = _read_regime()
+
+    # 섹터 집중 가드: decision.jinja:15 "단일 섹터 40% 초과 금지"를 코드 레벨 강제.
+    # holdings 수와 무관하게 항상 적용 (포트폴리오 페르소나와 독립).
+    # fail-open: 예외 발생 시 signals/sig_ids 그대로 반환하여 사이클을 절대 멈추지 않는다.
+    signals, sig_ids = _apply_sector_cap_guard(
+        signals,
+        sig_ids,
+        holdings=holdings,
+        total_assets=total_assets,
+        regime=regime,
+        cycle_kind=cycle_kind,
+        res_rejected=res_rejected,
+    )
+
+    # REQ-034-5: holdings < 5 -> skip portfolio persona entirely (no call, cost 0).
+    # 섹터 가드는 위에서 이미 적용됐으므로 여기서는 페르소나 호출만 스킵한다.
     if not portfolio.is_active(holdings_count):
         return signals, sig_ids
 
-    # SPEC-TRADING-035 REQ-035-4: read the macro regime (fail-safe -> neutral) and
-    # apply the hard cash-floor guard (R-1) BEFORE the persona call. The guard
-    # drops NEW buys when cash is below the regime floor (bull 20%, else 30%);
-    # sells/holds are never touched (SPEC-033/034 — exits always pass).
-    regime, risk_appetite = _read_regime()
+    # 현금 바닥 가드 (R-1): cash_floor 아래에서는 신규 BUY 차단.
+    # sells/holds는 절대 건드리지 않는다 (SPEC-033/034).
     kept_after_floor: list[dict[str, Any]] = []
     kept_sids_after_floor: list[int] = []
     floor_dropped: list[int] = []
