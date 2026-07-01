@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 
 class TestGetDataUniverseHappyPath:
     """REQ-019-6 (a, b): union of sources, sorted + deduplicated.
@@ -240,8 +242,17 @@ class TestGetDataUniverseFallback:
 class TestKospi200Helper:
     """REQ-019-6 (f): KOSPI200 source uses pykrx dynamically (user decision Q-1)."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_cache(self, tmp_path, monkeypatch):
+        """prod 캐시 파일 오염 방지 — 격리된 tmp_path 로 교체."""
+        from trading.data import universe
+
+        monkeypatch.setattr(
+            universe, "_kospi200_cache_path", lambda: tmp_path / "kospi200_top50.json"
+        )
+
     def test_read_kospi200_invokes_pykrx_dynamic(self):
-        """_read_kospi200_top50 calls pykrx.stock.get_index_portfolio_deposit_file."""
+        """_read_kospi200_top50 은 장중 + 빈 캐시 시 pykrx 를 호출하고 top-50 반환."""
         from datetime import datetime
 
         import pytz
@@ -249,7 +260,7 @@ class TestKospi200Helper:
         from trading.data import universe
 
         kst = pytz.timezone("Asia/Seoul")
-        # 장중 시간으로 고정해 off-hours 가드를 우회
+        # 장중 시간으로 고정해 off-hours 가드를 우회, 캐시 없음 → pykrx 호출
         market_now = kst.localize(datetime(2026, 6, 25, 10, 0, 0))
 
         fake_tickers = [f"{i:06d}" for i in range(1, 201)]
@@ -265,13 +276,24 @@ class TestKospi200Helper:
         assert result == fake_tickers[:50]
 
     def test_read_kospi200_failure_returns_empty(self, caplog):
-        """When pykrx KOSPI200 fetch fails, return [] (warning logged)."""
+        """장중 + 빈 캐시 + pykrx 실패 → [] 반환, WARNING 로그."""
+        from datetime import datetime
+
+        import pytz
+
         from trading.data import universe
 
-        with patch.object(
-            universe,
-            "_fetch_kospi200_from_pykrx",
-            side_effect=RuntimeError("pykrx down"),
+        kst = pytz.timezone("Asia/Seoul")
+        # 장중 시간으로 고정 + 캐시 없음 → pykrx 시도 → 실패 → []
+        market_now = kst.localize(datetime(2026, 6, 25, 10, 0, 0))
+
+        with (
+            patch.object(
+                universe,
+                "_fetch_kospi200_from_pykrx",
+                side_effect=RuntimeError("pykrx down"),
+            ),
+            patch.object(universe, "_now_kst", return_value=market_now),
         ):
             with caplog.at_level("WARNING"):
                 result = universe._read_kospi200_top50()

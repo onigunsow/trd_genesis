@@ -20,20 +20,26 @@ guard, REQ-019-6 (c)). The function is shared by refresh_ohlcv/flows/
 fundamentals (REQ-019-1/2/3) and blocked_cache (SPEC-020 REQ-020-2).
 
 KOSPI200 source decision (Q-1, 2026-05-11): pykrx dynamic via
-``pykrx.stock.get_index_portfolio_deposit_file('1028')``. Cached per call.
+``pykrx.stock.get_index_portfolio_deposit_file('1028')``. 멤버십은 분기별
+리밸런싱에만 바뀌므로 JSON 파일 캐시로 장외 재조회를 막는다 (SPEC-058-FIX).
 """
 
-# @MX:ANCHOR: SPEC-019 REQ-019-6 + SPEC-020 REQ-020-1 single source of truth for universe
+# @MX:ANCHOR: [AUTO] SPEC-019 REQ-019-6 + SPEC-020 REQ-020-1 single source of truth for universe
 # @MX:REASON: fan_in >= 4 (refresh_ohlcv, refresh_flows, refresh_fundamentals, blocked_cache)
 # @MX:SPEC: SPEC-TRADING-019, SPEC-TRADING-020
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, time
+import os
+import tempfile
+from datetime import date, datetime, time
+from pathlib import Path
 
 import pytz
 
+from trading.config import project_root
 from trading.db.session import connection
 from trading.personas.context import DEFAULT_WATCHLIST
 from trading.scheduler.calendar import is_trading_day
@@ -53,6 +59,63 @@ _KST = pytz.timezone("Asia/Seoul")
 def _now_kst() -> datetime:
     """현재 KST 시각 반환. 테스트에서 monkeypatch 용으로 분리."""
     return datetime.now(_KST)
+
+
+def _kospi200_cache_path() -> Path:
+    """KOSPI200 top-50 멤버십 캐시 파일 경로.
+
+    테스트에서 monkeypatch 로 교체할 수 있도록 별도 함수로 분리.
+    prod 경로: data/kospi200_top50.json (screened_tickers.json 과 동일 볼륨).
+    """
+    return project_root() / "data" / "kospi200_top50.json"
+
+
+def _read_kospi200_cache() -> tuple[list[str], str | None]:
+    """캐시 파일에서 KOSPI200 멤버십을 읽는다.
+
+    Returns:
+        (tickers, trading_day) — 파일 없음/파싱 오류 시 ([], None).
+        절대 예외를 발생시키지 않는다 (방어적 try/except).
+    """
+    try:
+        data = json.loads(_kospi200_cache_path().read_text())
+        tickers = list(data.get("tickers", []))
+        trading_day: str | None = data.get("trading_day")
+        return tickers, trading_day
+    except Exception as exc:
+        LOG.debug("KOSPI200 캐시 읽기 실패 (무시): %s", exc)
+        return [], None
+
+
+def _write_kospi200_cache(tickers: list[str], day: date) -> None:
+    """KOSPI200 멤버십 캐시를 원자적으로 파일에 쓴다.
+
+    tmp 파일에 먼저 쓰고 os.replace() 로 교체해 부분 쓰기를 방지.
+    쓰기 오류는 WARNING 으로 기록하고 삼킨다 — 캐시 실패가 유니버스 조립을 막으면 안 됨.
+    """
+    try:
+        target = _kospi200_cache_path()
+        payload = {
+            "tickers": tickers,
+            "trading_day": day.isoformat(),
+            "fetched_at": _now_kst().isoformat(),
+        }
+        # 같은 디렉토리에 임시 파일 생성 → os.replace 원자적 교체
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, target)
+        except Exception:
+            # 임시 파일 정리 시도
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:
+        LOG.warning("KOSPI200 캐시 쓰기 실패 (무시): %s", exc)
 
 
 def _read_screened_tickers() -> list[str]:
@@ -118,26 +181,53 @@ def _fetch_kospi200_from_pykrx() -> list[str]:
 def _read_kospi200_top50() -> list[str]:
     """Return top-50 KOSPI200 tickers (or [] on failure or off-hours).
 
-    장외 시간 가드: KRX 비거래일이거나 09:00~15:30 KST 범위 밖이면
-    pykrx HTTP 요청을 건너뛰고 [] 를 반환한다.
-    pykrx 는 장외 로그인 시도 시 JSONDecodeError 와 TypeError 스팸을
-    자체 로거로 쏟아내므로 HTTP 호출 자체를 막는 것이 유일한 해결책.
-    """
-    # 장외 시간에는 pykrx 를 건드리지 않음
-    now = _now_kst()
-    if not is_trading_day(now.date()) or not (_KRX_OPEN <= now.time() <= _KRX_CLOSE):
-        LOG.info(
-            "KOSPI200 조회 skip — 장외 시간 (%s KST), pykrx 호출 생략",
-            now.strftime("%H:%M"),
-        )
-        return []
+    캐시 전략 (SPEC-058-FIX):
+    1. 당일 캐시 존재 → 바로 반환 (pykrx 미호출 — 멤버십은 분기별 변경)
+    2. 캐시 미존재/구버전 + 장중 → pykrx 재조회 후 캐시 갱신
+    3. 캐시 미존재/구버전 + 장외 → 구버전 캐시 반환 (없으면 [])
 
-    try:
-        all_tickers = _fetch_kospi200_from_pykrx()
-    except Exception as exc:
-        LOG.warning("KOSPI200 source unavailable: %s", exc)
-        return []
-    return list(all_tickers[:KOSPI200_TOP_N])
+    장외 시간 가드: KRX 비거래일이거나 09:00~15:30 KST 범위 밖이면
+    pykrx HTTP 요청을 건너뛴다. pykrx 는 장외 로그인 시도 시
+    JSONDecodeError 와 TypeError 스팸을 자체 로거로 쏟아내므로
+    HTTP 호출 자체를 막는 것이 유일한 해결책.
+    """
+    now = _now_kst()
+    today = now.date()
+    is_market = is_trading_day(today) and (_KRX_OPEN <= now.time() <= _KRX_CLOSE)
+
+    cached_tickers, cached_day = _read_kospi200_cache()
+    cache_fresh = bool(cached_tickers) and cached_day == today.isoformat()
+
+    # 1. 당일 캐시 → pykrx 미호출 (멤버십은 분기별 변경으로 재조회 불필요)
+    if cache_fresh:
+        return list(cached_tickers)
+
+    # 2. 캐시 구버전/미존재 + 장중 → 신규 조회 후 캐시 갱신
+    if is_market:
+        try:
+            fresh = list(_fetch_kospi200_from_pykrx())[:KOSPI200_TOP_N]
+        except Exception as exc:
+            LOG.warning("KOSPI200 source unavailable: %s", exc)
+            fresh = []
+        if fresh:
+            _write_kospi200_cache(fresh, today)
+            return fresh
+        # 장중 조회 실패/빈 결과 → 구버전 캐시 폴백으로 이동
+
+    # 3. 장외이거나 장중 조회 실패 → 구버전 캐시 반환 (없으면 [])
+    if cached_tickers:
+        LOG.info(
+            "KOSPI200 캐시 사용 (%d종목, %s) — pykrx 미호출",
+            len(cached_tickers),
+            cached_day,
+        )
+        return list(cached_tickers)
+
+    LOG.info(
+        "KOSPI200 캐시 없음 + 장외/실패 → [] 반환 (%s KST)",
+        now.strftime("%H:%M"),
+    )
+    return []
 
 
 def _read_dynamic_tickers() -> list[str]:

@@ -11,8 +11,28 @@ Bug 재현:
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import date, datetime
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+import pytz
+
+# ---------------------------------------------------------------------------
+# 공통 캐시 격리 fixture — 모든 테스트는 prod data/ 캐시를 오염시키지 않음
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kospi200_cache(tmp_path, monkeypatch):
+    """_kospi200_cache_path 를 임시 경로로 교체해 prod 캐시 오염 방지."""
+    from trading.data import universe
+
+    isolated = tmp_path / "kospi200_top50.json"
+    monkeypatch.setattr(universe, "_kospi200_cache_path", lambda: isolated)
+    return isolated
+
 
 # ---------------------------------------------------------------------------
 # Bug 1: _read_kospi200_top50 — 빈 pykrx 결과 시 깔끔한 [] 반환
@@ -26,13 +46,19 @@ class TestReadKospi200EmptyResult:
         """_fetch_kospi200_from_pykrx 가 [] 를 반환하면
         _read_kospi200_top50 은 IndexError 없이 [] 를 돌려줘야 한다.
 
-        RED: 현재 구현은 [] 에 대해 all_tickers[:50] = [] 를 반환하므로
-        실제로 이 케이스는 이미 통과할 수 있다.
-        이 테스트는 그 동작이 명시적으로 고정됨을 검증한다.
+        pykrx 가 장중에 [] 를 반환한 경우 — 캐시 없음 + 장중 + 빈 fetch.
         """
+
         from trading.data import universe
 
-        with patch.object(universe, "_fetch_kospi200_from_pykrx", return_value=[]):
+        kst = pytz.timezone("Asia/Seoul")
+        # 장중 시간으로 고정
+        market_now = kst.localize(datetime(2026, 6, 25, 10, 0, 0))
+
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", return_value=[]),
+            patch("trading.data.universe._now_kst", return_value=market_now),
+        ):
             with caplog.at_level("WARNING"):
                 result = universe._read_kospi200_top50()
 
@@ -51,7 +77,6 @@ class TestReadKospi200EmptyResult:
         로그 메시지가 'KOSPI200 source unavailable' 이어야 하고
         트레이스백 전파가 없어야 한다.
         """
-        import pytz
 
         from trading.data import universe
 
@@ -99,18 +124,13 @@ class TestKospi200OffHoursSkip:
 
     def _make_kst_datetime(self, hour: int, minute: int = 0) -> datetime:
         """KST(UTC+9) 기준의 aware datetime 반환."""
-        import pytz
 
         kst = pytz.timezone("Asia/Seoul")
         # 2026-06-25 는 수요일(평일) — 공휴일 아님
         return kst.localize(datetime(2026, 6, 25, hour, minute, 0))
 
     def test_off_hours_morning_skips_pykrx_and_returns_empty(self, caplog):
-        """06:20 KST (장전) — pykrx fetch 를 건너뛰고 [] 반환.
-
-        RED: 현재 구현은 장외 여부를 확인하지 않아 pykrx 를 그대로 호출함.
-        이 테스트는 수정 전에는 실패해야 한다 (mock 호출 횟수 == 0 조건).
-        """
+        """06:20 KST (장전) + 빈 캐시 — pykrx fetch 를 건너뛰고 [] 반환."""
         from trading.data import universe
 
         off_hours_now = self._make_kst_datetime(6, 20)
@@ -133,21 +153,23 @@ class TestKospi200OffHoursSkip:
             f"장외(06:20 KST) 인데 pykrx 가 {len(pykrx_called)}회 호출됨 — "
             "스팸 방지 가드가 없음"
         )
-        # 빈 리스트를 반환해야 함
+        # 빈 캐시 + 장외 → [] 반환
         assert result == []
-        # 단일 INFO 로그 (스팸 없음)
+        # INFO 로그 확인 (장외/캐시 없음 메시지)
         infos = [r for r in caplog.records if r.levelname == "INFO"]
         assert len(infos) >= 1
         assert any(
-            "skip" in r.message.lower()
+            "장외" in r.message
+            or "캐시" in r.message
+            or "skip" in r.message.lower()
             or "장" in r.message
             or "마감" in r.message
             or "off" in r.message.lower()
             for r in infos
-        ), f"skip 로그 없음: {[r.message for r in caplog.records]}"
+        ), f"장외/캐시 로그 없음: {[r.message for r in caplog.records]}"
 
     def test_during_market_hours_pykrx_is_called(self, caplog):
-        """10:00 KST (장중) — pykrx fetch 가 정상 호출됨."""
+        """10:00 KST (장중) + 빈 캐시 — pykrx fetch 가 정상 호출되고 캐시 파일 작성됨."""
         from trading.data import universe
 
         market_hours_now = self._make_kst_datetime(10, 0)
@@ -167,9 +189,15 @@ class TestKospi200OffHoursSkip:
         # 장중에는 pykrx 호출해야 함
         assert pykrx_called == [True], "장중(10:00 KST) 인데 pykrx 미호출"
         assert result == ["005930", "000660"]
+        # 캐시 파일이 작성되어야 함
+        cache_path = universe._kospi200_cache_path()
+        assert cache_path.exists(), "장중 fetch 후 캐시 파일이 기록되어야 함"
+        cached = json.loads(cache_path.read_text())
+        assert cached["tickers"] == ["005930", "000660"]
+        assert cached["trading_day"] == "2026-06-25"
 
     def test_after_close_evening_skips_pykrx(self):
-        """22:00 KST (장마감 후) — pykrx fetch 건너뜀."""
+        """22:00 KST (장마감 후) + 빈 캐시 — pykrx fetch 건너뜀."""
         from trading.data import universe
 
         after_close = self._make_kst_datetime(22, 0)
@@ -190,8 +218,7 @@ class TestKospi200OffHoursSkip:
         assert result == []
 
     def test_weekend_skips_pykrx(self):
-        """토요일 10:00 KST — pykrx fetch 건너뜀 (비거래일)."""
-        import pytz
+        """토요일 10:00 KST + 빈 캐시 — pykrx fetch 건너뜀 (비거래일)."""
 
         from trading.data import universe
 
@@ -219,8 +246,8 @@ class TestKospi200OffHoursSkip:
 
         이것이 blocked_tickers_cache 06:20 cron 에서 pykrx 스팸이 발생한
         근본 경로 — get_data_universe → _read_kospi200_top50 → pykrx.
+        빈 캐시 + 장외 → screened-only 유니버스, pykrx 0회 호출.
         """
-        import pytz
 
         from trading.data import universe
 
@@ -248,3 +275,208 @@ class TestKospi200OffHoursSkip:
         assert pykrx_called == [], (
             f"get_data_universe() 장외 호출에서 pykrx 가 {len(pykrx_called)}회 호출됨"
         )
+
+
+# ---------------------------------------------------------------------------
+# 캐시 동작 테스트 (신규)
+# ---------------------------------------------------------------------------
+
+
+class TestKospi200MembershipCache:
+    """KOSPI200 멤버십 파일 캐시 동작 검증.
+
+    캐시가 당일이면 서빙, 구버전이면 장중 재조회·장외 구버전 서빙.
+    """
+
+    def _make_kst(self, day: date, hour: int, minute: int = 0) -> datetime:
+
+        kst = pytz.timezone("Asia/Seoul")
+        return kst.localize(datetime(day.year, day.month, day.day, hour, minute, 0))
+
+    def _write_cache(self, cache_path: Path, tickers: list[str], trading_day: str) -> None:
+        """테스트용 캐시 파일 직접 작성."""
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "tickers": tickers,
+                    "trading_day": trading_day,
+                    "fetched_at": f"{trading_day}T10:00:00+09:00",
+                }
+            )
+        )
+
+    def test_off_hours_with_fresh_cache_returns_cache_no_pykrx(self):
+        """장외 + 당일 캐시 → 캐시 반환, pykrx 0회 호출."""
+        from trading.data import universe
+
+        today = date(2026, 6, 25)  # 수요일
+        off_hours_now = self._make_kst(today, 22, 0)
+
+        # 캐시에 당일 데이터 기록
+        cache_path = universe._kospi200_cache_path()
+        self._write_cache(cache_path, ["005930", "000660", "035420"], today.isoformat())
+
+        pykrx_called = []
+
+        def _spy_pykrx():
+            pykrx_called.append(True)
+            return ["005930"]
+
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", side_effect=_spy_pykrx),
+            patch("trading.data.universe._now_kst", return_value=off_hours_now),
+        ):
+            result = universe._read_kospi200_top50()
+
+        # 당일 캐시 → 그대로 반환
+        assert result == ["005930", "000660", "035420"]
+        # pykrx 미호출
+        assert pykrx_called == [], "당일 캐시가 있는데 pykrx 를 호출함"
+
+    def test_off_hours_with_stale_cache_returns_stale_cache_no_pykrx(self):
+        """장외 + 구버전 캐시 → 구버전 캐시 반환, pykrx 0회 호출."""
+        from trading.data import universe
+
+        today = date(2026, 6, 25)  # 수요일
+        yesterday = date(2026, 6, 24)  # 화요일 (어제)
+        off_hours_now = self._make_kst(today, 22, 0)
+
+        # 어제 날짜 캐시 기록
+        cache_path = universe._kospi200_cache_path()
+        stale_tickers = ["005930", "000660"]
+        self._write_cache(cache_path, stale_tickers, yesterday.isoformat())
+
+        pykrx_called = []
+
+        def _spy_pykrx():
+            pykrx_called.append(True)
+            return ["005930"]
+
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", side_effect=_spy_pykrx),
+            patch("trading.data.universe._now_kst", return_value=off_hours_now),
+        ):
+            result = universe._read_kospi200_top50()
+
+        # 장외에서는 구버전 캐시라도 반환 (pykrx 미호출)
+        assert result == stale_tickers
+        assert pykrx_called == [], "장외인데 pykrx 를 호출함"
+
+    def test_market_hours_fresh_cache_skips_pykrx(self):
+        """장중 + 당일 캐시 → 캐시 반환, pykrx 0회 호출 (불필요한 재조회 방지)."""
+        from trading.data import universe
+
+        today = date(2026, 6, 25)  # 수요일
+        market_now = self._make_kst(today, 10, 0)
+
+        # 당일 캐시 기록
+        cache_path = universe._kospi200_cache_path()
+        fresh_tickers = ["005930", "000660", "207940"]
+        self._write_cache(cache_path, fresh_tickers, today.isoformat())
+
+        pykrx_called = []
+
+        def _spy_pykrx():
+            pykrx_called.append(True)
+            return ["005930"]
+
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", side_effect=_spy_pykrx),
+            patch("trading.data.universe._now_kst", return_value=market_now),
+        ):
+            result = universe._read_kospi200_top50()
+
+        # 당일 캐시 → pykrx 없이 반환
+        assert result == fresh_tickers
+        assert pykrx_called == [], "당일 캐시가 있는데 장중에 pykrx 를 호출함"
+
+    def test_market_hours_stale_cache_refetches_and_updates(self):
+        """장중 + 구버전 캐시 → pykrx 재조회 후 새 캐시 파일 갱신."""
+        from trading.data import universe
+
+        today = date(2026, 6, 25)  # 수요일
+        yesterday = date(2026, 6, 24)
+        market_now = self._make_kst(today, 10, 0)
+
+        # 어제 날짜 캐시
+        cache_path = universe._kospi200_cache_path()
+        self._write_cache(cache_path, ["005930"], yesterday.isoformat())
+
+        new_tickers = ["005930", "000660", "207940", "051910"]
+
+        pykrx_called = []
+
+        def _spy_pykrx():
+            pykrx_called.append(True)
+            return new_tickers
+
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", side_effect=_spy_pykrx),
+            patch("trading.data.universe._now_kst", return_value=market_now),
+        ):
+            result = universe._read_kospi200_top50()
+
+        # pykrx 1회 호출
+        assert pykrx_called == [True], "구버전 캐시 + 장중인데 pykrx 미호출"
+        # 새 목록 반환
+        assert result == new_tickers
+        # 캐시 파일 갱신 확인
+        assert cache_path.exists()
+        cached = json.loads(cache_path.read_text())
+        assert cached["tickers"] == new_tickers
+        assert cached["trading_day"] == today.isoformat()
+
+    def test_market_fetch_failure_falls_back_to_stale_cache(self, caplog):
+        """장중 + pykrx 실패 + 구버전 캐시 → 구버전 캐시 반환, 경고 로그."""
+        from trading.data import universe
+
+        today = date(2026, 6, 25)  # 수요일
+        yesterday = date(2026, 6, 24)
+        market_now = self._make_kst(today, 10, 0)
+
+        # 구버전 캐시
+        cache_path = universe._kospi200_cache_path()
+        stale_tickers = ["005930", "000660"]
+        self._write_cache(cache_path, stale_tickers, yesterday.isoformat())
+
+        with (
+            patch.object(
+                universe,
+                "_fetch_kospi200_from_pykrx",
+                side_effect=RuntimeError("KRX 타임아웃"),
+            ),
+            patch("trading.data.universe._now_kst", return_value=market_now),
+        ):
+            with caplog.at_level("WARNING"):
+                result = universe._read_kospi200_top50()
+
+        # pykrx 실패 → 구버전 캐시 반환 ([] 가 아님)
+        assert result == stale_tickers, "pykrx 실패 시 구버전 캐시를 반환해야 함"
+        # 경고 로그 확인
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) >= 1
+
+    def test_cold_start_off_hours_no_cache_returns_empty(self):
+        """캐시 없음 + 장외 → [] 반환 (cold start)."""
+
+        from trading.data import universe
+
+        kst = pytz.timezone("Asia/Seoul")
+        # 장전 시간 (캐시 파일 없음 — autouse fixture 가 빈 tmp_path 를 제공)
+        off_hours_now = kst.localize(datetime(2026, 6, 25, 6, 20, 0))
+
+        pykrx_called = []
+
+        def _spy_pykrx():
+            pykrx_called.append(True)
+            return ["005930"]
+
+        with (
+            patch.object(universe, "_fetch_kospi200_from_pykrx", side_effect=_spy_pykrx),
+            patch("trading.data.universe._now_kst", return_value=off_hours_now),
+        ):
+            result = universe._read_kospi200_top50()
+
+        # cold start + 장외 → []
+        assert result == []
+        assert pykrx_called == [], "cold start 장외인데 pykrx 를 호출함"
