@@ -31,6 +31,10 @@ LOG="$TRADING_DIR/logs/persona_watcher.log"
 POLL_INTERVAL=2
 # REQ-SCHED-07-4: Heartbeat update interval (seconds)
 HEARTBEAT_INTERVAL=30
+# SPEC-052 후속: CLI 경화 — 타임아웃·재시도 설정.
+# 성공 호출 최대 ~189s(micro/macro) → 300s 여유 마진.
+CLAUDE_TIMEOUT=300
+MAX_ATTEMPTS=2
 
 mkdir -p "$CALLS_DIR" "$RESULTS_DIR" "$(dirname "$LOG")"
 
@@ -40,6 +44,54 @@ log() {
 
 update_heartbeat() {
     touch "$HEARTBEAT_FILE"
+}
+
+# SPEC-052 후속: CLI 경화 — 빈응답 발생 시 운영자 텔레그램 소프트 알림 (6h 쓰로틀).
+# 인증 만료와 달리 장초반 부하성 빈응답은 SPEC-052 latch(3연속) 전에는 텔레그램 무음.
+# 이 함수로 단건 실패도 운영자에게 전달 (크레딧 누수 없음, strict 가드 유지).
+send_persona_soft_alert() {
+    local persona="${1:-unknown}"
+    local exit_code="${2:-1}"
+    local state_file="$TRADING_DIR/data/persona_empty_alert.state"
+    local now
+    now=$(date +%s)
+
+    # 6h 쓰로틀 체크 (21600초)
+    if [ -f "$state_file" ]; then
+        local last_alert
+        last_alert=$(cat "$state_file" 2>/dev/null || echo "0")
+        # set -u 안전: ${last_alert:-0}
+        last_alert="${last_alert:-0}"
+        if (( now - last_alert < 21600 )); then
+            return 0
+        fi
+    fi
+
+    # .env에서 텔레그램 크레덴셜 파싱 (set -u 안전: ${VAR:-} 사용)
+    local bot_token=""
+    local chat_id=""
+    if [ -f "$TRADING_DIR/.env" ]; then
+        bot_token=$(grep -E '^TELEGRAM_BOT_TOKEN_TRADING=' "$TRADING_DIR/.env" 2>/dev/null \
+            | head -1 | cut -d'=' -f2- | tr -d '"'"'"' ' 2>/dev/null || true)
+        chat_id=$(grep -E '^TELEGRAM_CHAT_ID=' "$TRADING_DIR/.env" 2>/dev/null \
+            | head -1 | cut -d'=' -f2- | tr -d '"'"'"' ' 2>/dev/null || true)
+    fi
+
+    # 크레덴셜 없으면 조용히 종료 (set -u 안전)
+    if [ -z "${bot_token:-}" ] || [ -z "${chat_id:-}" ]; then
+        return 0
+    fi
+
+    local msg="⚠️ 페르소나 CLI 빈응답 — ${persona} 재시도도 실패(exit=${exit_code}). 인증은 정상(토큰 자동갱신), 장초반 부하 의심. 크레딧 누수 0(strict 가드). 6h 쓰로틀."
+
+    curl -s -m 10 \
+        "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        --data-urlencode "chat_id=${chat_id}" \
+        --data-urlencode "text=${msg}" \
+        >> "$LOG" 2>&1 || true
+
+    # 성공 여부와 무관하게 state 갱신 (과다 알림 방지)
+    echo "$now" > "$state_file"
 }
 
 log "=== Persona watcher started (PID $$) ==="
@@ -86,22 +138,44 @@ except Exception as e:
         PERSONA=$(python3 -c "import json; print(json.load(open('$call_file')).get('persona','unknown'))" 2>/dev/null || echo "unknown")
 
         log "Processing $PERSONA ($BASENAME)"
-        START_TIME=$(date +%s%N)
 
-        # REQ-RUNNER-03-2: Pipe prompt to claude -p --max-turns 1
-        # Write prompt to temp file to avoid ARG_MAX limits
+        # SPEC-052 후속: CLI 경화 — 프롬프트 파일은 루프 밖에서 생성, 재시도 시 재사용.
+        # START_TIME은 루프 전에 기록 → EXEC_SECONDS = 전체 경과시간(재시도 포함).
         PROMPT_FILE=$(mktemp /tmp/persona_prompt_XXXXXX.txt)
         echo "$PROMPT" > "$PROMPT_FILE"
 
-        RESPONSE=$(cat "$PROMPT_FILE" | $CLAUDE -p --max-turns 1 2>>"$LOG")
-        EXIT_CODE=$?
+        START_TIME=$(date +%s%N)
+        RESPONSE=""
+        EXIT_CODE=1
+        ATTEMPT=0
+
+        while (( ATTEMPT < MAX_ATTEMPTS )); do
+            ATTEMPT=$(( ATTEMPT + 1 ))
+
+            # timeout 124 반환 시 재시도 대상 (실패 시도로 간주).
+            # stdin redirect (<) 사용 — cat 파이프 대신 timeout이 프로세스 직접 소유.
+            RESPONSE=$(timeout "${CLAUDE_TIMEOUT}s" "$CLAUDE" -p --max-turns 1 < "$PROMPT_FILE" 2>>"$LOG")
+            EXIT_CODE=$?
+
+            if [ "$EXIT_CODE" -eq 0 ] && [ -n "$RESPONSE" ]; then
+                break  # 성공 — 루프 종료
+            fi
+
+            # 재시도 남은 경우 로그 + 대기
+            if (( ATTEMPT < MAX_ATTEMPTS )); then
+                log "RETRY $PERSONA — 빈응답/실패 (exit=$EXIT_CODE, len=${#RESPONSE}), 재시도"
+                sleep 3
+            fi
+        done
+
+        # 프롬프트 파일 제거 — 재시도 루프 종료 후
         rm -f "$PROMPT_FILE"
 
         END_TIME=$(date +%s%N)
         EXEC_MS=$(( (END_TIME - START_TIME) / 1000000 ))
         EXEC_SECONDS=$(echo "scale=1; $EXEC_MS / 1000" | bc 2>/dev/null || echo "0")
 
-        if [ $EXIT_CODE -eq 0 ] && [ -n "$RESPONSE" ]; then
+        if [ "$EXIT_CODE" -eq 0 ] && [ -n "$RESPONSE" ]; then
             # S-2: Result file JSON schema
             python3 -c "
 import json, sys
@@ -123,7 +197,7 @@ with open('$RESULT_FILE', 'w') as f:
             RESULT_BYTES=$(wc -c < "$RESULT_FILE" 2>/dev/null || echo "0")
             log "Done $PERSONA -- ${EXEC_SECONDS}s, ${RESULT_BYTES} bytes"
         else
-            # REQ-RUNNER-03-3: Write error result on CLI failure
+            # REQ-RUNNER-03-3: Write error result on CLI failure (양쪽 시도 모두 실패)
             log "FAILED $PERSONA (exit=$EXIT_CODE)"
             python3 -c "
 import json
@@ -140,6 +214,10 @@ with open('$RESULT_FILE', 'w') as f:
 " 2>>"$LOG"
             # REQ-RUNNER-03-7: Remove call file
             rm -f "$call_file"
+
+            # SPEC-052 후속: CLI 경화 — 양쪽 시도 실패 시 운영자 소프트 알림 (6h 쓰로틀).
+            # SPEC-052 latch는 3연속 실패 기준 — 단건 실패는 이 경로로만 운영자 전달.
+            send_persona_soft_alert "$PERSONA" "$EXIT_CODE"
         fi
 
         # Update heartbeat after each processed file
