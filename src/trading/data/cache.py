@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from datetime import date
-from typing import Any, Iterable
+from typing import Any
 
 from trading.db.session import connection
 
@@ -86,6 +87,26 @@ def cached_range(source: str, symbol: str) -> tuple[date, date] | None:
         if not row or row["lo"] is None:
             return None
         return (row["lo"], row["hi"])
+
+
+def latest_close(source: str, symbol: str) -> int | None:
+    """심볼의 가장 최근 캐시 종가를 반환한다. 행이 없으면 None.
+
+    네트워크 호출 없이 ohlcv 테이블에서 ORDER BY ts DESC LIMIT 1 로 조회한다.
+    enforce_sector_cap 가격 추정(신규 BUY 종목)에 사용된다.
+    """
+    sql = (
+        "SELECT close FROM ohlcv WHERE source=%s AND symbol=%s"
+        " ORDER BY ts DESC LIMIT 1"
+    )
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (source, symbol))
+        row = cur.fetchone()
+    if not row:
+        return None
+    # dict 형식(psycopg2 RealDictCursor) 또는 tuple 형식 양쪽 지원
+    close = row.get("close") if isinstance(row, dict) else row[0]
+    return int(close) if close is not None else None
 
 
 def upsert_macro(

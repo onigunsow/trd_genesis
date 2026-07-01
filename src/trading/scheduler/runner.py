@@ -541,6 +541,21 @@ def main() -> None:
         name="data_freshness_check 09:00",
     )
 
+    # 섹터 집중 가드(enforce_sector_cap)가 후보 종목 섹터를 알 수 있도록
+    # 장중(10:00 KST)에 ticker_metadata.sector 를 최신 상태로 유지한다.
+    # pykrx get_market_sector_classifications 는 KRX 장중에만 안정적으로 동작.
+    sched.add_job(
+        lambda: _wrap(
+            "sector_metadata_load",
+            lambda: __import__(
+                "trading.dashboard.sector_loader", fromlist=["load_sector_metadata"]
+            ).load_sector_metadata(),
+        ),
+        CronTrigger(day_of_week="mon-fri", hour=10, minute=0, timezone=KST),
+        id="sector_metadata_load",
+        name="sector_metadata_load 10:00",
+    )
+
     LOG.info("trading scheduler starting (KST cron)")
     signal.signal(signal.SIGTERM, lambda *_: sched.shutdown(wait=False))
 

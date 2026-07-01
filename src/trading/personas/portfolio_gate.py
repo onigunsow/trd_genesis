@@ -55,11 +55,16 @@ _REQUIRED_KEYS = ("adjusted_signals", "rejected")
 
 
 def _build_price_map(signals: list[dict], holdings: list[dict]) -> dict[str, int]:
-    """BUY 신호 종목의 현재가를 보유 잔고에서 추정한다.
+    """BUY 신호 종목의 현재가를 보유 잔고 또는 OHLCV 캐시에서 추정한다.
 
-    KRX/네트워크 호출 없이 KIS 잔고 기반 추정만 사용한다.
-    보유 없는 신규 종목은 가격 미상으로 처리 → enforce_sector_cap이 fail-open 처리.
+    우선순위:
+    1. 보유 종목: KIS 잔고 기반(eval_amount/qty 또는 avg_cost) — 네트워크 0
+    2. 신규(미보유) 종목: OHLCV 캐시 마지막 종가 — 네트워크 0, DB 조회만
+    가격을 끝내 확인하지 못한 신규 종목은 미포함 → enforce_sector_cap fail-open 처리.
     """
+    from trading.data.cache import latest_close
+    from trading.data.pykrx_adapter import SOURCE as _PYKRX_SOURCE
+
     price_map: dict[str, int] = {}
     holdings_by_ticker = {h.get("ticker", ""): h for h in holdings}
     for sig in signals:
@@ -69,14 +74,19 @@ def _build_price_map(signals: list[dict], holdings: list[dict]) -> dict[str, int
         if not t or t in price_map:
             continue
         h = holdings_by_ticker.get(t)
-        if not h:
-            continue  # 신규 종목: 가격 미상 → fail-open
-        qty_h = int(h.get("qty", 0) or 0)
-        eval_h = int(h.get("eval_amount", 0) or 0)
-        if qty_h > 0 and eval_h > 0:
-            price_map[t] = eval_h // qty_h
-        elif h.get("avg_cost"):
-            price_map[t] = int(h["avg_cost"])
+        if h:
+            # 보유 종목: KIS 잔고 기반 가격 추정
+            qty_h = int(h.get("qty", 0) or 0)
+            eval_h = int(h.get("eval_amount", 0) or 0)
+            if qty_h > 0 and eval_h > 0:
+                price_map[t] = eval_h // qty_h
+            elif h.get("avg_cost"):
+                price_map[t] = int(h["avg_cost"])
+        else:
+            # 신규(미보유) 후보: OHLCV 캐시 마지막 종가로 가격 추정 (네트워크 0)
+            c = latest_close(_PYKRX_SOURCE, t)
+            if c and c > 0:
+                price_map[t] = c
     return price_map
 
 
