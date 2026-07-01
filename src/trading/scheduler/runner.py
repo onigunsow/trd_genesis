@@ -519,12 +519,15 @@ def main() -> None:
         id="data_refresh_flows",
         name="data_refresh_flows 16:05",
     )
-    # REQ-019-3: Weekly fundamentals refresh — Sunday 18:00 KST (no trading-day guard)
+    # REQ-019-3: Daily fundamentals refresh — 16:10 KST mon-fri (ohlcv 16:00·flows 16:05 뒤).
+    # 2026-07-01: 주간(일 18:00)→일간 전환. 가치/퀄리티 팩터는 daily PER/PBR 이 필요하고,
+    # 주간 주기는 최대 ~7일 stale 로 SPEC-019 STALE 경보를 반복 유발했다(07-01 09:00 실측).
+    # refresh_fundamentals 는 서킷 확인 + 14일 창 upsert 라 일간 실행도 멱등·저비용.
     sched.add_job(
         lambda: _safe_call("data_refresh_fundamentals", refresh_market_data.refresh_fundamentals),
-        CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=KST),
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=10, timezone=KST),
         id="data_refresh_fundamentals",
-        name="data_refresh_fundamentals Sun 18:00",
+        name="data_refresh_fundamentals 16:10",
     )
     # REQ-019-4: Daily DART disclosure refresh — 18:00 KST every day (DART 365/yr)
     sched.add_job(
