@@ -25,6 +25,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from trading.data import sector_taxonomy
+
 LOG = logging.getLogger(__name__)
 
 # pykrx 업종 분류 시도 — 미설치 환경에서 graceful skip
@@ -45,50 +47,45 @@ except ImportError:
     _quiet_pykrx = None  # type: ignore[assignment]
     _get_shared_breaker = None  # type: ignore[assignment]
 
-
-# pykrx get_market_sector_classifications 의 실제 섹터 컬럼은 '업종명'(한글)이다.
-# ('GICS섹터'/'GICS산업군' 컬럼은 존재하지 않음 — 2026-07-01 라이브 실측.)
-_SECTOR_COL = "업종명"
-
-# 금융 계열 업종명은 pykrx 에서 5개로 분산(금융/기타금융/증권/보험/은행)된다.
-# 그대로 쓰면 섹터 집중 가드가 granular 라벨별로만 cap 을 적용해 "금융 쏠림"을
-# 놓친다(은행 40% + 기타금융 40% = 금융 80% 통과). 하나의 '금융'으로 정규화한다.
-_FINANCIAL_SECTORS = {"금융", "기타금융", "증권", "보험", "은행"}
+# NOTE: pykrx 데이터소스는 현재 KR 전용이다. US 데이터소스 어댑터는 별도 태스크.
+# 섹터 분류 상수(컬럼명·unknown 라벨·그룹 정규화)는 sector_taxonomy.yaml 에서 관리.
 
 
-def _normalize_sector(raw: object) -> str:
-    """pykrx 업종명을 섹터 가드용 라벨로 정규화. 금융 계열은 '금융'으로 통합."""
-    name = (str(raw) if raw is not None else "").strip()
-    if not name or name == "nan":
-        return "미분류"
-    if name in _FINANCIAL_SECTORS:
-        return "금융"
-    return name
-
-
-def _lookup_from_frame(df: object, ticker: str) -> tuple[str, str] | None:
+def _lookup_from_frame(
+    df: object, ticker: str, market: str | None = None
+) -> tuple[str, str] | None:
     """분류표 DataFrame 에서 ticker 의 (정규화섹터, 원본업종명) 조회. 없으면 None.
 
     per-ticker try/except 로 pandas 인덱싱 예외가 전체 적재를 막지 않게 한다.
     """
     try:
-        if df is None or len(df) == 0 or ticker not in df.index:
+        col = sector_taxonomy.sector_column(market)
+        if df is None or len(df) == 0 or ticker not in df.index:  # type: ignore[arg-type]
             return None
-        if _SECTOR_COL not in df.columns:
+        if col is None or col not in df.columns:  # type: ignore[union-attr]
             return None
-        raw = df.loc[ticker, _SECTOR_COL]
-        return (_normalize_sector(raw), str(raw if raw is not None else ""))
+        raw = df.loc[ticker, col]  # type: ignore[index]
+        return (
+            sector_taxonomy.normalize_sector(raw, market),
+            str(raw if raw is not None else ""),
+        )
     except Exception as exc:  # pandas 인덱싱/타입 예외 방어
         LOG.debug("sector_loader: %s 업종 조회 실패(무시): %s", ticker, exc)
         return None
 
 
-def _fetch_sector_map(tickers: list[str]) -> dict[str, tuple[str, str]]:
+def _fetch_sector_map(
+    tickers: list[str], market: str | None = None
+) -> dict[str, tuple[str, str]]:
     """pykrx 로 종목별 업종 조회 (배치 — KOSPI/KOSDAQ 각 1회).
 
     기존 구현은 N 종목에 대해 per-ticker 루프 안에서 전체 시장 분류표를 최대
     2N 회 내려받는 버그가 있었다. 이 구현은 전체 분류표를 KOSPI/KOSDAQ 각 1회
     페치한 뒤 requested tickers 를 일괄 조회한다.
+
+    Args:
+        tickers: 조회할 종목코드 목록.
+        market: 시장 코드(None 이면 sector_taxonomy.active_market() 사용).
 
     Returns:
         {ticker: (sector, industry)} 딕셔너리.
@@ -100,6 +97,9 @@ def _fetch_sector_map(tickers: list[str]) -> dict[str, tuple[str, str]]:
 
     if not tickers:
         return {}
+
+    # market 을 한 번만 resolve 해 하위 함수에 일관되게 전달
+    resolved_market = market or sector_taxonomy.active_market()
 
     from trading.data.krx_circuit_breaker import KrxCircuitOpen
 
@@ -129,9 +129,9 @@ def _fetch_sector_map(tickers: list[str]) -> dict[str, tuple[str, str]]:
     result: dict[str, tuple[str, str]] = {}
     for ticker in tickers:
         # KOSPI 우선, 없으면 KOSDAQ (per-ticker 예외 안전은 _lookup_from_frame 내부)
-        entry = _lookup_from_frame(df_kospi, ticker) or _lookup_from_frame(
-            df_kosdaq, ticker
-        )
+        entry = _lookup_from_frame(
+            df_kospi, ticker, resolved_market
+        ) or _lookup_from_frame(df_kosdaq, ticker, resolved_market)
         if entry is not None:
             result[ticker] = entry
 
@@ -200,12 +200,16 @@ def _get_universe() -> list[str]:
     return get_data_universe()
 
 
-def load_sector_metadata(tickers: list[str] | None = None) -> dict[str, Any]:
+def load_sector_metadata(
+    tickers: list[str] | None = None,
+    market: str | None = None,
+) -> dict[str, Any]:
     """ticker_metadata 를 적재하는 메인 진입점.
 
     Args:
         tickers: None 이면 _get_universe() 와 _tickers_from_db() 합집합 자동 수집.
                  리스트면 지정 종목만.
+        market: 시장 코드(None 이면 sector_taxonomy.active_market() 사용).
 
     Returns:
         {"attempted": N, "upserted": M, "pykrx_available": bool}
@@ -236,7 +240,7 @@ def load_sector_metadata(tickers: list[str] | None = None) -> dict[str, Any]:
 
     LOG.info("sector_loader: 대상 종목 %d 개", len(target))
 
-    sector_map = _fetch_sector_map(target)
+    sector_map = _fetch_sector_map(target, market)
     upserted = _upsert_ticker_metadata(sector_map)
 
     return {

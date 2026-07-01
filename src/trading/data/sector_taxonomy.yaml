@@ -1,0 +1,23 @@
+# 시장별 섹터 분류 설정 (하드코딩 금지 — loader 로직과 분리된 데이터).
+# 새 시장(US 등) 추가 시 이 파일에 항목만 추가하면 sector_loader 코드는 불변.
+# 2026-07-01: KR 값은 pykrx get_market_sector_classifications 라이브 실측 기반.
+
+KR:
+  # pykrx 분류표의 섹터 컬럼명 (DataFrame 인덱스는 '종목코드')
+  sector_column: "업종명"
+  unknown_label: "미분류"
+  # 세분류 → 대분류 정규화. 집중도 가드가 계열을 하나로 묶어 쏠림을 잡도록.
+  # pykrx 는 금융을 5개(금융/기타금융/증권/보험/은행)로 분산해서 반환.
+  sector_groups:
+    금융:
+      - "금융"
+      - "기타금융"
+      - "증권"
+      - "보험"
+      - "은행"
+
+# US 예시 (향후 GICS 기반 — 데이터소스 어댑터 추가 시 활성화):
+# US:
+#   sector_column: "sector"
+#   unknown_label: "Unknown"
+#   sector_groups: {}
