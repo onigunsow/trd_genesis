@@ -623,11 +623,23 @@ def maybe_send_cli_degraded_alert(
 
     try:
         from trading.alerts import telegram as tg
-        tg.system_briefing(
-            "CLI 불건강",
-            "유료 Anthropic API로 비용 누수 중 — 호스트 재인증 필요. "
-            "CLI degraded 상태 감지: cli 인증 만료 또는 워처 stale.",
-        )
+
+        # strict_cost_zero=ON이면 유료 폴백은 실제로 차단되어 누수가 없다.
+        # 무조건 "비용 누수 중"으로 알리면 오해를 부르므로 strict 여부로 문구 분기.
+        strict = bool(state.get("strict_cost_zero_mode"))
+        if strict:
+            _msg = (
+                "CLI degraded 감지(cli 인증 만료 또는 워처 stale). "
+                "strict_cost_zero=ON → 유료 폴백 차단, 크레딧 누수 0. "
+                "단 해당 사이클 LLM 결정은 스킵됨. 여유 시 호스트 재인증 권장."
+            )
+        else:
+            _msg = (
+                "CLI degraded 감지(cli 인증 만료 또는 워처 stale). "
+                "strict_cost_zero=OFF → 유료 Anthropic API 폴백 발생 가능, "
+                "비용 누수 위험. 호스트 재인증 필요."
+            )
+        tg.system_briefing("CLI 불건강", _msg)
     except Exception:  # noqa: BLE001
         LOG.exception("CLI degraded alert 텔레그램 발송 실패")
     return True

@@ -24,7 +24,10 @@ CALLS_DIR = Path(project_root()) / "data" / "persona_calls"
 RESULTS_DIR = Path(project_root()) / "data" / "persona_results"
 
 # REQ-BRIDGE-02-2: Default timeout for polling (seconds)
-DEFAULT_TIMEOUT: int = 180
+# 2026-07-01: 180→300 상향. micro/macro 페르소나는 정상적으로 ~190s 소요(실측)라
+# 180s 대기는 장초반 pre_market micro 를 반복 타임아웃시켰다(07-01 07:33 실측).
+# host persona_watcher.sh 의 claude 타임아웃(300s)과 정렬해 정상 완료를 기다린다.
+DEFAULT_TIMEOUT: int = 300
 
 # Poll interval in seconds (REQ-SCHED-07-5 / A-6)
 POLL_INTERVAL: float = 2.0
