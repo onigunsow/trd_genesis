@@ -25,13 +25,16 @@ def _noop_cm(*args, **kwargs):
 # 헬퍼: 소규모 DataFrame (get_market_sector_classifications 반환 형식 모사)
 # ---------------------------------------------------------------------------
 
-def _make_sector_df(data: dict[str, tuple[str, str]]) -> pd.DataFrame:
-    """ticker → (GICS섹터, GICS산업군) 딕셔너리로 DataFrame 생성."""
-    rows = [
-        {"GICS섹터": sector, "GICS산업군": industry}
-        for sector, industry in data.values()
-    ]
-    return pd.DataFrame(rows, index=list(data.keys()))
+def _make_sector_df(data: dict[str, str]) -> pd.DataFrame:
+    """ticker → 업종명 딕셔너리로 pykrx 분류표 형식 DataFrame 생성.
+
+    실제 pykrx get_market_sector_classifications 는 인덱스='종목코드',
+    섹터 컬럼='업종명'(한글). 그 외 종목명/종가/시가총액 컬럼도 있으나
+    _fetch_sector_map 은 업종명만 사용한다(2026-07-01 라이브 실측 반영).
+    """
+    df = pd.DataFrame({"업종명": list(data.values())}, index=list(data.keys()))
+    df.index.name = "종목코드"
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +50,12 @@ class TestFetchSectorMapBatch:
         from trading.dashboard.sector_loader import _fetch_sector_map
 
         kospi_df = _make_sector_df({
-            "005930": ("정보기술", "반도체 및 반도체 장비"),
-            "000660": ("정보기술", "반도체 및 반도체 장비"),
-            "035420": ("커뮤니케이션서비스", "미디어와 엔터테인먼트"),
+            "005930": "전기·전자",
+            "000660": "전기·전자",
+            "035420": "IT 서비스",
         })
         kosdaq_df = _make_sector_df({
-            "247540": ("건강관리", "제약과 생명과학 도구 및 서비스"),
+            "247540": "제약",
         })
 
         tickers = ["005930", "000660", "035420", "247540", "999999"]
@@ -79,7 +82,7 @@ class TestFetchSectorMapBatch:
         from trading.dashboard.sector_loader import _fetch_sector_map
 
         kospi_df = _make_sector_df({
-            "005930": ("정보기술", "반도체 및 반도체 장비"),
+            "005930": "전기·전자",
         })
         kosdaq_df = pd.DataFrame()  # 빈 KOSDAQ
 
@@ -98,7 +101,8 @@ class TestFetchSectorMapBatch:
             result = _fetch_sector_map(["005930"])
 
         assert "005930" in result
-        assert result["005930"] == ("정보기술", "반도체 및 반도체 장비")
+        # 비금융 업종명은 정규화 후에도 동일 → (정규화섹터, 원본업종명)
+        assert result["005930"] == ("전기·전자", "전기·전자")
 
     def test_KOSDAQ_종목_섹터_반환(self):
         """KOSPI에 없는 종목은 KOSDAQ에서 조회한다."""
@@ -106,7 +110,7 @@ class TestFetchSectorMapBatch:
 
         kospi_df = pd.DataFrame()
         kosdaq_df = _make_sector_df({
-            "247540": ("건강관리", "제약과 생명과학 도구 및 서비스"),
+            "247540": "제약",
         })
 
         mock_stock = MagicMock()
@@ -124,7 +128,7 @@ class TestFetchSectorMapBatch:
             result = _fetch_sector_map(["247540"])
 
         assert "247540" in result
-        assert result["247540"][0] == "건강관리"
+        assert result["247540"][0] == "제약"
 
     def test_서킷브레이커_OPEN_시_pykrx_미호출(self):
         """서킷이 OPEN이면 pykrx 호출 없이 {} 반환."""
@@ -183,7 +187,7 @@ class TestFetchSectorMapBatch:
         """pykrx 호출 성공 시 record_success() 가 호출된다."""
         from trading.dashboard.sector_loader import _fetch_sector_map
 
-        kospi_df = _make_sector_df({"005930": ("정보기술", "반도체 및 반도체 장비")})
+        kospi_df = _make_sector_df({"005930": "전기·전자"})
         kosdaq_df = pd.DataFrame()
 
         mock_breaker = MagicMock()
@@ -202,6 +206,46 @@ class TestFetchSectorMapBatch:
             _fetch_sector_map(["005930"])
 
         mock_breaker.record_success.assert_called_once()
+
+    def test_금융_계열_업종명_금융으로_정규화(self):
+        """금융/기타금융/증권/보험/은행 업종명은 단일 '금융' 섹터로 정규화된다.
+
+        pykrx 는 금융 계열을 5개로 분산(2026-07-01 실측)하는데, 그대로 두면
+        섹터 집중 가드가 granular 라벨별 cap 만 적용해 '금융 쏠림'을 놓친다.
+        """
+        from trading.dashboard.sector_loader import _fetch_sector_map
+
+        kospi_df = _make_sector_df({
+            "055550": "금융",      # 신한지주
+            "006840": "기타금융",  # AK홀딩스
+            "039490": "증권",      # 키움증권
+            "005830": "보험",      # DB손해보험
+            "024110": "은행",      # 기업은행
+            "005930": "전기·전자",  # 삼성전자 (비금융 대조군)
+        })
+        kosdaq_df = pd.DataFrame()
+
+        mock_stock = MagicMock()
+        mock_stock.get_market_sector_classifications.side_effect = [kospi_df, kosdaq_df]
+
+        with (
+            patch("trading.dashboard.sector_loader._PYKRX_AVAILABLE", True),
+            patch("trading.dashboard.sector_loader._pykrx_stock", mock_stock),
+            patch("trading.dashboard.sector_loader._quiet_pykrx", _noop_cm),
+            patch(
+                "trading.dashboard.sector_loader._get_shared_breaker",
+                return_value=MagicMock(check_or_raise=MagicMock(), record_success=MagicMock()),
+            ),
+        ):
+            result = _fetch_sector_map(
+                ["055550", "006840", "039490", "005830", "024110", "005930"]
+            )
+
+        # 금융 계열 5종은 모두 '금융'으로 정규화 (원본 업종명은 industry 로 보존)
+        for t in ["055550", "006840", "039490", "005830", "024110"]:
+            assert result[t][0] == "금융", f"{t} 정규화 실패: {result[t]}"
+        # 비금융은 그대로
+        assert result["005930"][0] == "전기·전자"
 
 
 # ---------------------------------------------------------------------------
