@@ -16,7 +16,7 @@ from anthropic import Anthropic
 
 from trading.alerts.telegram import system_briefing
 from trading.config import get_settings, project_root
-from trading.db.session import connection
+from trading.db.session import connection, get_system_state
 from trading.kis.account import balance
 from trading.kis.client import KisClient
 from trading.personas.base import block_if_cli_only_mode, call_persona_via_cli
@@ -565,6 +565,62 @@ def _llm_skip_reason(exc: Exception) -> str:
     return f"LLM 요약 생성 실패: {msg[:120]}"
 
 
+def _morning_health_line() -> str:
+    """오늘 아침(pre_market micro·CLI·데이터) 자가점검 한 줄 — 퇴근 후 확인용.
+
+    06:15 출근 운영자는 아침 실시간 점검이 불가하다. 16:00 리포트에 오늘 아침
+    상태를 요약해 퇴근 후 텔레그램만 봐도 정상 여부를 확정하게 한다.
+    각 항목은 독립 조회 — 하나가 실패해도 '?'로 degrade, 전체 라인은 유지된다.
+    """
+    from datetime import date as _date
+
+    today = _date.today()
+
+    # CLI 건강 + strict 가드
+    cli, strict = "?", "?"
+    try:
+        st = get_system_state()
+        strict = "ON" if st.get("strict_cost_zero_mode") else "OFF"
+        if st.get("cli_degraded"):
+            cli = "⚠️저하중(누수0)"
+        else:
+            notified = st.get("cli_degraded_notified_at")
+            nd = notified.date() if notified is not None else None
+            cli = "저하이력·자동복구(누수0)" if nd == today else "정상"
+    except Exception:
+        LOG.debug("morning_health: CLI 상태 조회 실패", exc_info=True)
+
+    # pre_market micro 생성 여부 (오늘 아침 사이클이 결정을 냈는가)
+    micro = "?"
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM persona_runs "
+                "WHERE persona_name='micro' AND cycle_kind='pre_market' AND ts::date=%s",
+                (today,),
+            )
+            micro = "OK" if cur.fetchone()["n"] > 0 else "미생성"
+    except Exception:
+        LOG.debug("morning_health: micro 조회 실패", exc_info=True)
+
+    # 데이터 신선도 (OHLCV·fundamentals 최신일)
+    data_str = "?"
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT MAX(ts) AS m FROM ohlcv")
+            o = cur.fetchone()["m"]
+            cur.execute("SELECT MAX(ts) AS m FROM fundamentals")
+            f = cur.fetchone()["m"]
+        data_str = f"OHLCV {o}·펀더 {f}"
+    except Exception:
+        LOG.debug("morning_health: 데이터 신선도 조회 실패", exc_info=True)
+
+    return (
+        f"🩺 오늘 아침 점검: pre_market micro {micro} · CLI {cli} · "
+        f"데이터 {data_str} · 크레딧가드 strict {strict}"
+    )
+
+
 def generate_and_send() -> str:
     """Build and dispatch the 16:00 daily report (REQ-030-5/6).
 
@@ -589,16 +645,24 @@ def generate_and_send() -> str:
         health = None
         health_line = f"{_HEALTH_DEGRADE_PREFIX} — {_he}"
 
+    # SPEC-055 후속: 아침 점검 라인 (06:15 출근 운영자용 — 퇴근 후 확인).
+    # 실패해도 리포트 본문·전송을 절대 막지 않는다(독립 try/except).
+    try:
+        morning_line = _morning_health_line()
+    except Exception as _me:
+        LOG.exception("아침 점검 라인 생성 실패 — 생략")
+        morning_line = ""
+
     data = _gather_today()
     try:
         narrative = _narrative_text(data)  # REQ-030-3
         # REQ-030-5: narrative headline on top, operational-metrics block below.
-        text = f"{narrative}\n\n———\n{_fallback_text(data)}\n{health_line}"
+        text = f"{narrative}\n\n———\n{_fallback_text(data)}\n{health_line}\n{morning_line}"
     except Exception as e:
         reason = _llm_skip_reason(e)
         LOG.warning("daily report narrative skipped (%s)", reason)
         # REQ-030-6: degrade to metrics-only with a human-readable skip reason.
-        text = _fallback_text(data, skip_reason=reason) + f"\n{health_line}"
+        text = _fallback_text(data, skip_reason=reason) + f"\n{health_line}\n{morning_line}"
 
     # Persist
     sql = """
