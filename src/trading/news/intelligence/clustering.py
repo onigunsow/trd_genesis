@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from difflib import SequenceMatcher
 
 from trading.db.session import audit, connection
@@ -112,6 +112,55 @@ def _compute_dominant_sentiment(sentiments: list[str]) -> str:
     return counter.most_common(1)[0][0]
 
 
+def _majority_sector(articles: list[dict]) -> str:
+    """클러스터 대표 섹터를 impact 가중 다수결로 결정한다.
+
+    # @MX:NOTE: [AUTO] SPEC-TRADING-060 REQ-060-3 — 첫 기사 상속(RC3) 교정.
+    # @MX:REASON: group_articles[0]["sector"] 는 임의 순서에 의존해 오태깅 발생.
+    #             impact 가중 최빈 → 기사 수 → 최고 impact 기사 순 결정론적 tie-break.
+
+    tie-break 순서:
+    1. impact 합산 최대 섹터
+    2. 기사 수 최다 섹터
+    3. 최고 impact 단일 기사 섹터
+
+    Args:
+        articles: 클러스터 멤버 기사 dict 목록 (impact_score, sector 필드 포함).
+
+    Returns:
+        선택된 섹터 문자열.
+    """
+    if not articles:
+        return "stock_market"
+
+    if len(articles) == 1:
+        return articles[0]["sector"]
+
+    # 섹터별 (impact 합산, 기사 수, 최고 impact) 집계
+    sector_stats: dict[str, dict] = {}
+    for art in articles:
+        s = art["sector"]
+        imp = art.get("impact_score", 0) or 0
+        if s not in sector_stats:
+            sector_stats[s] = {"impact_sum": 0, "count": 0, "max_impact": 0}
+        sector_stats[s]["impact_sum"] += imp
+        sector_stats[s]["count"] += 1
+        if imp > sector_stats[s]["max_impact"]:
+            sector_stats[s]["max_impact"] = imp
+
+    # 결정론적 정렬: impact 합 DESC → 기사 수 DESC → 최고 impact DESC → 섹터명 ASC
+    ranked = sorted(
+        sector_stats.items(),
+        key=lambda kv: (
+            -kv[1]["impact_sum"],
+            -kv[1]["count"],
+            -kv[1]["max_impact"],
+            kv[0],  # 동일 조건에서 섹터명 알파벳 순 (완전 결정론)
+        ),
+    )
+    return ranked[0][0]
+
+
 def get_analyzed_articles_for_clustering(
     *,
     hours: int = CLUSTER_WINDOW_HOURS,
@@ -189,34 +238,40 @@ def cluster_stories(
         keyword_counter = Counter(all_keywords)
         top_keywords = [kw for kw, _ in keyword_counter.most_common(5)]
 
-        # Sector from the group (should be same for all; take first)
-        sector_val = group_articles[0]["sector"]
+        # SPEC-TRADING-060 REQ-060-3: 다수결 섹터 (첫 기사 상속 폐기)
+        sector_val = _majority_sector(group_articles)
 
         # First published timestamp
         first_published = min(a["published_at"] for a in group_articles)
 
         article_ids = [a["id"] for a in group_articles]
 
-        clusters.append(StoryCluster(
-            representative_title=representative_title,
-            article_ids=article_ids,
-            source_count=source_count,
-            impact_max=impact_max,
-            sector=sector_val,
-            keywords=top_keywords,
-            sentiment_dominant=sentiment_dominant,
-            first_published=first_published,
-            cluster_date=cluster_date,
-        ))
+        clusters.append(
+            StoryCluster(
+                representative_title=representative_title,
+                article_ids=article_ids,
+                source_count=source_count,
+                impact_max=impact_max,
+                sector=sector_val,
+                keywords=top_keywords,
+                sentiment_dominant=sentiment_dominant,
+                first_published=first_published,
+                cluster_date=cluster_date,
+            )
+        )
 
     # Store clusters in DB (replace existing for same cluster_date)
     _store_clusters(clusters, cluster_date, sector)
 
-    audit("NEWS_INTEL_CLUSTER_OK", actor="clustering", details={
-        "clusters_formed": len(clusters),
-        "articles_clustered": sum(len(c.article_ids) for c in clusters),
-        "cluster_date": str(cluster_date),
-    })
+    audit(
+        "NEWS_INTEL_CLUSTER_OK",
+        actor="clustering",
+        details={
+            "clusters_formed": len(clusters),
+            "articles_clustered": sum(len(c.article_ids) for c in clusters),
+            "cluster_date": str(cluster_date),
+        },
+    )
 
     LOG.info("Clustering complete: %d clusters from %d articles", len(clusters), len(articles))
     return clusters
@@ -246,19 +301,22 @@ def _store_clusters(
     with connection() as conn, conn.cursor() as cur:
         cur.execute(delete_sql, params)
         for cluster in clusters:
-            cur.execute(insert_sql, (
-                cluster.representative_title,
-                cluster.article_ids,
-                cluster.source_count,
-                cluster.impact_max,
-                cluster.sector,
-                cluster.keywords,
-                cluster.sentiment_dominant,
-                cluster.first_published,
-                cluster.cluster_date,
-                cluster.portfolio_relevant,
-                cluster.relevance_tickers,
-            ))
+            cur.execute(
+                insert_sql,
+                (
+                    cluster.representative_title,
+                    cluster.article_ids,
+                    cluster.source_count,
+                    cluster.impact_max,
+                    cluster.sector,
+                    cluster.keywords,
+                    cluster.sentiment_dominant,
+                    cluster.first_published,
+                    cluster.cluster_date,
+                    cluster.portfolio_relevant,
+                    cluster.relevance_tickers,
+                ),
+            )
             row = cur.fetchone()
             if row:
                 cluster.id = row["id"]

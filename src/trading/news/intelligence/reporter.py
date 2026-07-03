@@ -18,9 +18,7 @@ from zoneinfo import ZoneInfo
 from trading.contexts.utils import atomic_write, contexts_dir, now_kst_str
 from trading.db.session import audit, connection
 from trading.news.context_builder import (
-    MACRO_SECTORS,
     SECTOR_DISPLAY_NAMES,
-    TICKER_SECTOR_MAP,
 )
 from trading.news.intelligence.trends import compute_weekly_trends, get_sector_sentiments
 
@@ -103,7 +101,7 @@ def _get_cluster_summary(cluster: dict) -> str:
             cur.execute(sql, (article_ids, MIN_REPORT_IMPACT))
             row = cur.fetchone()
             return row["summary_2line"] if row else ""
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
@@ -129,7 +127,7 @@ def _get_cluster_classification(cluster: dict) -> str:
             cur.execute(sql, (article_ids,))
             row = cur.fetchone()
             return row["classification"] if row else "company_specific"
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "company_specific"
 
 
@@ -224,7 +222,13 @@ def _get_clusters_for_report(
                   AND na.impact_score >= %s
            )
     """
-    params: list = [classification_filter, cluster_date, min_impact, classification_filter, min_impact]
+    params: list = [
+        classification_filter,
+        cluster_date,
+        min_impact,
+        classification_filter,
+        min_impact,
+    ]
 
     if sectors:
         sql += " AND sc.sector = ANY(%s)"
@@ -311,9 +315,13 @@ def build_intelligence_micro(
 
     # Determine target sectors from watchlist
     if watchlist:
-        target_sectors = list(set(
-            TICKER_SECTOR_MAP.get(t, "stock_market") for t in watchlist
-        ))
+        # SPEC-TRADING-060: 미매핑 티커 skip (가짜 stock_market 금지)
+        from trading.news.ticker_sector import resolve_ticker_sector
+
+        resolved = (resolve_ticker_sector(t) for t in watchlist)
+        target_sectors = list({s for s in resolved if s is not None})
+        if not target_sectors:
+            target_sectors = list(SECTOR_DISPLAY_NAMES.keys())
     else:
         # Full coverage mode
         target_sectors = list(SECTOR_DISPLAY_NAMES.keys())
@@ -400,16 +408,21 @@ def write_intelligence_reports(
     micro_content = build_intelligence_micro(cluster_date, watchlist)
     atomic_write(micro_path, micro_content)
 
-    audit("NEWS_INTEL_REPORT_OK", actor="reporter", details={
-        "cluster_date": str(cluster_date),
-        "macro_bytes": len(macro_content),
-        "micro_bytes": len(micro_content),
-        "macro_path": str(macro_path),
-        "micro_path": str(micro_path),
-    })
+    audit(
+        "NEWS_INTEL_REPORT_OK",
+        actor="reporter",
+        details={
+            "cluster_date": str(cluster_date),
+            "macro_bytes": len(macro_content),
+            "micro_bytes": len(micro_content),
+            "macro_path": str(macro_path),
+            "micro_path": str(micro_path),
+        },
+    )
 
     LOG.info(
         "Intelligence reports written: macro=%d bytes, micro=%d bytes",
-        len(macro_content), len(micro_content),
+        len(macro_content),
+        len(micro_content),
     )
     return len(macro_content), len(micro_content)

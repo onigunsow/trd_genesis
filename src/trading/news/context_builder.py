@@ -38,46 +38,16 @@ SECTOR_DISPLAY_NAMES: dict[str, str] = {
     "defense_aerospace": "Defense & Aerospace",
 }
 
-# Ticker-to-sector mapping (REQ-NEWS-06-7)
-# Known Korean tickers mapped to sectors
-TICKER_SECTOR_MAP: dict[str, str] = {
-    # Semiconductor
-    "005930": "semiconductor",   # Samsung Electronics
-    "000660": "semiconductor",   # SK Hynix
-    "042700": "semiconductor",   # Hanmi Semiconductor
-    # Biotech/Pharma
-    "068270": "biotech_pharma",  # Celltrion
-    "207940": "biotech_pharma",  # Samsung Biologics
-    "091990": "biotech_pharma",  # Celltrion Healthcare
-    # IT/AI
-    "035420": "it_ai",           # NAVER
-    "035720": "it_ai",           # Kakao
-    "036570": "it_ai",           # NCsoft
-    # Auto/EV/Battery
-    "373220": "auto_ev_battery", # LG Energy Solution
-    "006400": "auto_ev_battery", # Samsung SDI
-    "005380": "auto_ev_battery", # Hyundai Motor
-    # Finance
-    "105560": "finance_banking", # KB Financial
-    "055550": "finance_banking", # Shinhan Financial
-    # Energy
-    "051910": "energy_commodities",  # LG Chem
-    # Steel
-    "005490": "steel_materials",     # POSCO
-    # Retail
-    "004170": "retail_consumer",     # Shinsegae
-    # Gaming
-    "263750": "gaming_entertainment", # Pearl Abyss
-    "112040": "gaming_entertainment", # Wemade
-    # Defense
-    "012450": "defense_aerospace",   # Hanwha Aerospace
-    "047810": "defense_aerospace",   # Korea Aerospace
-}
 
+def _get_sector_for_ticker(ticker: str) -> str | None:
+    """티커를 news 섹터 키로 해소한다. 미매핑 시 None 반환.
 
-def get_sector_for_ticker(ticker: str) -> str:
-    """Map ticker to sector. Unknown tickers default to stock_market (REQ-NEWS-06-7)."""
-    return TICKER_SECTOR_MAP.get(ticker, "stock_market")
+    SPEC-TRADING-060 REQ-060-1: TICKER_SECTOR_MAP 하드코딩 제거.
+    resolve_ticker_sector (ticker_metadata + YAML 정밀-우선 매핑) 위임.
+    """
+    from trading.news.ticker_sector import resolve_ticker_sector
+
+    return resolve_ticker_sector(ticker)
 
 
 def _format_article_line(article: dict[str, Any]) -> str:
@@ -167,12 +137,18 @@ def build_macro_news() -> str:
             break
         # English prioritized for macro (last 24h window)
         articles = get_articles_by_sector(
-            sector, days=1, language="en", limit=remaining,
+            sector,
+            days=1,
+            language="en",
+            limit=remaining,
         )
         # Supplement with Korean if needed
         if len(articles) < min(remaining, 20):
             more = get_articles_by_sector(
-                sector, days=1, language="ko", limit=min(remaining, 20) - len(articles),
+                sector,
+                days=1,
+                language="ko",
+                limit=min(remaining, 20) - len(articles),
             )
             articles.extend(more)
 
@@ -207,14 +183,19 @@ def build_micro_news(watchlist: list[str] | None = None) -> str:
 
     # Determine sectors from watchlist
     if watchlist:
-        target_sectors = list(set(get_sector_for_ticker(t) for t in watchlist))
+        # SPEC-TRADING-060: 미매핑 티커는 skip (가짜 stock_market 금지)
+        resolved = (_get_sector_for_ticker(t) for t in watchlist)
+        target_sectors = list({s for s in resolved if s is not None})
     else:
         # Full coverage mode when watchlist is empty
         target_sectors = list(SECTORS)
 
     # Query articles for target sectors (last 24h window)
     sector_articles = get_articles_multi_sector(
-        target_sectors, days=1, language_priority="ko", limit_per_sector=30,
+        target_sectors,
+        days=1,
+        language_priority="ko",
+        limit_per_sector=30,
     )
 
     total_count = 0
@@ -241,16 +222,27 @@ def write_macro_news() -> int:
         if not content.strip():
             raise RuntimeError("macro_news builder returned empty content")
         atomic_write(target, content)
-        audit("NEWS_CONTEXT_BUILD_OK", actor="cron.news", details={
-            "name": "macro_news", "path": str(target), "bytes": len(content),
-        })
+        audit(
+            "NEWS_CONTEXT_BUILD_OK",
+            actor="cron.news",
+            details={
+                "name": "macro_news",
+                "path": str(target),
+                "bytes": len(content),
+            },
+        )
         LOG.info("macro_news.md built: %d bytes", len(content))
         return 0
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         LOG.exception("macro_news.md build failed")
-        audit("NEWS_CONTEXT_BUILD_FAIL", actor="cron.news", details={
-            "name": "macro_news", "error": str(e),
-        })
+        audit(
+            "NEWS_CONTEXT_BUILD_FAIL",
+            actor="cron.news",
+            details={
+                "name": "macro_news",
+                "error": str(e),
+            },
+        )
         return 1
 
 
@@ -262,14 +254,25 @@ def write_micro_news(watchlist: list[str] | None = None) -> int:
         if not content.strip():
             raise RuntimeError("micro_news builder returned empty content")
         atomic_write(target, content)
-        audit("NEWS_CONTEXT_BUILD_OK", actor="cron.news", details={
-            "name": "micro_news", "path": str(target), "bytes": len(content),
-        })
+        audit(
+            "NEWS_CONTEXT_BUILD_OK",
+            actor="cron.news",
+            details={
+                "name": "micro_news",
+                "path": str(target),
+                "bytes": len(content),
+            },
+        )
         LOG.info("micro_news.md built: %d bytes", len(content))
         return 0
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         LOG.exception("micro_news.md build failed")
-        audit("NEWS_CONTEXT_BUILD_FAIL", actor="cron.news", details={
-            "name": "micro_news", "error": str(e),
-        })
+        audit(
+            "NEWS_CONTEXT_BUILD_FAIL",
+            actor="cron.news",
+            details={
+                "name": "micro_news",
+                "error": str(e),
+            },
+        )
         return 1

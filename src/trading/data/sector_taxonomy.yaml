@@ -16,8 +16,29 @@ KR:
       - "보험"
       - "은행"
 
+  # SPEC-TRADING-060 REQ-060-1: 업종명(ticker_metadata.sector, 실 리터럴) → news 섹터 키
+  # 정밀-우선 매핑: 명확한 것만 매핑, 모호한 것은 항목 미기재(= None).
+  # 실 ticker_metadata 13개 distinct 업종명(가운뎃점·단형) 기반. 옛 리터럴 금지.
+  # 참조: plan.md 업종명→news 섹터 정밀-우선 매핑 표 (D13 근거 포함).
+  news_sector_map:
+    "금융": "finance_banking"          # 명확: 316140 우리금융지주
+    "전기·가스": "energy_commodities"   # 명확: 015760 한국전력 (가운뎃점 실 리터럴)
+    "제약": "biotech_pharma"           # 명확
+    "금속": "steel_materials"          # 명확
+    "IT 서비스": "it_ai"               # 명확 (스페이스 포함 실 리터럴)
+    "유통": "retail_consumer"          # 명확
+    # 모호(None) 항목은 미기재 → 미매핑 시 None 반환
+    # "전기·전자": None  ← D13: 반도체+이차전지+가전+방산+중전기 혼재, DB 세분 신호 없음
+    # "운송장비·부품": None  ← 자동차/조선/항공 혼재
+    # "기계·장비": None
+    # "운송·창고": None
+    # "화학": None  ← 석화/배터리/제약 혼재
+    # "통신": None  ← telecom ≠ it_ai 명확 아님
+    # "음식료·담배": None  ← 명확한 canonical 키 없음
+
 # US 예시 (향후 GICS 기반 — 데이터소스 어댑터 추가 시 활성화):
 # US:
 #   sector_column: "sector"
 #   unknown_label: "Unknown"
 #   sector_groups: {}
+#   news_sector_map: {}

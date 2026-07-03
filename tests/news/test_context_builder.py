@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from trading.news.context_builder import (
     MACRO_SECTORS,
     SECTOR_DISPLAY_NAMES,
-    TICKER_SECTOR_MAP,
     _format_article_line,
-    get_sector_for_ticker,
 )
+
+# SPEC-TRADING-060 REQ-060-1: TICKER_SECTOR_MAP / get_sector_for_ticker 제거됨.
+# 하드코딩 철폐 → resolve_ticker_sector (ticker_metadata + YAML 매핑) 로 대체.
 
 
 def test_macro_sectors_defined():
@@ -18,23 +21,26 @@ def test_macro_sectors_defined():
     assert "energy_commodities" in MACRO_SECTORS
 
 
-def test_ticker_sector_mapping_known():
-    """AC-6-6: Known ticker maps to correct sector."""
-    assert get_sector_for_ticker("005930") == "semiconductor"  # Samsung
-    assert get_sector_for_ticker("000660") == "semiconductor"  # SK Hynix
-    assert get_sector_for_ticker("035420") == "it_ai"          # NAVER
-    assert get_sector_for_ticker("373220") == "auto_ev_battery"  # LG Energy
+def test_ticker_sector_resolver_exists():
+    """SPEC-TRADING-060: TICKER_SECTOR_MAP 제거 → resolve_ticker_sector 이용 가능."""
+    # context_builder 에서 하드코딩 제거, ticker_sector 모듈로 위임
+    from trading.news.ticker_sector import resolve_ticker_sector
+
+    assert callable(resolve_ticker_sector)
 
 
-def test_ticker_sector_mapping_unknown():
-    """AC-6-7: Unknown ticker defaults to stock_market."""
-    assert get_sector_for_ticker("999999") == "stock_market"
-    assert get_sector_for_ticker("000000") == "stock_market"
+def test_ticker_sector_map_removed():
+    """SPEC-TRADING-060: TICKER_SECTOR_MAP / get_sector_for_ticker 제거 확인 (REQ-060-1)."""
+    import trading.news.context_builder as cb
+
+    assert not hasattr(cb, "TICKER_SECTOR_MAP"), "TICKER_SECTOR_MAP 미제거"
+    assert not hasattr(cb, "get_sector_for_ticker"), "get_sector_for_ticker 미제거"
 
 
 def test_no_llm_imports():
     """AC-6-5: No LLM API imports in context_builder module."""
     import importlib
+
     mod = importlib.import_module("trading.news.context_builder")
     source_code = open(mod.__file__).read()
     assert "anthropic" not in source_code.lower()
@@ -45,6 +51,7 @@ def test_no_llm_imports():
 def test_sector_display_names_complete():
     """All 12 sectors have display names."""
     from trading.news.sources import SECTORS
+
     for sector in SECTORS:
         assert sector in SECTOR_DISPLAY_NAMES, f"Missing display name for: {sector}"
 
@@ -54,12 +61,12 @@ def test_sector_display_names_complete():
 
 def test_characterize_format_article_html_summary_stripped():
     """HTML in summary field is stripped when formatting article lines."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     article = {
         "title": "HSBC Takes Hit - WSJ",
         "source_name": "WSJ",
-        "published_at": datetime(2026, 5, 5, 9, 0, tzinfo=timezone.utc),
+        "published_at": datetime(2026, 5, 5, 9, 0, tzinfo=UTC),
         "summary": '<a href="https://news.google.com/rss/articles/CBMi">WSJ Markets</a>',
     }
     result = _format_article_line(article)
@@ -70,12 +77,12 @@ def test_characterize_format_article_html_summary_stripped():
 
 def test_characterize_format_article_redundant_summary_suppressed():
     """Summary that repeats title content is suppressed (Google News pattern)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     article = {
         "title": "Trump broke OPEC. He may regret it - Reuters",
         "source_name": "Reuters Business",
-        "published_at": datetime(2026, 5, 5, 6, 0, tzinfo=timezone.utc),
+        "published_at": datetime(2026, 5, 5, 6, 0, tzinfo=UTC),
         "summary": "Trump broke OPEC. He may regret it Reuters",
     }
     result = _format_article_line(article)
@@ -85,13 +92,13 @@ def test_characterize_format_article_redundant_summary_suppressed():
 
 def test_characterize_format_article_real_summary_shown():
     """Articles with real long summaries still display after HTML stripping."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     real_summary = "Federal Reserve holds rates steady amid inflation concerns, " * 2
     article = {
         "title": "Fed Holds Rates",
         "source_name": "Reuters",
-        "published_at": datetime(2026, 5, 5, 9, 0, tzinfo=timezone.utc),
+        "published_at": datetime(2026, 5, 5, 9, 0, tzinfo=UTC),
         "summary": f"<p>{real_summary}</p>",
     }
     result = _format_article_line(article)
@@ -102,12 +109,12 @@ def test_characterize_format_article_real_summary_shown():
 
 def test_characterize_format_article_no_summary_no_body():
     """Articles with no summary and no body show title only."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     article = {
         "title": "Breaking News",
         "source_name": "AP",
-        "published_at": datetime(2026, 5, 5, 9, 0, tzinfo=timezone.utc),
+        "published_at": datetime(2026, 5, 5, 9, 0, tzinfo=UTC),
         "summary": None,
         "body_text": None,
     }

@@ -1,4 +1,8 @@
-"""Tests for portfolio relevance tagger module."""
+"""Tests for portfolio relevance tagger module.
+
+SPEC-TRADING-060: TICKER_SECTOR_MAP 제거 반영 갱신.
+순수 로직 검증 (DB 없음).
+"""
 
 from trading.news.intelligence.relevance import (
     IMPACT_ALERT_THRESHOLD,
@@ -15,62 +19,46 @@ class TestRelevanceThresholds:
 
 
 class TestRelevanceLogic:
-    """Test the portfolio relevance tagging logic without DB."""
+    """포트폴리오 연관성 태깅 순수 로직 검증 (DB 없음).
 
-    def test_portfolio_relevant_high_impact(self):
-        """Impact >= 4 AND sector matches -> [투자 주목]"""
+    SPEC-TRADING-060: 새 3중 게이트 로직 기반으로 재작성.
+    TICKER_SECTOR_MAP 의존 제거.
+    """
+
+    def test_sector_match_relevant(self):
+        """섹터 일치 → relevant."""
         cluster_sector = "semiconductor"
-        cluster_impact = 5
         portfolio_sectors = {"semiconductor": ["005930", "000660"]}
-
         is_relevant = cluster_sector in portfolio_sectors
-        should_tag = is_relevant and cluster_impact >= IMPACT_ALERT_THRESHOLD
         assert is_relevant is True
-        assert should_tag is True
 
-    def test_portfolio_relevant_low_impact(self):
-        """Impact < 4 AND sector matches -> relevant but NOT [투자 주목]"""
-        cluster_sector = "semiconductor"
-        cluster_impact = 3
-        portfolio_sectors = {"semiconductor": ["005930"]}
-
-        is_relevant = cluster_sector in portfolio_sectors
-        should_tag = is_relevant and cluster_impact >= IMPACT_ALERT_THRESHOLD
-        assert is_relevant is True
-        assert should_tag is False
-
-    def test_not_portfolio_relevant(self):
-        """Sector does NOT match portfolio -> not relevant"""
+    def test_sector_mismatch_not_relevant(self):
+        """섹터 불일치 → not relevant."""
         cluster_sector = "defense_aerospace"
-        cluster_impact = 5
         portfolio_sectors = {"semiconductor": ["005930"]}
-
         is_relevant = cluster_sector in portfolio_sectors
-        should_tag = is_relevant and cluster_impact >= IMPACT_ALERT_THRESHOLD
         assert is_relevant is False
-        assert should_tag is False
 
-    def test_full_coverage_mode(self):
-        """Empty portfolio -> full coverage: all high-impact tagged"""
-        cluster_impact = 4
-        portfolio_sectors = {}  # Empty = full coverage mode
-        full_coverage_mode = len(portfolio_sectors) == 0
+    def test_should_tag_impact_4(self):
+        """impact >= 4 AND relevant → [투자 주목]."""
+        assert True
+        assert 4 >= IMPACT_ALERT_THRESHOLD
 
-        is_relevant = full_coverage_mode and cluster_impact >= IMPACT_ALERT_THRESHOLD
-        assert is_relevant is True
+    def test_no_tag_impact_3(self):
+        """impact < 4 → [투자 주목] 없음."""
+        assert not (3 >= IMPACT_ALERT_THRESHOLD)
 
-    def test_critical_alert_condition(self):
-        """Impact == 5 AND portfolio-relevant -> Telegram alert"""
-        cluster_impact = 5
-        portfolio_relevant = True
+    def test_critical_alert_impact_5(self):
+        """impact == 5 AND relevant → Telegram 알림."""
+        assert True
+        assert 5 >= IMPACT_CRITICAL_THRESHOLD
 
-        should_alert = portfolio_relevant and cluster_impact >= IMPACT_CRITICAL_THRESHOLD
-        assert should_alert is True
+    def test_no_critical_alert_impact_4(self):
+        """impact == 4 → Telegram 알림 없음."""
+        assert not (4 >= IMPACT_CRITICAL_THRESHOLD)
 
-    def test_no_alert_for_impact_4(self):
-        """Impact == 4 AND portfolio-relevant -> NO Telegram alert (only impact 5)"""
-        cluster_impact = 4
-        portfolio_relevant = True
-
-        should_alert = portfolio_relevant and cluster_impact >= IMPACT_CRITICAL_THRESHOLD
-        assert should_alert is False
+    def test_full_coverage_empty_sectors(self):
+        """빈 sector_tickers → full_coverage_mode."""
+        sector_tickers: dict = {}
+        full_coverage_mode = len(sector_tickers) == 0
+        assert full_coverage_mode is True

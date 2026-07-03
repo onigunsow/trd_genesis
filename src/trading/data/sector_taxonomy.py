@@ -81,6 +81,30 @@ def _reverse_index(market: str) -> dict[str, str]:
     return idx
 
 
+def news_sector(raw_industry: str | None, market: str | None = None) -> str | None:
+    """업종명(ticker_metadata.sector)을 news 섹터 키로 변환한다.
+
+    # @MX:NOTE: [AUTO] SPEC-TRADING-060 REQ-060-1 — 업종명→news 섹터 매핑.
+    # @MX:REASON: 미매핑 시 반드시 None 반환(가짜 캐치올 금지). 이 규약이
+    #             오경보 억제의 불변식이다. 정밀-우선 매핑: 명확 6개만 매핑.
+
+    Args:
+        raw_industry: ticker_metadata.sector 값 (실 리터럴, 가운뎃점·단형).
+        market: 시장 코드. None 이면 active_market() 사용.
+
+    Returns:
+        news 섹터 키 문자열, 또는 None (미매핑·빈값·None 입력 모두 None 반환).
+    """
+    if raw_industry is None:
+        return None
+    name = str(raw_industry).strip()
+    if not name:
+        return None
+    cfg = _market_config(market)
+    ns_map: dict[str, str] = cfg.get("news_sector_map", {})
+    return ns_map.get(name)  # 미매핑 시 None
+
+
 def normalize_sector(raw: object, market: str | None = None) -> str:
     """raw 업종명을 섹터 가드용 라벨로 정규화.
 
