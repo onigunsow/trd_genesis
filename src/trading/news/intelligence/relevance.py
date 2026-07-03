@@ -202,10 +202,19 @@ def _sector_corroborated(cluster: dict, sector: str) -> bool:
     #             score(S) >= 1 AND score(S) == max(전 섹터) 여야 확증.
     #             S 포함 동점은 확증, S < max 는 미확증 (D12).
     #             캐치올(stock_market·macro_economy)은 명시적 제외 (D10).
+    #             채점 대상: 멤버 **제목만** (SPEC REQ-060-4 명시).
+    #             news_analysis.keywords 는 채점 제외 — 기사와 정렬이 어긋난
+    #             오염 표면 (2026-07-04 04:15 오경보 실측으로 확인).
 
     캐치올 섹터는 키워드 세트가 존재해도 즉시 False.
     stock_market 은 _SECTOR_KEYWORDS 에 '코스피'·'코스닥' 등이 있으므로
     "키워드 없어 자연히 미확증" 논리에 의존하면 안 된다 (SPEC 명시 주의).
+
+    채점 표면: 멤버 기사의 제목(title)만. news_analysis.keywords 는 제외.
+    근거: keywords 는 해당 기사가 아닌 다른 맥락의 분석 결과가 담길 수 있어
+    코로보레이션 신호를 오염시킨다 (2026-07-04 04:15 클러스터 57986:
+    제목에는 에너지 키워드 없으나 keywords={유가,원유,이란}이 4개 멤버에
+    분포 → 오경보 유발).
 
     Args:
         cluster: story_clusters 행.
@@ -224,18 +233,19 @@ def _sector_corroborated(cluster: dict, sector: str) -> bool:
 
     from trading.news.sector_classifier import _SECTOR_KEYWORDS
 
-    # 모든 멤버 제목을 합산해 섹터별 키워드 채점
+    # 모든 멤버 제목만 합산해 섹터별 키워드 채점 (REQ-060-4, SPEC-TRADING-060).
+    # news_analysis.keywords 는 채점에 포함하지 않는다 — 기사와 정렬이 어긋난
+    # 오염 표면이기 때문이다 (2026-07-04 04:15 오경보 실측: 클러스터 57986의
+    # 7개 멤버 제목에는 에너지 키워드가 없으나 keywords={유가,원유,이란}이
+    # 4개 멤버에 분포, 키워드 채점 분기가 energy_commodities score를 0→9로
+    # 올려 오경보를 유발함 — 제목만 채점으로 완전 억제).
     sector_scores: dict[str, int] = {s: 0 for s in _SECTOR_KEYWORDS}
-    for title, kws in texts:
+    for title, _kws in texts:
         title_lower = title.lower()
-        kw_text = " ".join(kws).lower() if kws else ""
         for s, keywords in _SECTOR_KEYWORDS.items():
             for kw in keywords:
-                k = kw.lower()
-                if k in title_lower:
-                    sector_scores[s] += 2  # 제목 가중치
-                elif k in kw_text:
-                    sector_scores[s] += 1  # 키워드 가중치
+                if kw.lower() in title_lower:
+                    sector_scores[s] += 2  # 제목 가중치만 (weight=2)
 
     target_score = sector_scores.get(sector, 0)
     if target_score < _CORROBORATION_MIN_SCORE:

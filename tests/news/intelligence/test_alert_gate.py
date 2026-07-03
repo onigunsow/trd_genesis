@@ -288,3 +288,82 @@ class TestFullCoverageDisabled:
 
         # 티커 직접일치 True → 발화
         mock_alert.assert_called_once()
+
+
+class TestCorroborationTitleOnly:
+    """REQ-060-4 코로보레이션은 제목만 채점 (news_analysis.keywords 제외).
+
+    2026-07-04 04:15 클러스터 57986: 7개 멤버의 제목에는 에너지 키워드 없으나
+    news_analysis.keywords(오염 표면)에 {유가,원유,이란}이 4개 멤버에 분포.
+    키워드 채점 분기가 살아있으면 energy_commodities score >= 9 → 확증 오판정.
+    제목만 채점하면 energy score = 0 → 미확증 → False.
+    """
+
+    # 2026-07-04 04:15 실제 클러스터 57986 구성 (7개 멤버: 제목 + news_analysis.keywords)
+    from typing import ClassVar
+
+    _MEMBERS_2026_07_04: ClassVar[list[tuple[str, list[str]]]] = [
+        (
+            "中 창바오, 수전해 수소 생산용 고성능 STS 강관 초도 물량 납품 성공",
+            ["지정학", "유가", "방산"],
+        ),
+        (
+            "AWS, 'FDE'에 10억 달러 투자",
+            ["방산", "지정학", "안전자산"],
+        ),
+        (
+            "반도체 흔들릴 때 피난처 된 금융주…실적·주주환원 기대 '쑥' [종목+]",
+            ["유가", "원유", "지정학"],
+        ),
+        (
+            "AWS, 신설 조직 'FDE'에 10억달러 투자",
+            ["양자내성암호", "제로트러스트", "보안주"],
+        ),
+        (
+            "일양약품, 중국 사업 재시동…176억 원 투자·'원비-디' 첫 수출",
+            ["유가", "이란", "원유"],
+        ),
+        (
+            "가스공사, 지역 상생 성과 인정…이전공공기관 우수사례 선정",
+            ["원유", "이란", "유가"],
+        ),
+        (
+            "'변동성 극심' 코스피, 4%대 급반등하며 8000선 눈앞…삼전 8%·닉스 7%↑",
+            ["양자내성암호", "제로트러스트", "보안"],
+        ),
+    ]
+
+    def _call(self, sector: str) -> bool:
+        from trading.news.intelligence import relevance as rel
+
+        cluster = {
+            "id": 57986,
+            "sector": sector,
+            "impact_max": 5,
+            "article_ids": [669564, 671427, 671434, 671435, 671436, 671438, 673420],
+            "representative_title": self._MEMBERS_2026_07_04[0][0],
+        }
+        with patch.object(
+            rel,
+            "_fetch_member_titles_and_keywords",
+            return_value=self._MEMBERS_2026_07_04,
+        ):
+            return rel._sector_corroborated(cluster, sector)
+
+    def test_2026_07_04_energy_미확증_제목에_에너지_키워드_없음(self):
+        """2026-07-04 04:15 클러스터 57986 재현.
+
+        7개 멤버 제목에는 에너지 키워드(유가·원유·OPEC·LNG·정유·이란 등)가 없다.
+        keywords 필드에만 {유가,원유,이란}이 4개 멤버에 있다 (오염 표면,
+        기사와 정렬이 어긋난 news_analysis 행 — 실측 2026-07-04).
+        제목만 채점하면 energy_commodities score = 0 → False (미확증).
+        keywords 를 채점하면 score >= 9 → True (오판정) — 실제 오경보 경로.
+
+        REQ-060-4 명시: "클러스터 멤버 **제목**을 sector_classifier 키워드로 채점".
+        """
+        result = self._call("energy_commodities")
+        assert result is False, (
+            "2026-07-04 04:15 오경보 재현: _sector_corroborated('energy_commodities')가 "
+            "True를 반환 — keywords 오염 표면이 채점에 포함된 것이 원인. "
+            "SPEC REQ-060-4는 '멤버 **제목**만' 채점을 요구함."
+        )
