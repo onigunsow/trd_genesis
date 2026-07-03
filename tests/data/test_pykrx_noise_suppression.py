@@ -23,6 +23,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_ohlcv_df() -> pd.DataFrame:
     """테스트용 소형 OHLCV DataFrame 반환."""
 
@@ -99,12 +100,8 @@ class TestFetchOhlcvNoiseSuppression:
 
         # stdout/stderr 에 pykrx 소음이 없어야 함
         captured = capsys.readouterr()
-        assert captured.out == "", (
-            f"stdout에 pykrx 소음이 잡힘 (억제 실패): {captured.out!r}"
-        )
-        assert captured.err == "", (
-            f"stderr에 pykrx 소음이 잡힘 (억제 실패): {captured.err!r}"
-        )
+        assert captured.out == "", f"stdout에 pykrx 소음이 잡힘 (억제 실패): {captured.out!r}"
+        assert captured.err == "", f"stderr에 pykrx 소음이 잡힘 (억제 실패): {captured.err!r}"
 
     def test_exception_propagates_unchanged(self, monkeypatch):
         """pykrx가 예외를 raise하면 _quiet_pykrx() 가 삼키지 않고 그대로 전파해야 한다.
@@ -158,12 +155,8 @@ class TestFetchFlowsNoiseSuppression:
 
         assert result == 1
         captured = capsys.readouterr()
-        assert captured.out == "", (
-            f"stdout에 pykrx 소음 잡힘: {captured.out!r}"
-        )
-        assert captured.err == "", (
-            f"stderr에 pykrx 소음 잡힘: {captured.err!r}"
-        )
+        assert captured.out == "", f"stdout에 pykrx 소음 잡힘: {captured.out!r}"
+        assert captured.err == "", f"stderr에 pykrx 소음 잡힘: {captured.err!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -201,11 +194,132 @@ class TestFetchKospi200NoiseSuppression:
         assert result == tickers, f"반환값 다름: {result}"
 
         captured = capsys.readouterr()
-        assert captured.out == "", (
-            f"stdout에 pykrx 소음 잡힘: {captured.out!r}"
+        assert captured.out == "", f"stdout에 pykrx 소음 잡힘: {captured.out!r}"
+        assert captured.err == "", f"stderr에 pykrx 소음 잡힘: {captured.err!r}"
+
+
+class TestQuietPykrxHardening:
+    """2026-07-02 인시던트 재현: fd 영구 devnull 26h + 소켓 타임아웃 미설정.
+
+    _quiet_pykrx()가 다음 두 결함을 수정했는지 검증한다:
+      1. 스레드 인터리브: T1 내부에서 T2가 진입하면 devnull fd를 "원본"으로
+         저장 → T1 복원 → T2 복원(devnull) = fd 영구 devnull.
+         수정: _QUIET_LOCK으로 진입을 직렬화.
+      2. 소켓 타임아웃 미설정: pykrx 호출이 데드 소켓에서 무한 블로킹.
+         수정: socket.setdefaulttimeout(_PYKRX_SOCKET_TIMEOUT_S) 후 복원.
+    """
+
+    def test_interleaved_threads_restore_fds(self):
+        """스레드 인터리브 후 fd 1/2가 진입 전과 동일해야 한다.
+
+        인시던트 재현 핵심: devnull을 "원본"으로 저장한 스레드(T2)가 **마지막에**
+        가드를 빠져나가야 fd가 devnull로 영구 고정된다. 따라서 T2는 가드 안에서
+        T1의 가드 종료(t1_exited)를 기다린 뒤에 빠져나가도록 순서를 강제한다.
+
+        OLD CODE (락 없음): T1 안에서 T2 진입(devnull을 원본으로 저장) → T1 종료
+        (실제 fd 복원) → T2 종료(devnull 복원) = fd 영구 devnull → FAIL.
+
+        NEW CODE (락 있음): T2는 락에서 블로킹 → T1의 t2_entered.wait 가 2s
+        타임아웃 후 T1 종료·t1_exited 설정 → T2 진입(실제 fd를 원본으로 저장)
+        → 즉시 종료 → 올바르게 복원 → PASS. (데드락 없음)
+        """
+        import os
+        import threading
+
+        from trading.data.pykrx_adapter import _quiet_pykrx
+
+        # 테스트 시작 전 fd 상태 스냅샷 (st_dev + st_ino로 동일성 판단)
+        before_out = os.fstat(1)
+        before_err = os.fstat(2)
+
+        # 테스트 자체가 fd를 오염시킬 경우를 대비해 복원 저장
+        saved_fd1 = os.dup(1)
+        saved_fd2 = os.dup(2)
+
+        t1_inside = threading.Event()
+        t2_entered = threading.Event()
+        t1_exited = threading.Event()
+
+        def body_t1() -> None:
+            with _quiet_pykrx():
+                t1_inside.set()
+                # T2가 진입 시도할 시간을 준다.
+                # NEW CODE: T2는 락에서 블로킹 → t2_entered 미설정 → 타임아웃(정상).
+                # OLD CODE: T2가 즉시 진입 → t2_entered 설정 → wait 반환.
+                t2_entered.wait(timeout=2.0)
+            t1_exited.set()
+
+        def body_t2() -> None:
+            t1_inside.wait(timeout=5.0)
+            with _quiet_pykrx():  # NEW: T1 종료까지 블로킹. OLD: 즉시 진입(인터리브).
+                t2_entered.set()
+                # 인시던트 순서 강제: T1이 가드를 빠져나간 뒤에 T2가 마지막으로
+                # 빠져나간다. OLD CODE에서는 이 시점의 복원이 devnull을 남긴다.
+                t1_exited.wait(timeout=5.0)
+
+        t1 = threading.Thread(target=body_t1, daemon=True)
+        t2 = threading.Thread(target=body_t2, daemon=True)
+
+        try:
+            t1.start()
+            t2.start()
+            t1.join(timeout=8.0)
+            t2.join(timeout=8.0)
+
+            after_out = os.fstat(1)
+            after_err = os.fstat(2)
+
+            assert (after_out.st_dev, after_out.st_ino) == (
+                before_out.st_dev,
+                before_out.st_ino,
+            ), (
+                f"fd 1이 다른 파일을 가리킴: before={before_out.st_ino} after={after_out.st_ino}"
+                " (인터리브로 인해 devnull에 영구 고정됐을 가능성)"
+            )
+            assert (after_err.st_dev, after_err.st_ino) == (
+                before_err.st_dev,
+                before_err.st_ino,
+            ), f"fd 2가 다른 파일을 가리킴: before={before_err.st_ino} after={after_err.st_ino}"
+        finally:
+            # 테스트 실패 시에도 fd 복원하여 나머지 테스트 스위트 보호
+            try:
+                os.dup2(saved_fd1, 1)
+                os.dup2(saved_fd2, 2)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(saved_fd1)
+                except OSError:
+                    pass
+                try:
+                    os.close(saved_fd2)
+                except OSError:
+                    pass
+
+    def test_socket_default_timeout_set_and_restored(self, monkeypatch):
+        """_quiet_pykrx() 내부에서 socket.getdefaulttimeout()이 7.5s여야 한다.
+
+        진입 전/후에는 기존 값(None 포함)이 복원되어야 한다.
+        """
+        import socket
+
+        from trading.data.pykrx_adapter import _quiet_pykrx
+
+        monkeypatch.setenv("PYKRX_SOCKET_TIMEOUT", "7.5")
+
+        original_timeout = socket.getdefaulttimeout()
+        timeout_inside: list[float | None] = []
+
+        with _quiet_pykrx():
+            timeout_inside.append(socket.getdefaulttimeout())
+
+        assert timeout_inside == [7.5], (
+            f"_quiet_pykrx() 내부 소켓 타임아웃이 7.5s가 아님: {timeout_inside}"
         )
-        assert captured.err == "", (
-            f"stderr에 pykrx 소음 잡힘: {captured.err!r}"
+        assert socket.getdefaulttimeout() == original_timeout, (
+            f"_quiet_pykrx() 종료 후 소켓 타임아웃 미복원: "
+            f"expected={original_timeout!r} got={socket.getdefaulttimeout()!r}"
         )
 
 

@@ -9,7 +9,9 @@ import contextlib
 import io
 import logging
 import os
+import socket
 import sys
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import date
@@ -23,6 +25,20 @@ from trading.data.cache import (
 
 LOG = logging.getLogger(__name__)
 SOURCE = "pykrx"
+
+# 2026-07-02 인시던트: pykrx가 requests에 타임아웃을 지정하지 않아 데드 소켓에서 무한 블로킹.
+# _quiet_pykrx() 진입 시 소켓 전역 타임아웃을 이 값으로 설정해 최대 대기를 제한한다.
+# 호출부가 테스트에서 PYKRX_SOCKET_TIMEOUT 환경변수로 재정의할 수 있도록 가드 내부에서 읽는다.
+_PYKRX_SOCKET_TIMEOUT_S_DEFAULT = 30.0
+
+# 2026-07-02 인시던트: APScheduler 스레드풀에서 여러 잡(16:00 daily_report ‖ ohlcv ‖ flows ‖
+# fundamentals)이 동시에 _quiet_pykrx()에 진입하면:
+#   T1 진입 → fd 1/2를 /dev/null로 교체
+#   T2 진입 → 현재 fd 1/2(= devnull)를 "원본"으로 저장
+#   T1 종료 → 실제 fd 복원
+#   T2 종료 → devnull 복원 = fd 1/2 영구 devnull → 스케줄러 로그 26h 전체 소실
+# Lock으로 진입을 직렬화해 이 경쟁을 차단한다.
+_QUIET_LOCK = threading.Lock()
 
 
 def _silence_pykrx_auth_prints() -> None:
@@ -69,31 +85,62 @@ def _quiet_pykrx() -> Generator[None]:
     C 레벨)을 차단한다. Python 레벨 redirect 도 병행해 우리 코드가 이 구간에서
     로깅하더라도 throwaway 로 흘려보낸다.
 
-    주의: fd 리다이렉트는 프로세스-글로벌이다. 이 구간(단일 stock.get_* 호출,
-    종목당 ~0.5s)에 다른 스레드가 로깅하면 그 출력도 함께 버려질 수 있다.
-    pykrx 호출이 짧고 _run_batch for-loop 안에서 직렬 실행되므로 영향은 미미하다.
+    [2026-07-02 인시던트 경위 및 보강]
+    ─────────────────────────────────────────────────────────────────────────
+    결함 1 — fd 영구 devnull (26h 스케줄러 로그 전체 소실):
+      APScheduler 스레드풀에서 16:00 잡 4개(daily_report / ohlcv / flows /
+      fundamentals)가 동시에 진입하면 스레드 인터리브가 발생한다:
+        T1 진입 → fd 1/2 = devnull
+        T2 진입 → fd 1/2(= devnull)를 "원본"으로 저장
+        T1 종료 → 실제 fd 복원
+        T2 종료 → devnull "복원" → fd 1/2 영구 devnull
+      보강: _QUIET_LOCK(threading.Lock)으로 진입을 직렬화. 한 스레드가 가드를
+      완전히 빠져나간 뒤에만 다음 스레드가 fd 스왑을 수행한다.
+
+    결함 2 — pykrx 소켓 무한 블로킹 (26h ESTABLISHED TCP hang):
+      pykrx는 requests에 타임아웃을 지정하지 않는다. 데드 피어(KRX 210.89.168.42:80)
+      연결이 ESTABLISHED 상태를 유지하면 읽기 블로킹이 무한 지속된다.
+      보강: socket.setdefaulttimeout(_PYKRX_SOCKET_TIMEOUT_S)로 가드 진입 시
+      전역 소켓 타임아웃을 설정한다. 가드 종료 시 이전 값을 복원한다.
+      - httpx(KIS 주문)는 connect_timeout/read_timeout을 명시적으로 전달하므로
+        전역 defaulttimeout의 영향을 받지 않는다.
+      - psycopg/libpq는 소켓을 C 레벨에서 생성하므로 Python defaulttimeout
+        무관하다.
+      - 타임아웃 값은 환경변수 PYKRX_SOCKET_TIMEOUT(float 초)으로 재정의 가능.
+        기본값 30.0초. 가드 내부에서 읽어 테스트에서 monkeypatch로 덮어쓸 수 있다.
     """
     # auth 모듈 print 를 출처에서 침묵화(버퍼링으로 fd 구간을 빠져나가는 print 대비)
     _silence_pykrx_auth_prints()
-    devnull_fd = os.open(os.devnull, os.O_WRONLY)
-    saved_out_fd = os.dup(1)
-    saved_err_fd = os.dup(2)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os.dup2(devnull_fd, 1)
-    os.dup2(devnull_fd, 2)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            with contextlib.redirect_stderr(io.StringIO()):
-                yield
-    finally:
+
+    # 결함 1 보강: 진입 직렬화 — 스레드 인터리브에 의한 fd 영구 devnull 차단
+    with _QUIET_LOCK:
+        # 결함 2 보강: pykrx 호출 동안 소켓 타임아웃 설정(가드 내부에서 env 읽어 테스트 재정의 허용)
+        _env_val = os.environ.get("PYKRX_SOCKET_TIMEOUT")
+        _sock_timeout_s = float(_env_val) if _env_val else _PYKRX_SOCKET_TIMEOUT_S_DEFAULT
+        _prev_sock_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(_sock_timeout_s)
+
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_out_fd = os.dup(1)
+        saved_err_fd = os.dup(2)
         sys.stdout.flush()
         sys.stderr.flush()
-        os.dup2(saved_out_fd, 1)
-        os.dup2(saved_err_fd, 2)
-        os.close(devnull_fd)
-        os.close(saved_out_fd)
-        os.close(saved_err_fd)
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_out_fd, 1)
+            os.dup2(saved_err_fd, 2)
+            os.close(devnull_fd)
+            os.close(saved_out_fd)
+            os.close(saved_err_fd)
+            # 소켓 타임아웃 복원 (None 포함)
+            socket.setdefaulttimeout(_prev_sock_timeout)
 
 
 def fetch_ohlcv(symbol: str, start: date, end: date) -> int:
@@ -121,14 +168,16 @@ def fetch_ohlcv(symbol: str, start: date, end: date) -> int:
 
     rows = []
     for ts, row in df.iterrows():
-        rows.append({
-            "ts": ts.date() if hasattr(ts, "date") else ts,
-            "open": row.get("시가", row.get("Open", 0)),
-            "high": row.get("고가", row.get("High", 0)),
-            "low": row.get("저가", row.get("Low", 0)),
-            "close": row.get("종가", row.get("Close", 0)),
-            "volume": row.get("거래량", row.get("Volume", 0)),
-        })
+        rows.append(
+            {
+                "ts": ts.date() if hasattr(ts, "date") else ts,
+                "open": row.get("시가", row.get("Open", 0)),
+                "high": row.get("고가", row.get("High", 0)),
+                "low": row.get("저가", row.get("Low", 0)),
+                "close": row.get("종가", row.get("Close", 0)),
+                "volume": row.get("거래량", row.get("Volume", 0)),
+            }
+        )
     return upsert_ohlcv(SOURCE, symbol, rows)
 
 
@@ -181,16 +230,18 @@ def fetch_fundamentals(symbol: str, start: date, end: date) -> int:
         cap = None
         if cap_df is not None and ts in cap_df.index:
             cap = cap_df.loc[ts].get("시가총액")
-        rows.append({
-            "ts": d,
-            "market_cap": int(cap) if cap is not None else None,
-            "per": row.get("PER"),
-            "pbr": row.get("PBR"),
-            "eps": row.get("EPS"),
-            "bps": row.get("BPS"),
-            "div_yield": row.get("DIV"),
-            "dps": row.get("DPS"),
-        })
+        rows.append(
+            {
+                "ts": d,
+                "market_cap": int(cap) if cap is not None else None,
+                "per": row.get("PER"),
+                "pbr": row.get("PBR"),
+                "eps": row.get("EPS"),
+                "bps": row.get("BPS"),
+                "div_yield": row.get("DIV"),
+                "dps": row.get("DPS"),
+            }
+        )
     return upsert_fundamentals(symbol, rows)
 
 
@@ -220,10 +271,12 @@ def fetch_flows(symbol: str, start: date, end: date) -> int:
     rows = []
     for ts, row in df.iterrows():
         d = ts.date() if hasattr(ts, "date") else ts
-        rows.append({
-            "ts": d,
-            "foreign_net": int(row.get("외국인합계", row.get("외국인", 0)) or 0),
-            "institution_net": int(row.get("기관합계", 0) or 0),
-            "individual_net": int(row.get("개인", 0) or 0),
-        })
+        rows.append(
+            {
+                "ts": d,
+                "foreign_net": int(row.get("외국인합계", row.get("외국인", 0)) or 0),
+                "institution_net": int(row.get("기관합계", 0) or 0),
+                "individual_net": int(row.get("개인", 0) or 0),
+            }
+        )
     return upsert_flows(symbol, rows)

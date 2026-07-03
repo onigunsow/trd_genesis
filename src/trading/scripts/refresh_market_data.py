@@ -57,6 +57,26 @@ class TickerTimeout(Exception):
     """REQ-019-8: raised when a per-ticker fetch exceeds the budget."""
 
 
+def _call_with_timeout(fn: Callable[..., Any], budget_s: float, *args: Any) -> Any:
+    """fn(*args)를 별도 스레드에서 실행하고 budget_s 초 안에 완료되지 않으면 TickerTimeout 발생.
+
+    # 주의: `with ThreadPoolExecutor(...) as ex:` 형태(컨텍스트 매니저)를 쓰지 않는다.
+    # __exit__가 shutdown(wait=True)를 호출해 블로킹 워커 스레드를 JOIN → hang 재현.
+    # shutdown(wait=False)로 워커를 의도적으로 누수(leak)시킨다.
+    # 워커가 실행 중인 pykrx 소켓은 _quiet_pykrx()의 socket.setdefaulttimeout으로
+    # 최대 _PYKRX_SOCKET_TIMEOUT_S 초 안에 종료되므로 누수는 단기적으로 제한된다.
+    """
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(fn, *args)
+    try:
+        return fut.result(timeout=budget_s)
+    except concurrent.futures.TimeoutError as exc:
+        raise TickerTimeout(f"exceeded {budget_s}s") from exc
+    finally:
+        # wait=False: 블로킹 워커 JOIN을 피하기 위해 의도적으로 누수
+        ex.shutdown(wait=False)
+
+
 # ---------------------------------------------------------------------------
 # Cache helpers (thin wrappers for testability)
 # ---------------------------------------------------------------------------
@@ -180,9 +200,7 @@ def _fetch_flows_for_ticker(ticker: str, today_override: date | None = None) -> 
     return _pykrx_fetch_flows(ticker, start, today)
 
 
-def _fetch_fundamentals_for_ticker(
-    ticker: str, today_override: date | None = None
-) -> int:
+def _fetch_fundamentals_for_ticker(ticker: str, today_override: date | None = None) -> int:
     today = today_override or date.today()
     # Fundamentals weekly; pull last 14 days to keep things simple + cheap.
     start = today - timedelta(days=14)
@@ -205,6 +223,10 @@ def _run_batch(
     Returns metric dict (success_count / error_count / timeout_count /
     total_rows_upserted / duration_seconds / total_tickers).
     """
+    # REQ-019-8 (a): 환경변수 REFRESH_PER_TICKER_TIMEOUT(float초) 우선, 없으면 기본값
+    _env_budget = os.environ.get("REFRESH_PER_TICKER_TIMEOUT")
+    budget_s = float(_env_budget) if _env_budget else DEFAULT_TICKER_TIMEOUT_SECONDS
+
     metrics: dict[str, Any] = {
         "total_tickers": len(tickers),
         "success_count": 0,
@@ -215,7 +237,8 @@ def _run_batch(
     start_t = time.monotonic()
     for ticker in tickers:
         try:
-            n = fetcher(ticker)
+            # REQ-019-8: per-ticker 타임아웃 강제 — fetcher가 블로킹해도 budget_s 후 중단
+            n = _call_with_timeout(fetcher, budget_s, ticker)
             metrics["success_count"] += 1
             metrics["total_rows_upserted"] += int(n or 0)
         except TickerTimeout as exc:
@@ -304,9 +327,7 @@ def refresh_disclosures(today_override: date | None = None) -> dict[str, Any]:
     today = today_override or date.today()
     latest = _get_latest_disclosure_ts()
     # Gap mode: empty cache OR latest older than (today - DART_GAP_THRESHOLD).
-    backfill = latest is None or latest < (
-        today - timedelta(days=DART_GAP_THRESHOLD_DAYS)
-    )
+    backfill = latest is None or latest < (today - timedelta(days=DART_GAP_THRESHOLD_DAYS))
     if backfill:
         start = today - timedelta(days=DART_BACKFILL_DAYS)
     else:
@@ -350,14 +371,10 @@ def _resolve_timeouts(
     """REQ-023-4 (c): env-overridable timeout budgets."""
     if per_ticker_timeout_s is None:
         env = os.environ.get("AUTO_EXPANSION_PER_TICKER_TIMEOUT")
-        per_ticker_timeout_s = (
-            float(env) if env else DEFAULT_AUTO_EXPANSION_PER_TICKER_S
-        )
+        per_ticker_timeout_s = float(env) if env else DEFAULT_AUTO_EXPANSION_PER_TICKER_S
     if total_timeout_s is None:
         env = os.environ.get("AUTO_EXPANSION_TOTAL_TIMEOUT")
-        total_timeout_s = (
-            float(env) if env else DEFAULT_AUTO_EXPANSION_TOTAL_S
-        )
+        total_timeout_s = float(env) if env else DEFAULT_AUTO_EXPANSION_TOTAL_S
     return per_ticker_timeout_s, total_timeout_s
 
 
@@ -382,9 +399,13 @@ def _expand_single(
         rows += int(_pykrx_fetch_flows(ticker, start, end) or 0)
         return rows
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(_do_fetch)
-        return fut.result(timeout=per_ticker_timeout_s)
+    # _call_with_timeout 사용: with ThreadPoolExecutor as ex 패턴은 __exit__에서
+    # shutdown(wait=True)를 호출해 블로킹 워커를 JOIN → hang 재현. shutdown(wait=False)로 회피.
+    # TickerTimeout을 concurrent.futures.TimeoutError로 변환해 caller 계약 유지.
+    try:
+        return _call_with_timeout(_do_fetch, per_ticker_timeout_s)
+    except TickerTimeout as exc:
+        raise concurrent.futures.TimeoutError(str(exc)) from exc
 
 
 # @MX:ANCHOR: SPEC-023 REQ-023-1 on-demand universe expansion
@@ -445,9 +466,7 @@ def expand_universe_for_tickers(
 
         # REQ-023-1 (b): skip when OHLCV is already recent.
         last_ts = _get_latest_ohlcv_ts(ticker)
-        if last_ts is not None and last_ts >= today - timedelta(
-            days=RECENT_OHLCV_DAYS
-        ):
+        if last_ts is not None and last_ts >= today - timedelta(days=RECENT_OHLCV_DAYS):
             metrics["success_count"] += 1
             metrics["successful_tickers"].append(ticker)
             continue
@@ -456,9 +475,7 @@ def expand_universe_for_tickers(
         remaining = max(0.0, deadline - time.monotonic())
         budget = min(per_t, remaining) if remaining > 0 else 0
         if budget <= 0:
-            LOG.warning(
-                "auto_expansion total budget exhausted before %s", ticker
-            )
+            LOG.warning("auto_expansion total budget exhausted before %s", ticker)
             metrics["timeout_count"] += 1
             metrics["error_count"] += 1
             continue
@@ -466,9 +483,7 @@ def expand_universe_for_tickers(
         try:
             rows = _expand_single(ticker, start, today, budget)
         except concurrent.futures.TimeoutError:
-            LOG.warning(
-                "auto_expansion timeout for %s after %.1fs", ticker, budget
-            )
+            LOG.warning("auto_expansion timeout for %s after %.1fs", ticker, budget)
             metrics["timeout_count"] += 1
             metrics["error_count"] += 1
             continue

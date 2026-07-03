@@ -101,9 +101,7 @@ class TestRefreshOhlcv:
 
         # Cache hit -> incremental
         with (
-            patch.object(
-                mod, "_get_latest_ohlcv_ts", return_value=today - timedelta(days=3)
-            ),
+            patch.object(mod, "_get_latest_ohlcv_ts", return_value=today - timedelta(days=3)),
             patch.object(mod, "_pykrx_fetch_ohlcv", return_value=3) as fetcher,
         ):
             mod._fetch_ohlcv_for_ticker("005930", today_override=today)
@@ -137,9 +135,7 @@ class TestRefreshFlows:
             return 2
 
         with (
-            patch.object(
-                mod, "get_data_universe", return_value=["005930", "BAD", "005380"]
-            ),
+            patch.object(mod, "get_data_universe", return_value=["005930", "BAD", "005380"]),
             patch.object(mod, "_fetch_flows_for_ticker", side_effect=_fetch),
         ):
             metrics = mod.refresh_flows()
@@ -213,9 +209,7 @@ class TestFlowsSilentSkipRegression:
             # on this helper, it would short-circuit -> 0 (the bug).
             patch.object(mod, "_get_latest_ohlcv_ts", return_value=today),
             # Flows latest_ts is 5 days stale -> fix must use this.
-            patch.object(
-                mod, "_get_latest_flows_ts", return_value=flows_last_ts
-            ) as flows_ts_mock,
+            patch.object(mod, "_get_latest_flows_ts", return_value=flows_last_ts) as flows_ts_mock,
             patch.object(mod, "_pykrx_fetch_flows", return_value=5) as fetcher,
         ):
             rows = mod._fetch_flows_for_ticker("005930", today_override=today)
@@ -257,9 +251,7 @@ class TestRefreshFundamentals:
 
         with (
             patch.object(mod, "get_data_universe", return_value=["005930", "005380"]),
-            patch.object(
-                mod, "_fetch_fundamentals_for_ticker", return_value=7
-            ) as fetcher,
+            patch.object(mod, "_fetch_fundamentals_for_ticker", return_value=7) as fetcher,
         ):
             metrics = mod.refresh_fundamentals()
 
@@ -282,9 +274,7 @@ class TestRefreshDisclosures:
         today = date(2026, 5, 11)
         # latest disclosure is fresh (today - 1)
         with (
-            patch.object(
-                mod, "_get_latest_disclosure_ts", return_value=today - timedelta(days=1)
-            ),
+            patch.object(mod, "_get_latest_disclosure_ts", return_value=today - timedelta(days=1)),
             patch.object(mod, "_dart_list_recent", return_value=[{"a": 1}]) as fetcher,
         ):
             metrics = mod.refresh_disclosures(today_override=today)
@@ -301,9 +291,7 @@ class TestRefreshDisclosures:
         gap_latest = today - timedelta(days=11)
         with (
             patch.object(mod, "_get_latest_disclosure_ts", return_value=gap_latest),
-            patch.object(
-                mod, "_dart_list_recent", return_value=[{"x": 1}] * 50
-            ) as fetcher,
+            patch.object(mod, "_dart_list_recent", return_value=[{"x": 1}] * 50) as fetcher,
         ):
             metrics = mod.refresh_disclosures(today_override=today)
 
@@ -340,9 +328,7 @@ class TestBootstrapBackfill:
         from trading.scripts import refresh_market_data as mod
 
         with (
-            patch.object(
-                mod, "_count_rows", side_effect=lambda tbl: 0 if tbl == "ohlcv" else 100
-            ),
+            patch.object(mod, "_count_rows", side_effect=lambda tbl: 0 if tbl == "ohlcv" else 100),
             patch.object(mod, "refresh_ohlcv") as ro,
             patch.object(mod, "refresh_flows"),
             patch.object(mod, "refresh_fundamentals"),
@@ -418,9 +404,7 @@ class TestSchedulerRegistration:
         fake_sched.add_job = MagicMock()
 
         with (
-            patch(
-                "trading.scheduler.runner.BlockingScheduler", return_value=fake_sched
-            ),
+            patch("trading.scheduler.runner.BlockingScheduler", return_value=fake_sched),
             patch("trading.scheduler.runner.signal.signal"),
             patch.object(fake_sched, "start"),
         ):
@@ -446,6 +430,46 @@ class TestSchedulerRegistration:
         missing = expected - set(registered_ids)
         assert not missing, f"Missing SPEC-019 cron jobs: {missing}"
 
+    def test_run_batch_enforces_per_ticker_timeout(self, monkeypatch):
+        """REQ-019-8: _run_batch가 종목별 타임아웃을 실제로 강제해야 한다.
+
+        REFRESH_PER_TICKER_TIMEOUT=0.2s, 종목 A는 5초 블로킹, 종목 B는 즉시 반환.
+        _run_batch가 몇 초 내에 반환하고 timeout_count=1, error_count=1, success_count=1.
+
+        OLD CODE: fetcher(ticker)를 직접 호출 → A가 5초 동안 블로킹 → 전체 배치 hang.
+        NEW CODE: _call_with_timeout으로 감싸서 0.2s 후 TickerTimeout 발생 → 빠른 반환.
+        """
+        import threading
+        import time
+
+        from trading.scripts import refresh_market_data as mod
+
+        monkeypatch.setenv("REFRESH_PER_TICKER_TIMEOUT", "0.2")
+
+        def _blocking_fetcher(ticker: str) -> int:
+            if ticker == "A":
+                # 5초 블로킹 — 타임아웃이 없으면 배치 전체가 hang
+                threading.Event().wait(5)
+                return 1
+            return 1  # B: 즉시 반환
+
+        start = time.monotonic()
+        metrics = mod._run_batch("test_timeout", _blocking_fetcher, ["A", "B"])
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 3.0, (
+            f"_run_batch가 {elapsed:.1f}s 걸림 — 타임아웃이 작동하지 않음 (OLD CODE: hang)"
+        )
+        assert metrics["timeout_count"] == 1, (
+            f"timeout_count={metrics['timeout_count']} — A가 타임아웃으로 잡혀야 함"
+        )
+        assert metrics["error_count"] == 1, (
+            f"error_count={metrics['error_count']} — 타임아웃은 error로도 집계되어야 함"
+        )
+        assert metrics["success_count"] == 1, (
+            f"success_count={metrics['success_count']} — B는 성공해야 함"
+        )
+
     def test_scheduler_main_invokes_bootstrap_backfill(self):
         """REQ-019-7: container start triggers bootstrap_backfill_if_empty."""
         from trading.scheduler import runner
@@ -453,13 +477,9 @@ class TestSchedulerRegistration:
         fake_sched = MagicMock()
         fake_sched.start = MagicMock()
         with (
-            patch(
-                "trading.scheduler.runner.BlockingScheduler", return_value=fake_sched
-            ),
+            patch("trading.scheduler.runner.BlockingScheduler", return_value=fake_sched),
             patch("trading.scheduler.runner.signal.signal"),
-            patch(
-                "trading.scripts.refresh_market_data.bootstrap_backfill_if_empty"
-            ) as boot,
+            patch("trading.scripts.refresh_market_data.bootstrap_backfill_if_empty") as boot,
         ):
             runner.main()
 
