@@ -398,7 +398,17 @@ def _extract_individual_objects(text: str) -> list[dict]:
 
 
 def _validate_results(data: list | dict, expected_count: int) -> list[dict] | None:
-    """Validate and normalize parsed JSON into analysis results."""
+    """Validate and normalize parsed JSON into analysis results.
+
+    REQ-061-1: 각 결과는 echo된 정수 idx(1-based, article_ids 에 대응)를
+    반드시 포함해야 한다. idx 가 없거나 정수가 아닌 개별 결과는 이 단계에서
+    폐기한다(배치 전체 거부는 아님 — 배치 전체의 완전성/중복 검증은
+    ``_align_results_to_articles`` 가 담당한다, REQ-061-3).
+
+    ``expected_count`` 로 앞에서 자르지 않는다: 위치 기반 절단은 재정렬된
+    응답에서 진짜 초과(extra)/중복(duplicate) idx 를 감추어 정렬 오염을
+    통과시킬 수 있다(RC5). 완전성 판정은 idx 집합 대조로만 한다.
+    """
     # Handle single object instead of array
     if isinstance(data, dict):
         data = [data]
@@ -407,8 +417,13 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
         return None
 
     validated = []
-    for item in data[:expected_count]:
+    for item in data:
         if not isinstance(item, dict):
+            continue
+
+        # REQ-061-1: 안정적 식별자(idx) 필수 — echo 안 된 개별 결과는 폐기
+        idx = item.get("idx")
+        if not isinstance(idx, int) or isinstance(idx, bool):
             continue
 
         # Extract classification (new field)
@@ -454,6 +469,7 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
             sector = ""
 
         validated.append({
+            "idx": idx,
             "summary_2line": str(implication),
             "impact_score": impact,
             "keywords": keywords,
@@ -463,6 +479,77 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
         })
 
     return validated if validated else None
+
+
+# @MX:ANCHOR: [AUTO] news_analysis 저장 경로 3곳(_store_results/import_host_results/
+# repair.import_repair_results)의 유일한 정렬 진실원천 — 위치 매핑 재도입 금지.
+# @MX:REASON: RC1/RC2(analyzer.py 히스토리) — 위치(enumerate) 매핑이 결과 재정렬 시
+# classification/sentiment/impact/keywords 전체를 오염시켰다. fan_in=3.
+# @MX:SPEC: SPEC-TRADING-061 REQ-061-2/3
+def _align_results_to_articles(
+    results: list[dict], article_ids: list[int]
+) -> list[tuple[int, dict]] | None:
+    """echo된 idx(1-based)로 결과를 article_id 에 정렬 매핑한다(REQ-061-2).
+
+    순수 함수 — DB/네트워크 접근 없음, 시장 종속 로직 없음(REQ-061-6, US
+    시장 재사용 대비). 리스트 위치(enumerate)로 매핑하지 않는다.
+
+    idx 집합이 정확히 {1..len(article_ids)} 와 일치하지 않으면(누락/초과/
+    중복/범위밖/idx 없음) 배치 전체를 거부하고 None 을 반환한다 — 짝지어진
+    일부만 저장하는 위치 폴백은 없다(REQ-061-3 fail-closed).
+
+    Returns:
+        [(article_id, result), ...] 를 idx 오름차순으로 정렬해 반환하거나,
+        정렬 검증 실패 시 None.
+    """
+    n = len(article_ids)
+    if n == 0 or not results:
+        return None
+
+    expected = set(range(1, n + 1))
+    seen: set[int] = set()
+    idx_to_result: dict[int, dict] = {}
+    for result in results:
+        idx = result.get("idx")
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            return None  # no-id — echo 안 된 결과가 섞여 있으면 전체 거부
+        if idx in seen or idx not in expected:
+            return None  # duplicate 또는 extra/out-of-range
+        seen.add(idx)
+        idx_to_result[idx] = result
+
+    if seen != expected:
+        return None  # missing — 일부 idx 가 아예 돌아오지 않음
+
+    return [(article_ids[idx - 1], idx_to_result[idx]) for idx in sorted(seen)]
+
+
+def _alignment_reject_reasons(results: list[dict], article_ids: list[int]) -> dict:
+    """정렬 거부 사유 집계(감사 로그 관측성용, REQ-061-3).
+
+    ``_align_results_to_articles`` 가 None 을 반환했을 때만 호출한다. 순수
+    함수 — 원인(missing/extra/duplicate/no_idx)을 개수로 집계해 반환한다.
+    """
+    n = len(article_ids)
+    expected = set(range(1, n + 1))
+    idx_values: list[int] = []
+    no_idx = 0
+    for result in results:
+        idx = result.get("idx")
+        if isinstance(idx, int) and not isinstance(idx, bool):
+            idx_values.append(idx)
+        else:
+            no_idx += 1
+    seen = set(idx_values)
+    return {
+        "expected_count": n,
+        "matched_count": 0,
+        "rejected_count": len(results),
+        "no_idx_count": no_idx,
+        "duplicate_count": len(idx_values) - len(seen),
+        "missing_count": len(expected - seen),
+        "extra_count": len(seen - expected),
+    }
 
 
 def _apply_quality_checks(
@@ -506,7 +593,25 @@ def _store_results(
     in_tok: int,
     out_tok: int,
 ) -> list[AnalysisResult]:
-    """Store analysis results in the news_analysis table."""
+    """Store analysis results in the news_analysis table.
+
+    REQ-061-2: echo된 idx로 article_id 에 정렬 매핑한다(RC2 — 과거에는
+    ``enumerate`` 위치로 매핑해 결과 순서가 뒤섞이면 전 필드가 오염됐다).
+    REQ-061-3: 정렬 검증 실패 시 아무것도 저장하지 않는다(fail-closed).
+    """
+    article_ids = [a["id"] for a in articles]
+    aligned = _align_results_to_articles(results, article_ids)
+    if aligned is None:
+        reasons = _alignment_reject_reasons(results, article_ids)
+        audit("NEWS_INTEL_ALIGN_REJECT", actor="analyzer", details={
+            "path": "haiku_store", **reasons,
+        })
+        LOG.warning(
+            "Haiku 결과 정렬 검증 실패 — fail-closed 저장 거부(0건): %s", reasons,
+        )
+        return []
+
+    article_map = {a["id"]: a for a in articles}
     cost_per_article = (
         (in_tok / 1_000_000) * HAIKU_IN_RATE
         + (out_tok / 1_000_000) * HAIKU_OUT_RATE
@@ -522,11 +627,8 @@ def _store_results(
     """
 
     with connection() as conn, conn.cursor() as cur:
-        for i, result in enumerate(results):
-            if i >= len(articles):
-                break
-            article = articles[i]
-            article_id = article["id"]
+        for article_id, result in aligned:
+            article = article_map.get(article_id, {})
 
             cur.execute(sql, (
                 article_id,
@@ -859,6 +961,24 @@ def import_host_results() -> int:
     articles_for_check = [article_map.get(aid, {"title": ""}) for aid in article_ids]
     results = _apply_quality_checks(articles_for_check, results)
 
+    # REQ-061-2/3: echo된 idx로 article_id 에 정렬 매핑(RC1 — 과거에는
+    # enumerate 위치로 매핑해 결과 순서가 뒤섞이면 전 필드가 오염됐다).
+    # 정렬 검증 실패 시 fail-closed — 아무것도 저장하지 않는다.
+    aligned = _align_results_to_articles(results, article_ids)
+    if aligned is None:
+        reasons = _alignment_reject_reasons(results, article_ids)
+        audit("NEWS_INTEL_ALIGN_REJECT", actor="analyzer", details={
+            "path": "cli_import", **reasons,
+        })
+        LOG.error(
+            "import_results: 정렬 검증 실패 — fail-closed 저장 거부(0건): %s", reasons,
+        )
+        # 동일한 오염 배치가 다음 슬롯에서도 계속 재시도되지 않도록 소비한다.
+        RESULTS_FILE.unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+        PENDING_FILE.unlink(missing_ok=True)
+        return 0
+
     # Store results in DB
     stored_count = 0
     sql = """
@@ -869,10 +989,7 @@ def import_host_results() -> int:
         ON CONFLICT (article_id) DO NOTHING
     """
     with connection() as conn, conn.cursor() as cur:
-        for i, result in enumerate(results):
-            if i >= len(article_ids):
-                break
-            aid = article_ids[i]
+        for aid, result in aligned:
             cur.execute(sql, (
                 aid,
                 result["summary_2line"],
@@ -905,6 +1022,7 @@ def import_host_results() -> int:
     audit("NEWS_INTEL_IMPORT_OK", actor="analyzer", details={
         "articles_imported": stored_count,
         "results_parsed": len(results),
+        "expected_count": len(article_ids),
     })
     LOG.info("import_results: stored %d analysis results from host CLI", stored_count)
     return stored_count

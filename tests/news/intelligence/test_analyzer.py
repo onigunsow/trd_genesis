@@ -109,11 +109,19 @@ class TestCheckTitleSimilarity:
 
 
 class TestParseAnalysisResponse:
+    """SPEC-TRADING-061 REQ-061-1: 모든 결과 fixture 는 echo idx 를 포함한다.
+
+    idx 는 이제 필수 필드다 — idx 없는 결과는 _validate_results 가 개별
+    폐기한다(REQ-061-1). 아래 fixture 들은 그 계약 하에서의 정상 파싱만
+    검증하며, idx 자체의 fail-closed 거부 동작은 test_alignment.py 를 참조.
+    """
+
     def test_valid_new_format(self):
-        text = '[{"classification": "macro_market_moving", "impact_score": 5, "investment_implication": "유가 급등 예상. 에너지 롱 포지션 확대 고려.", "keywords": ["유가", "중동", "안전자산"], "sentiment": "negative"}]'
+        text = '[{"idx": 1, "classification": "macro_market_moving", "impact_score": 5, "investment_implication": "유가 급등 예상. 에너지 롱 포지션 확대 고려.", "keywords": ["유가", "중동", "안전자산"], "sentiment": "negative"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert len(result) == 1
+        assert result[0]["idx"] == 1
         assert result[0]["classification"] == "macro_market_moving"
         assert result[0]["impact_score"] == 5
         assert result[0]["summary_2line"] == "유가 급등 예상. 에너지 롱 포지션 확대 고려."
@@ -121,14 +129,14 @@ class TestParseAnalysisResponse:
         assert len(result[0]["keywords"]) == 3
 
     def test_noise_classification_forces_impact_zero(self):
-        text = '[{"classification": "noise", "impact_score": 3, "investment_implication": "투자 관련성 없음", "keywords": [], "sentiment": "neutral"}]'
+        text = '[{"idx": 1, "classification": "noise", "impact_score": 3, "investment_implication": "투자 관련성 없음", "keywords": [], "sentiment": "neutral"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["classification"] == "noise"
         assert result[0]["impact_score"] == 0  # Forced to 0
 
     def test_backward_compatible_with_summary_2line(self):
-        text = '[{"summary_2line": "Line1\\nLine2", "impact_score": 4, "keywords": ["k1", "k2", "k3"], "sentiment": "positive"}]'
+        text = '[{"idx": 1, "summary_2line": "Line1\\nLine2", "impact_score": 4, "keywords": ["k1", "k2", "k3"], "sentiment": "positive"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["impact_score"] == 4
@@ -137,32 +145,32 @@ class TestParseAnalysisResponse:
         assert result[0]["classification"] == "company_specific"
 
     def test_json_with_code_fences(self):
-        text = '```json\n[{"classification": "sector_specific", "impact_score": 3, "investment_implication": "반도체 업황 개선.", "keywords": ["반도체"], "sentiment": "positive"}]\n```'
+        text = '```json\n[{"idx": 1, "classification": "sector_specific", "impact_score": 3, "investment_implication": "반도체 업황 개선.", "keywords": ["반도체"], "sentiment": "positive"}]\n```'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["classification"] == "sector_specific"
         assert result[0]["impact_score"] == 3
 
     def test_clamps_impact_score(self):
-        text = '[{"classification": "macro_market_moving", "impact_score": 10, "investment_implication": "Test", "keywords": ["k1"], "sentiment": "neutral"}]'
+        text = '[{"idx": 1, "classification": "macro_market_moving", "impact_score": 10, "investment_implication": "Test", "keywords": ["k1"], "sentiment": "neutral"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["impact_score"] == 5  # Clamped to max
 
     def test_impact_zero_allowed(self):
-        text = '[{"classification": "noise", "impact_score": 0, "investment_implication": "", "keywords": [], "sentiment": "neutral"}]'
+        text = '[{"idx": 1, "classification": "noise", "impact_score": 0, "investment_implication": "", "keywords": [], "sentiment": "neutral"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["impact_score"] == 0
 
     def test_invalid_classification_defaults(self):
-        text = '[{"classification": "unknown_type", "impact_score": 3, "investment_implication": "Test", "keywords": ["k1"], "sentiment": "neutral"}]'
+        text = '[{"idx": 1, "classification": "unknown_type", "impact_score": 3, "investment_implication": "Test", "keywords": ["k1"], "sentiment": "neutral"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["classification"] == "company_specific"
 
     def test_invalid_sentiment_defaults_neutral(self):
-        text = '[{"classification": "sector_specific", "impact_score": 3, "investment_implication": "Test", "keywords": ["k1"], "sentiment": "bullish"}]'
+        text = '[{"idx": 1, "classification": "sector_specific", "impact_score": 3, "investment_implication": "Test", "keywords": ["k1"], "sentiment": "bullish"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert result[0]["sentiment"] == "neutral"
@@ -177,14 +185,31 @@ class TestParseAnalysisResponse:
         result = _parse_analysis_response(text, 1)
         assert result is None
 
-    def test_limits_to_expected_count(self):
-        text = '[{"classification": "company_specific", "impact_score": 1, "investment_implication": "A", "keywords": [], "sentiment": "neutral"}, {"classification": "sector_specific", "impact_score": 2, "investment_implication": "B", "keywords": [], "sentiment": "neutral"}, {"classification": "macro_market_moving", "impact_score": 3, "investment_implication": "C", "keywords": [], "sentiment": "neutral"}]'
+    def test_missing_idx_drops_result_individually(self):
+        """REQ-061-1: idx 없는 결과는 _validate_results 단계에서 개별 폐기된다."""
+        text = (
+            '[{"classification": "company_specific", "impact_score": 1, '
+            '"investment_implication": "A", "keywords": [], "sentiment": "neutral"}]'
+        )
+        result = _parse_analysis_response(text, 1)
+        assert result is None  # 유일한 결과가 idx 없이 폐기되어 validated 리스트가 빈다
+
+    def test_no_longer_truncates_by_expected_count(self):
+        """expected_count 는 더 이상 앞에서 자르지 않는다(RC5) — 완전성 판정은
+        _align_results_to_articles 의 idx 집합 대조가 전담한다(REQ-061-3)."""
+        item = (
+            '{{"idx": {n}, "classification": "company_specific", "impact_score": {n}, '
+            '"investment_implication": "{tag}", "keywords": [], "sentiment": "neutral"}}'
+        )
+        text = "[" + ", ".join(
+            item.format(n=n, tag=tag) for n, tag in [(1, "A"), (2, "B"), (3, "C")]
+        ) + "]"
         result = _parse_analysis_response(text, 2)
         assert result is not None
-        assert len(result) == 2
+        assert len(result) == 3  # 절단하지 않고 3건 모두 보존(정렬 검증은 별도 단계)
 
     def test_truncates_keywords_to_five(self):
-        text = '[{"classification": "sector_specific", "impact_score": 3, "investment_implication": "Test", "keywords": ["a","b","c","d","e","f","g"], "sentiment": "neutral"}]'
+        text = '[{"idx": 1, "classification": "sector_specific", "impact_score": 3, "investment_implication": "Test", "keywords": ["a","b","c","d","e","f","g"], "sentiment": "neutral"}]'
         result = _parse_analysis_response(text, 1)
         assert result is not None
         assert len(result[0]["keywords"]) == 5

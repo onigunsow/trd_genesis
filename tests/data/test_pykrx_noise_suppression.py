@@ -297,6 +297,50 @@ class TestQuietPykrxHardening:
                 except OSError:
                     pass
 
+    def test_reused_session_get_receives_injected_timeout(self, monkeypatch):
+        """2026-07-06 재발 방지: pykrx 재사용 Session의 timeout 미지정 .get 이
+        _quiet_pykrx() 안에서 per-request timeout을 주입받아야 한다.
+
+        RED(수정 전): 주입 없음 → adapter.send 가 timeout=None 수신(무한 블로킹 위험).
+        GREEN(수정 후): _sock_timeout_s 주입 → adapter.send 가 timeout=<값> 수신.
+        """
+        import requests
+
+        from trading.data.pykrx_adapter import _quiet_pykrx
+
+        monkeypatch.setenv("PYKRX_SOCKET_TIMEOUT", "8")
+        captured: dict[str, object] = {}
+
+        def fake_send(self, request, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b"{}"
+            resp.url = request.url
+            resp.request = request
+            return resp
+
+        monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", fake_send)
+
+        session = requests.Session()
+        with _quiet_pykrx():
+            session.get("http://example.invalid/data")
+
+        assert captured.get("timeout") == 8.0, (
+            f"재사용 Session .get 에 timeout 미주입(무한 블로킹 위험): {captured}"
+        )
+
+    def test_session_request_patch_removed_after_guard(self):
+        """가드 종료 후 requests.Session.request 원복(패치 누수 없음)."""
+        import requests
+
+        from trading.data.pykrx_adapter import _quiet_pykrx
+
+        before = requests.Session.request
+        with _quiet_pykrx():
+            assert requests.Session.request is not before, "가드 안에서 패치되지 않음"
+        assert requests.Session.request is before, "가드 종료 후 request 패치 미원복"
+
     def test_socket_default_timeout_set_and_restored(self, monkeypatch):
         """_quiet_pykrx() 내부에서 socket.getdefaulttimeout()이 7.5s여야 한다.
 

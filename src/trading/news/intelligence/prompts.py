@@ -13,6 +13,11 @@ actionable insights for portfolio managers.
 
 For each article provided, analyze and return:
 
+0. idx: the article's number from its "[N] Title:" label below, echoed back \
+verbatim as an integer. REQUIRED in every result object. This is how your \
+result is matched back to the correct article — it is NOT your position in \
+the output array. Copy it exactly; do not renumber, reorder, guess, or omit it.
+
 1. classification: one of "macro_market_moving", "sector_specific", "company_specific", "noise"
    - macro_market_moving: central bank decisions, geopolitics, commodity shocks, \
 trade policy, currency moves, systemic risk, sovereign debt, global recession signals
@@ -55,8 +60,12 @@ CRITICAL OUTPUT RULES:
 - You MUST respond with ONLY a valid JSON array. No other text whatsoever.
 - Do NOT wrap the JSON in markdown code fences (no ```json or ```).
 - Do NOT add any explanatory text, headers, or notes before or after the JSON.
-- Each element corresponds to the article at the same index.
-- Use exact field names: classification, impact_score, investment_implication, keywords, sentiment, sector.
+- Do NOT assume result order matches article order — the reader matches results \
+to articles ONLY by the "idx" field, never by array position.
+- Use exact field names: idx, classification, impact_score, investment_implication, \
+keywords, sentiment, sector.
+- idx MUST be the integer from the article's "[N]" label — copy it exactly, \
+one result per article, no duplicates.
 - investment_implication must be a single string with two sentences separated by a space.
 - keywords must be a JSON array of strings (e.g. ["반도체", "삼성전자", "AI"]).
 - Be STRICT about classification: if a company event has no clear market-wide or sector-wide impact, \
@@ -72,7 +81,10 @@ def build_analysis_prompt(articles: list[dict]) -> str:
 
     Each article dict should have: title, source_name, sector, body_excerpt.
     """
-    lines = ["Analyze the following articles:\n"]
+    lines = [
+        "Analyze the following articles. Each is labeled [N]; "
+        'echo that N back as the integer "idx" field in the matching result object.\n'
+    ]
     for i, art in enumerate(articles, 1):
         title = art.get("title", "")
         source = art.get("source_name", "")

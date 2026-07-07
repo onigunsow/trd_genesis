@@ -16,6 +16,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import date
 
+import requests
+
 from trading.data.cache import (
     cached_range,
     upsert_flows,
@@ -27,9 +29,11 @@ LOG = logging.getLogger(__name__)
 SOURCE = "pykrx"
 
 # 2026-07-02 인시던트: pykrx가 requests에 타임아웃을 지정하지 않아 데드 소켓에서 무한 블로킹.
-# _quiet_pykrx() 진입 시 소켓 전역 타임아웃을 이 값으로 설정해 최대 대기를 제한한다.
+# _quiet_pykrx() 진입 시 소켓 전역 타임아웃 + requests per-request 타임아웃을 이 값으로 건다.
 # 호출부가 테스트에서 PYKRX_SOCKET_TIMEOUT 환경변수로 재정의할 수 있도록 가드 내부에서 읽는다.
-_PYKRX_SOCKET_TIMEOUT_S_DEFAULT = 30.0
+# 2026-07-06 재발: 값이 per-ticker 예산(REFRESH_PER_TICKER_TIMEOUT 기본 10s)보다 작아야 워커가
+# 예산 초과로 방치되기 전에 스스로 풀려 finally(fd 복원·락 해제)를 실행한다. 30→8로 낮춤.
+_PYKRX_SOCKET_TIMEOUT_S_DEFAULT = 8.0
 
 # 2026-07-02 인시던트: APScheduler 스레드풀에서 여러 잡(16:00 daily_report ‖ ohlcv ‖ flows ‖
 # fundamentals)이 동시에 _quiet_pykrx()에 진입하면:
@@ -120,6 +124,22 @@ def _quiet_pykrx() -> Generator[None]:
         _prev_sock_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(_sock_timeout_s)
 
+        # 결함 3 보강(2026-07-06 재발): pykrx(webio._session)는 재사용 requests.Session에
+        # timeout 미지정으로 .get/.post를 호출한다. keep-alive로 재사용되는 죽은 소켓은
+        # socket.setdefaulttimeout(소켓 생성 이후 설정)이 적용되지 않아 읽기가 무한 블로킹되고,
+        # _call_with_timeout(shutdown wait=False)이 워커를 이 yield 지점에서 방치하면 아래
+        # finally(fd 복원·락 해제)가 영원히 실행되지 않는다 → fd 영구 devnull + 락 영구 점유.
+        # requests.Session.request에 per-request timeout을 주입해 죽은 소켓 읽기를 강제 종료 →
+        # 예외 전파 → finally 보장. _QUIET_LOCK으로 직렬화되므로 클래스 패치는 스레드 안전하다.
+        _orig_session_request = requests.Session.request
+
+        def _request_with_timeout(self, method, url, **kwargs):  # noqa: ANN001, ANN202
+            if kwargs.get("timeout") is None:
+                kwargs["timeout"] = _sock_timeout_s
+            return _orig_session_request(self, method, url, **kwargs)
+
+        requests.Session.request = _request_with_timeout  # type: ignore[method-assign]
+
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
         saved_out_fd = os.dup(1)
         saved_err_fd = os.dup(2)
@@ -141,6 +161,8 @@ def _quiet_pykrx() -> Generator[None]:
             os.close(saved_err_fd)
             # 소켓 타임아웃 복원 (None 포함)
             socket.setdefaulttimeout(_prev_sock_timeout)
+            # requests.Session.request 원복 (패치 누수 방지)
+            requests.Session.request = _orig_session_request  # type: ignore[method-assign]
 
 
 def fetch_ohlcv(symbol: str, start: date, end: date) -> int:

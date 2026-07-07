@@ -35,7 +35,7 @@ class TestCorrectedSector:
 class TestParseIncludesSector:
     def _wrap(self, extra: str) -> str:
         return (
-            '[{"classification":"sector_specific","impact_score":4,'
+            '[{"idx":1,"classification":"sector_specific","impact_score":4,'
             '"investment_implication":"가 나","keywords":["x"],'
             '"sentiment":"neutral"' + extra + "}]"
         )

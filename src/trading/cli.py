@@ -149,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_crawl_news(rest)
     if cmd == "news-health":
         return _cmd_news_health(rest)
+    if cmd == "news-repair-export":
+        return _cmd_news_repair_export(rest)
+    if cmd == "news-repair-import":
+        return _cmd_news_repair_import(rest)
     if cmd == "calendar":
         from datetime import date, timedelta
 
@@ -943,6 +947,57 @@ def _cmd_news_health(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_news_repair_export(rest: list[str]) -> int:
+    """SPEC-TRADING-061 REQ-061-4: 오염 구간 재분석 export (host CLI 큐 재사용).
+
+    Flags
+    -----
+    --since DATE          필수. YYYY-MM-DD, 이 날짜 이후 발행 기사만 대상.
+    --model-used NAME      기본 claude-cli. 이 model_used 로 이미 분석된 행만 대상.
+
+    운영 주의: 정규 :05/:15 크론과 PENDING_FILE/RESULTS_FILE 공유볼륨을
+    공유한다 — 조용한 시간대에 운영자가 수동으로만 실행한다. 이 커맨드는
+    자동 배선(cron)에 연결돼 있지 않다.
+    """
+    since = None
+    model_used = "claude-cli"
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--since" and i + 1 < len(rest):
+            since = rest[i + 1]
+            skip_next = True
+        elif arg == "--model-used" and i + 1 < len(rest):
+            model_used = rest[i + 1]
+            skip_next = True
+
+    if not since:
+        print("trading news-repair-export: --since DATE 필수", file=sys.stderr)
+        return 2
+
+    from trading.news.intelligence.repair import export_repair_batch
+
+    count = export_repair_batch(since=since, model_used=model_used)
+    print(f"news-repair-export: since={since} model_used={model_used} exported={count}")
+    return 0
+
+
+def _cmd_news_repair_import(_rest: list[str]) -> int:
+    """SPEC-TRADING-061 REQ-061-4: 재분석 결과 import + ID 정렬 UPSERT 덮어쓰기.
+
+    export_repair_batch → host `scripts/analyze_news.sh` → 이 커맨드 순서로
+    운영자가 수동 실행한다. 정렬 검증(REQ-061-3) 실패 시 기존 행은 보존되고
+    덮어쓰지 않는다.
+    """
+    from trading.news.intelligence.repair import import_repair_results
+
+    repaired = import_repair_results()
+    print(f"news-repair-import: repaired={repaired}")
+    return 0
+
+
 def _print_help(file=sys.stdout) -> int:
     print(
         "trading <subcommand> [args]\n"
@@ -971,6 +1026,9 @@ def _print_help(file=sys.stdout) -> int:
         "  crawl-news        crawl news sources [--sector X] [--source X] [--force]\n"
         "  analyze-news      run intelligence analysis [--sector X] [--force]\n"
         "  news-health       show news source health status table\n"
+        "  news-repair-export  오염 구간 재분석 export (REQ-061-4) "
+        "--since DATE [--model-used NAME]\n"
+        "  news-repair-import  재분석 결과 import + ID 정렬 UPSERT 덮어쓰기 (REQ-061-4)\n"
         "  smoke-gate        live 스모크 게이트 (실행 경로 검증, REQ-049) "
         "[--max-qty N] [--max-notional N] [--ticker CODE] [--dry-run]\n",
         file=file,
