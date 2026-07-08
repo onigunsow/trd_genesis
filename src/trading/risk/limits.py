@@ -37,6 +37,26 @@ LimitName = Literal[
     "daily_count",
 ]
 
+# SPEC-TRADING-062 (REQ-062-A3): breach 접두 토큰(':' 앞) 중 계좌 전체 위험을 뜻하는
+# 집합. 이 집합에 속한 토큰이 하나라도 있으면 회로차단(전체 halt)을 트립한다. 나머지
+# breach(avg_down/repeat_buy/per_ticker/total_invested 등)는 해당 주문만 거부하는
+# per-signal 자문 차단이며 계좌 전체를 멈출 이유가 없다. 시장 종속 값이 아니므로
+# US 시장을 포함한 다른 시장에도 그대로 재사용 가능하다(하드코딩 금지 원칙).
+ACCOUNT_HALT_BREACH_TOKENS = frozenset({"daily_loss"})
+
+
+def requires_circuit_halt(breaches: list[str]) -> bool:
+    """breach 접두 토큰 기준으로 회로차단(전체 halt)이 필요한지 판별하는 순수 함수.
+
+    각 breach 문자열은 ``"<token>: <message>"`` 형태이며, 첫 ':' 앞부분을 토큰으로
+    본다. 토큰 중 하나라도 ``ACCOUNT_HALT_BREACH_TOKENS``에 속하면 True.
+    """
+    for breach in breaches:
+        token = breach.split(":", 1)[0].strip()
+        if token in ACCOUNT_HALT_BREACH_TOKENS:
+            return True
+    return False
+
 
 @dataclass
 class LimitCheck:

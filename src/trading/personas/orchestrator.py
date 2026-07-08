@@ -48,7 +48,7 @@ from trading.personas import risk as risk_persona
 from trading.personas.portfolio_gate import _apply_portfolio_adjustment
 from trading.risk import circuit_breaker
 from trading.risk.blocked_cache import get_blocked_tickers, record_blocked_by_safety
-from trading.risk.limits import check_pre_order, record_breach
+from trading.risk.limits import check_pre_order, record_breach, requires_circuit_halt
 from trading.risk.market_safety import OVERHEAT_SIZE_FACTOR, check_pre_order_safety
 from trading.screener.daily_screen import load_screened_tickers
 from trading.scripts.refresh_market_data import (
@@ -1385,7 +1385,14 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
                 "한도 위반 차단",
                 f"종목 {_ticker_label(ticker)} 매매 차단\n위반: {', '.join(chk.breaches)}",
             )
-            circuit_breaker.trip(reason="pre-order limit breach", details={"breaches": chk.breaches})
+            # SPEC-TRADING-062 (REQ-062-A1/A2): 계좌 전체 위험(daily_loss)이 아닌
+            # per-signal 자문 breach(avg_down 등)는 이 주문만 거부하고 회로차단은
+            # 트립하지 않는다 — 2026-07-08 avg_down 단일 breach가 하루 종일 전체
+            # halt를 유발한 사고의 재발 방지.
+            if requires_circuit_halt(chk.breaches):
+                circuit_breaker.trip(
+                    reason="pre-order limit breach", details={"breaches": chk.breaches}
+                )
             res.rejected.append(decision_id)
             continue
 
@@ -1848,10 +1855,15 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
                 "한도 위반 차단",
                 f"종목 {_ticker_label(ticker)} 매매 차단\n위반: {', '.join(chk.breaches)}",
             )
-            circuit_breaker.trip(
-                reason="pre-order limit breach",
-                details={"breaches": chk.breaches},
-            )
+            # SPEC-TRADING-062 (REQ-062-A1/A2): 계좌 전체 위험(daily_loss)이 아닌
+            # per-signal 자문 breach(avg_down 등)는 이 주문만 거부하고 회로차단은
+            # 트립하지 않는다 — 2026-07-08 avg_down 단일 breach가 하루 종일 전체
+            # halt를 유발한 사고의 재발 방지.
+            if requires_circuit_halt(chk.breaches):
+                circuit_breaker.trip(
+                    reason="pre-order limit breach",
+                    details={"breaches": chk.breaches},
+                )
             res.rejected.append(decision_id)
             continue
 

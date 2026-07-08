@@ -341,3 +341,78 @@ class TestIntradayCycleSkipsRiskWhenNoSignals:
         assert not mock_risk.run.called, "Risk.run should NOT be called when no signals"
         assert result.cycle_kind == "intraday"
         assert result.executed_orders == []
+
+
+class TestIntradayCircuitBreachClassification:
+    """SPEC-TRADING-062 REQ-062-A1/A2 — run_intraday_cycle의 pre-order breach 처리도
+    회로차단 분류를 따라야 한다 (orchestrator.py 두 번째 사이트, line ~1845-1856).
+    """
+
+    def _run(self, *, breaches: list[str]):
+        cached_micro_row = {
+            "id": 42,
+            "response_json": {
+                "candidates": {"buy": [{"ticker": "086790"}], "sell": [], "hold": []}
+            },
+        }
+        signals = [{"ticker": "086790", "side": "buy", "qty": 3, "rationale": "test"}]
+
+        with (
+            patch("trading.personas.orchestrator.macro_persona") as mock_macro,
+            patch("trading.personas.orchestrator.micro_persona") as mock_micro,
+            patch("trading.personas.orchestrator.decision_persona") as mock_decision,
+            patch("trading.personas.orchestrator.risk_persona") as mock_risk,
+            patch("trading.personas.orchestrator.tg") as mock_tg,
+            patch("trading.personas.orchestrator.get_settings") as mock_settings,
+            patch("trading.personas.orchestrator.get_system_state") as mock_state,
+            patch("trading.personas.orchestrator._gather_assets") as mock_assets,
+            patch("trading.personas.orchestrator.get_blocked_tickers") as mock_blocked,
+            patch("trading.personas.orchestrator.check_pre_order_safety") as mock_safety,
+            patch("trading.personas.orchestrator.check_pre_order") as mock_limits,
+            patch("trading.personas.orchestrator.record_breach") as mock_record_breach,
+            patch("trading.personas.orchestrator.circuit_breaker") as mock_cb,
+            patch("trading.personas.orchestrator.KisClient"),
+            patch("trading.personas.orchestrator._count_holds_today", return_value=0),
+            patch("trading.personas.orchestrator._execute_signal", return_value=None),
+        ):
+            mock_macro.latest_cached.return_value = {
+                "id": 10, "response": "bullish", "response_json": {"regime": "bull"},
+            }
+            mock_micro.latest_cached.return_value = cached_micro_row
+            mock_decision.run.return_value = (_decision_result(signals=signals), [101])
+            mock_risk.run.return_value = (_risk_result(verdict="APPROVE"), 201, "APPROVE")
+            mock_settings.return_value = MagicMock(trading_mode="paper")
+            mock_state.return_value = {"halt_state": False}
+            mock_assets.return_value = {
+                "total_assets": 10_000_000, "cash_d2": 9_600_000,
+                "stock_eval": 400_000, "holdings": [],
+            }
+            mock_blocked.return_value = {"blocked": {}}
+            mock_safety.return_value = MagicMock(passed=True, quote={"price": 70_000})
+            mock_limits.return_value = MagicMock(passed=False, breaches=breaches)
+
+            from trading.personas.orchestrator import run_intraday_cycle
+
+            result = run_intraday_cycle(today="2026-07-08")
+
+        return result, mock_cb, mock_record_breach, mock_tg
+
+    def test_avg_down_only_breach_rejects_order_without_tripping_circuit(self):
+        result, mock_cb, mock_record_breach, mock_tg = self._run(
+            breaches=["avg_down: 086790 단기과열·손실(-1.20%) 물타기 매수 거부"]
+        )
+
+        assert 101 in result.rejected
+        assert not mock_cb.trip.called, "avg_down 단독 breach는 회로차단을 트립하면 안 된다"
+        assert mock_record_breach.called
+        assert mock_tg.system_briefing.called
+
+    def test_daily_loss_breach_still_trips_circuit(self):
+        result, mock_cb, mock_record_breach, mock_tg = self._run(
+            breaches=["daily_loss: 오늘 손익 -3.00% ≤ 한도 -2.50%"]
+        )
+
+        assert 101 in result.rejected
+        assert mock_cb.trip.called, "daily_loss breach는 기존대로 회로차단을 트립해야 한다"
+        assert mock_record_breach.called
+        assert mock_tg.system_briefing.called
