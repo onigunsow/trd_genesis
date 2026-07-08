@@ -214,6 +214,27 @@ class TestParseAnalysisResponse:
         assert result is not None
         assert len(result[0]["keywords"]) == 5
 
+    def test_title_head_propagated_when_present(self):
+        """SPEC-TRADING-062 REQ-062-B1/B4: title_head 는 validated 결과에 그대로 전달된다."""
+        text = (
+            '[{"idx": 1, "title_head": "Samsung Q1 p", "classification": '
+            '"company_specific", "impact_score": 3, "investment_implication": "Test", '
+            '"keywords": ["k1"], "sentiment": "neutral"}]'
+        )
+        result = _parse_analysis_response(text, 1)
+        assert result is not None
+        assert result[0]["title_head"] == "Samsung Q1 p"
+
+    def test_title_head_defaults_to_none_when_absent(self):
+        """SPEC-TRADING-062 REQ-062-B3: 구버전 응답(title_head 없음)도 정상 파싱된다."""
+        text = (
+            '[{"idx": 1, "classification": "company_specific", "impact_score": 3, '
+            '"investment_implication": "Test", "keywords": ["k1"], "sentiment": "neutral"}]'
+        )
+        result = _parse_analysis_response(text, 1)
+        assert result is not None
+        assert result[0].get("title_head") is None
+
 
 class TestApplyQualityChecks:
     def test_penalizes_title_restating_summary(self):

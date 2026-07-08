@@ -34,6 +34,7 @@ from trading.news.intelligence.analyzer import (
     _fetch_articles_by_ids,
     _parse_analysis_response,
     _prepare_batch,
+    _verify_content_anchor,
     build_analysis_prompt,
 )
 
@@ -167,6 +168,17 @@ def import_repair_results() -> int:
             "import_repair_results: 정렬 검증 실패(fail-closed, 덮어쓰기 0건): %s",
             reasons,
         )
+        return 0
+
+    # SPEC-TRADING-062 REQ-062-B2/B4: idx 정렬은 통과했으나 content-anchor
+    # (title_head)가 불일치하는 제2 실패모드 검증 — 재수리 경로도 동일 가드 적용.
+    article_titles = {aid: article_map.get(aid, {}).get("title", "") for aid in article_ids}
+    if _verify_content_anchor(
+        aligned, article_titles, article_ids, path="repair_import", actor="repair",
+    ):
+        RESULTS_FILE.unlink(missing_ok=True)
+        REPAIR_META_FILE.unlink(missing_ok=True)
+        PENDING_FILE.unlink(missing_ok=True)
         return 0
 
     sql = """

@@ -84,3 +84,32 @@ class TestArticleAnalysisPrompt:
         prompt = build_analysis_prompt(articles)
         assert "No body article" in prompt
         assert "Body:" not in prompt
+
+
+class TestContentAnchorInstruction:
+    """SPEC-TRADING-062 REQ-062-B1 — title_head content-anchor 지시문."""
+
+    def test_system_prompt_instructs_title_head_echo(self):
+        assert "title_head" in ARTICLE_ANALYSIS_SYSTEM
+        assert "12 characters" in ARTICLE_ANALYSIS_SYSTEM
+
+    def test_system_prompt_forbids_borrowing_other_article_title(self):
+        assert (
+            "different article" in ARTICLE_ANALYSIS_SYSTEM
+            or "another article" in ARTICLE_ANALYSIS_SYSTEM
+        )
+
+    def test_system_prompt_lists_title_head_in_exact_field_names(self):
+        assert "idx, title_head" in ARTICLE_ANALYSIS_SYSTEM
+
+    def test_build_prompt_instructs_title_head_alongside_idx(self):
+        articles = [{
+            "title": "Samsung Electronics reports record Q1 profits",
+            "source_name": "Reuters",
+            "sector": "semiconductor",
+            "body_excerpt": "Samsung Electronics posted record quarterly profits...",
+        }]
+        prompt = build_analysis_prompt(articles)
+        assert "[1] Title:" in prompt
+        assert "title_head" in prompt
+        assert "idx" in prompt

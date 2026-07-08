@@ -18,6 +18,15 @@ verbatim as an integer. REQUIRED in every result object. This is how your \
 result is matched back to the correct article — it is NOT your position in \
 the output array. Copy it exactly; do not renumber, reorder, guess, or omit it.
 
+0b. title_head: copy the FIRST 12 CHARACTERS of THIS SAME article's title, \
+verbatim, from its own "[N] Title:" line above — never from a different \
+article's title. REQUIRED in every result object, alongside idx. This is a \
+second, independent identity check: under heavy load it is possible to echo \
+the correct idx sequence while still attaching the wrong article's content \
+to a result. title_head lets the reader detect and reject that case even \
+when the idx sequence looks perfect. Copy the exact characters — do not \
+paraphrase, translate, summarize, or borrow characters from another article.
+
 1. classification: one of "macro_market_moving", "sector_specific", "company_specific", "noise"
    - macro_market_moving: central bank decisions, geopolitics, commodity shocks, \
 trade policy, currency moves, systemic risk, sovereign debt, global recession signals
@@ -62,10 +71,13 @@ CRITICAL OUTPUT RULES:
 - Do NOT add any explanatory text, headers, or notes before or after the JSON.
 - Do NOT assume result order matches article order — the reader matches results \
 to articles ONLY by the "idx" field, never by array position.
-- Use exact field names: idx, classification, impact_score, investment_implication, \
-keywords, sentiment, sector.
+- Use exact field names: idx, title_head, classification, impact_score, \
+investment_implication, keywords, sentiment, sector.
 - idx MUST be the integer from the article's "[N]" label — copy it exactly, \
 one result per article, no duplicates.
+- title_head MUST be copied character-for-character from that SAME article's \
+own "[N] Title:" line (first 12 characters) — never from a different \
+article, and never rewritten, translated, or summarized.
 - investment_implication must be a single string with two sentences separated by a space.
 - keywords must be a JSON array of strings (e.g. ["반도체", "삼성전자", "AI"]).
 - Be STRICT about classification: if a company event has no clear market-wide or sector-wide impact, \
@@ -83,7 +95,10 @@ def build_analysis_prompt(articles: list[dict]) -> str:
     """
     lines = [
         "Analyze the following articles. Each is labeled [N]; "
-        'echo that N back as the integer "idx" field in the matching result object.\n'
+        'echo that N back as the integer "idx" field, and copy the first 12 '
+        "characters of that SAME article's title verbatim (from its own "
+        '"[N] Title:" line below) into the "title_head" field, in the '
+        "matching result object.\n"
     ]
     for i, art in enumerate(articles, 1):
         title = art.get("title", "")

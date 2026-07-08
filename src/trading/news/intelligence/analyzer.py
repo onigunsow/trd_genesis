@@ -66,6 +66,10 @@ NOISE_TITLE_PATTERNS = re.compile(
 # Threshold for title-summary similarity check
 TITLE_SIMILARITY_THRESHOLD = 0.80
 
+# SPEC-TRADING-062 REQ-062-B2: content-anchor(title_head) 불일치 임계.
+# 이 값을 초과하는 결과 개수가 나오면 배치 전체를 fail-closed 로 거부한다.
+ANCHOR_MISMATCH_MAX = 1
+
 # Valid classifications
 VALID_CLASSIFICATIONS = frozenset({
     "macro_market_moving", "sector_specific", "company_specific", "noise",
@@ -468,6 +472,13 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
         if sector not in VALID_SECTORS:
             sector = ""
 
+        # SPEC-TRADING-062 REQ-062-B1/B3: content-anchor 필드. echo 안 된(구버전)
+        # 응답은 None 으로 두고 _anchor_mismatch_count 가 그 결과를 대조에서
+        # 제외한다(하위호환, 앵커 부재만으로는 거부하지 않는다).
+        title_head = item.get("title_head")
+        if not isinstance(title_head, str):
+            title_head = None
+
         validated.append({
             "idx": idx,
             "summary_2line": str(implication),
@@ -476,6 +487,7 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
             "sentiment": sentiment,
             "classification": classification,
             "sector": sector,
+            "title_head": title_head,
         })
 
     return validated if validated else None
@@ -484,8 +496,11 @@ def _validate_results(data: list | dict, expected_count: int) -> list[dict] | No
 # @MX:ANCHOR: [AUTO] news_analysis 저장 경로 3곳(_store_results/import_host_results/
 # repair.import_repair_results)의 유일한 정렬 진실원천 — 위치 매핑 재도입 금지.
 # @MX:REASON: RC1/RC2(analyzer.py 히스토리) — 위치(enumerate) 매핑이 결과 재정렬 시
-# classification/sentiment/impact/keywords 전체를 오염시켰다. fan_in=3.
-# @MX:SPEC: SPEC-TRADING-061 REQ-061-2/3
+# classification/sentiment/impact/keywords 전체를 오염시켰다. fan_in=3. idx 집합
+# 완전성만으로는 불충분함이 2026-07-08 확인됨(idx는 완전한 순열이되 내용이 뒤바뀐
+# 제2 실패모드) — 3곳 모두 이 함수 다음에 _verify_content_anchor 를 반드시 호출해
+# content-anchor(title_head)까지 대조해야 진짜 "정렬 진실"이 완성된다(SPEC-062).
+# @MX:SPEC: SPEC-TRADING-061 REQ-061-2/3, SPEC-TRADING-062 REQ-062-B2/B4
 def _align_results_to_articles(
     results: list[dict], article_ids: list[int]
 ) -> list[tuple[int, dict]] | None:
@@ -552,6 +567,106 @@ def _alignment_reject_reasons(results: list[dict], article_ids: list[int]) -> di
     }
 
 
+def _normalize_title_head(text: str) -> str:
+    """공백을 정규화(연속 공백 -> 1칸, 양끝 trim)한 뒤 앞 12자만 반환한다.
+
+    REQ-062-B2 앵커 비교 단위. 두 값 모두 이 함수를 거친 뒤 비교한다.
+    """
+    collapsed = re.sub(r"\s+", " ", (text or "")).strip()
+    return collapsed[:12]
+
+
+# @MX:SPEC: SPEC-TRADING-062 REQ-062-B2/B4
+def _anchor_mismatch_count(
+    aligned: list[tuple[int, dict]], article_titles: dict[int, str]
+) -> int:
+    """idx 정렬된 (article_id, result) 쌍에서 title_head 앵커 불일치 개수를 센다.
+
+    idx 집합 완전성(REQ-061-3)만으로는 "idx는 완전한 순열이되 내용은 뒤바뀐"
+    2026-07-08 제2 실패모드를 잡지 못한다. 각 결과가 echo한 title_head 를
+    매핑된 기사의 실제 제목 앞부분과 대조해 그 오염을 탐지한다.
+
+    순수 함수 — DB/네트워크 접근 없음(REQ-062-B4), 시장 종속 로직 없음.
+    title_head 가 없는(구버전) 결과는 비교하지 않는다(REQ-062-B3, 하위호환).
+    """
+    mismatches = 0
+    for article_id, result in aligned:
+        title_head = result.get("title_head")
+        if not title_head:
+            continue
+        expected = _normalize_title_head(article_titles.get(article_id, ""))
+        got = _normalize_title_head(title_head)
+        if got != expected:
+            mismatches += 1
+    return mismatches
+
+
+def _title_head_missing_ratio(aligned: list[tuple[int, dict]]) -> float:
+    """정렬된 결과 중 title_head 를 결여한 비율(REQ-062-B3 관측용, 순수 함수)."""
+    if not aligned:
+        return 0.0
+    missing = sum(1 for _, result in aligned if not result.get("title_head"))
+    return missing / len(aligned)
+
+
+def _anchor_reject_reasons(article_ids: list[int], mismatch_count: int) -> dict:
+    """앵커 불일치로 인한 거부 사유(REQ-062-B2, 감사 로그 관측성용).
+
+    idx 정렬 자체는 성공했음(existing reason fields 는 0/전량 형태로 유지)을
+    명시하면서 anchor_mismatch_count 를 덧붙인다.
+    """
+    n = len(article_ids)
+    return {
+        "expected_count": n,
+        "matched_count": n,  # idx 정렬은 통과 — 문제는 content-anchor 뿐
+        "rejected_count": n,
+        "no_idx_count": 0,
+        "duplicate_count": 0,
+        "missing_count": 0,
+        "extra_count": 0,
+        "anchor_mismatch_count": mismatch_count,
+    }
+
+
+def _verify_content_anchor(
+    aligned: list[tuple[int, dict]],
+    article_titles: dict[int, str],
+    article_ids: list[int],
+    *,
+    path: str,
+    actor: str = "analyzer",
+) -> bool:
+    """content-anchor(title_head) 검증 후 필요 시 감사·로그를 남긴다(REQ-062-B2/B4).
+
+    저장 경로 3곳(_store_results/import_host_results/repair.import_repair_results)
+    이 idx 정렬 성공 직후 공통으로 호출하는 얇은 래퍼 — 순수 계산은
+    ``_anchor_mismatch_count`` 가 전담하고, 이 함수는 그 결과를 감사로그로
+    옮기는 부수효과만 담당한다.
+
+    Returns:
+        True  — 임계 초과, 호출자는 저장을 중단하고 0건으로 처리해야 한다.
+        False — 통과, 호출자는 저장을 계속 진행한다.
+    """
+    if _title_head_missing_ratio(aligned) > 0.5:
+        LOG.warning(
+            "배치 과반이 title_head 앵커를 결여 — 구버전 응답 의심(path=%s)", path,
+        )
+
+    mismatch_count = _anchor_mismatch_count(aligned, article_titles)
+    if mismatch_count > ANCHOR_MISMATCH_MAX:
+        reasons = _anchor_reject_reasons(article_ids, mismatch_count)
+        audit("NEWS_INTEL_ALIGN_REJECT", actor=actor, details={
+            "path": path, **reasons,
+        })
+        LOG.warning(
+            "content-anchor(title_head) 불일치 임계 초과 — fail-closed 저장 거부"
+            "(0건): mismatch=%d/%d (path=%s)",
+            mismatch_count, len(aligned), path,
+        )
+        return True
+    return False
+
+
 def _apply_quality_checks(
     articles: list[dict],
     results: list[dict],
@@ -612,6 +727,13 @@ def _store_results(
         return []
 
     article_map = {a["id"]: a for a in articles}
+
+    # SPEC-TRADING-062 REQ-062-B2: idx 정렬은 통과했으나 content-anchor
+    # (title_head)가 불일치하는 제2 실패모드 검증.
+    article_titles = {aid: a.get("title", "") for aid, a in article_map.items()}
+    if _verify_content_anchor(aligned, article_titles, article_ids, path="haiku_store"):
+        return []
+
     cost_per_article = (
         (in_tok / 1_000_000) * HAIKU_IN_RATE
         + (out_tok / 1_000_000) * HAIKU_OUT_RATE
@@ -974,6 +1096,15 @@ def import_host_results() -> int:
             "import_results: 정렬 검증 실패 — fail-closed 저장 거부(0건): %s", reasons,
         )
         # 동일한 오염 배치가 다음 슬롯에서도 계속 재시도되지 않도록 소비한다.
+        RESULTS_FILE.unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+        PENDING_FILE.unlink(missing_ok=True)
+        return 0
+
+    # SPEC-TRADING-062 REQ-062-B2: idx 정렬은 통과했으나 content-anchor
+    # (title_head)가 불일치하는 제2 실패모드 검증(2026-07-08 인시던트).
+    article_titles = {aid: article_map.get(aid, {}).get("title", "") for aid in article_ids}
+    if _verify_content_anchor(aligned, article_titles, article_ids, path="cli_import"):
         RESULTS_FILE.unlink(missing_ok=True)
         meta_file.unlink(missing_ok=True)
         PENDING_FILE.unlink(missing_ok=True)
