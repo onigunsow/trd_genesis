@@ -1,8 +1,15 @@
 #!/bin/bash
-# analyze_news.sh — HOST script that calls Claude Code CLI to analyze pending articles.
+# analyze_news.sh — HOST script that calls Claude Code CLI to analyze pending
+# article chunks (SPEC-TRADING-062 Stage 2 — REQ-062-C2).
 #
-# Called by host cron (not inside Docker). Reads pending_analysis.json from shared
-# volume, passes the prompt to claude CLI, writes analysis_results.json.
+# Called by host cron (not inside Docker). Reads data/pending_chunks/chunk_*.json
+# from the shared volume — each chunk holds at most HOST_CHUNK_SIZE articles
+# (see analyzer.py) — calls `claude -p` ONCE PER CHUNK, and writes
+# data/analysis_chunks/result_<chunk_id>.json. A chunk that fails or returns
+# an empty response keeps its pending file for retry next slot; the loop
+# CONTINUES with the remaining chunks (one bad chunk no longer blocks the
+# rest of the batch — 2026-07-08/09 incident: a single 94-98 article batch
+# scrambled almost 100% of the time and produced zero throughput all day).
 #
 # Prerequisites:
 #   - Claude Code CLI installed (Node.js on host)
@@ -11,8 +18,8 @@
 set -euo pipefail
 
 TRADING_DIR="/home/onigunsow/trading"
-PENDING="$TRADING_DIR/data/pending_analysis.json"
-RESULTS="$TRADING_DIR/data/analysis_results.json"
+CHUNKS_DIR="$TRADING_DIR/data/pending_chunks"
+RESULTS_DIR="$TRADING_DIR/data/analysis_chunks"
 LOG="$TRADING_DIR/logs/analyze_news.log"
 
 # REQ-053-A1: claude CLI 경로 견고 해소 — (1) command -v, (2) .local/bin 폴백
@@ -30,50 +37,90 @@ log() {
 
 log "Starting analysis run"
 
-# Check if pending file exists and is non-empty
-if [ ! -f "$PENDING" ] || [ ! -s "$PENDING" ]; then
-    log "No pending articles (file missing or empty)"
+mkdir -p "$RESULTS_DIR"
+
+# REQ-062-C2: 대기 중인 청크가 없으면 이번 슬롯은 할 일 없음.
+# process substitution 이므로 find 실패(디렉터리 없음 등)가 set -e 를 건드리지 않는다.
+mapfile -t CHUNK_FILES < <(find "$CHUNKS_DIR" -maxdepth 1 -name 'chunk_*.json' -type f 2>/dev/null | sort)
+
+if [ ${#CHUNK_FILES[@]} -eq 0 ]; then
+    log "No pending chunks (dir missing or empty)"
     exit 0
 fi
 
-# Extract the prompt text from JSON to a temp file (avoids ARG_MAX limits)
-PROMPT_FILE=$(mktemp /tmp/claude_prompt_XXXXXX.txt)
-trap 'rm -f "$PROMPT_FILE"' EXIT
+CHUNKS_OK=0
+CHUNKS_FAILED=0
 
-python3 -c "
+for CHUNK_FILE in "${CHUNK_FILES[@]}"; do
+    [ -s "$CHUNK_FILE" ] || { log "Skipping empty chunk file: $CHUNK_FILE"; continue; }
+
+    CHUNK_BASE=$(basename "$CHUNK_FILE" .json)
+    CHUNK_ID=${CHUNK_BASE#chunk_}
+    RESULT_FILE="$RESULTS_DIR/result_${CHUNK_ID}.json"
+
+    # Extract the prompt text from JSON to a temp file (avoids ARG_MAX limits)
+    PROMPT_FILE=$(mktemp /tmp/claude_prompt_XXXXXX.txt)
+
+    if ! python3 -c "
 import json, sys
-with open('$PENDING') as f:
+with open('$CHUNK_FILE') as f:
     data = json.load(f)
 with open('$PROMPT_FILE', 'w') as out:
     out.write(data['prompt'])
-" 2>>"$LOG"
+" 2>>"$LOG"; then
+        log "ERROR: Chunk $CHUNK_ID: failed to extract prompt — skipping (kept for retry)"
+        rm -f "$PROMPT_FILE"
+        CHUNKS_FAILED=$((CHUNKS_FAILED + 1))
+        continue
+    fi
 
-if [ ! -s "$PROMPT_FILE" ]; then
-    log "ERROR: Failed to extract prompt from pending file"
+    if [ ! -s "$PROMPT_FILE" ]; then
+        log "ERROR: Chunk $CHUNK_ID: extracted prompt is empty — skipping (kept for retry)"
+        rm -f "$PROMPT_FILE"
+        CHUNKS_FAILED=$((CHUNKS_FAILED + 1))
+        continue
+    fi
+
+    PROMPT_LINES=$(wc -l < "$PROMPT_FILE")
+    log "Chunk $CHUNK_ID: sending $PROMPT_LINES lines to Claude CLI"
+
+    # Call Claude Code CLI with the analysis prompt via stdin pipe
+    # -p: non-interactive print mode (reads prompt from stdin when no arg given)
+    # --tools "": disable all tools (pure text analysis, no file operations)
+    #
+    # Exit-code capture is deliberately done via `if VAR=$(...); then` rather
+    # than a bare assignment followed by `$?` — under `set -e` + `pipefail`,
+    # a bare `VAR=$(failing_cmd)` aborts the script immediately and the `$?`
+    # line below it never runs. Wrapping it as an `if` condition is exempt
+    # from `-e`, which is required here so one chunk's failure doesn't kill
+    # the whole loop (REQ-062-C2: "loop CONTINUES with remaining chunks").
+    if RESPONSE=$(cat "$PROMPT_FILE" | "$CLAUDE" -p --tools "" 2>>"$LOG"); then
+        EXIT_CODE=0
+    else
+        EXIT_CODE=$?
+    fi
+    rm -f "$PROMPT_FILE"
+
+    if [ "$EXIT_CODE" -eq 0 ] && [ -n "$RESPONSE" ]; then
+        echo "$RESPONSE" > "$RESULT_FILE"
+        rm -f "$CHUNK_FILE"
+        log "Chunk $CHUNK_ID: analysis complete — results written to $RESULT_FILE ($(echo "$RESPONSE" | wc -c) bytes)"
+        CHUNKS_OK=$((CHUNKS_OK + 1))
+    elif [ "$EXIT_CODE" -eq 0 ]; then
+        # exit=0 but empty response: transient (not a real failure).
+        # Keep the chunk's pending file so the next cron slot retries it —
+        # no data loss, and the other chunks are unaffected.
+        log "WARN: Chunk $CHUNK_ID: Claude CLI returned empty response (exit=0) — transient, keeping pending file to retry next slot"
+        CHUNKS_FAILED=$((CHUNKS_FAILED + 1))
+    else
+        log "ERROR: Chunk $CHUNK_ID: Claude CLI failed (exit=$EXIT_CODE), keeping pending file for retry"
+        CHUNKS_FAILED=$((CHUNKS_FAILED + 1))
+    fi
+done
+
+log "Analysis run finished: $CHUNKS_OK chunk(s) ok, $CHUNKS_FAILED chunk(s) failed/retry"
+
+if [ "$CHUNKS_OK" -eq 0 ] && [ "$CHUNKS_FAILED" -gt 0 ]; then
     exit 1
 fi
-
-PROMPT_LINES=$(wc -l < "$PROMPT_FILE")
-log "Sending $PROMPT_LINES lines to Claude CLI"
-
-# Call Claude Code CLI with the analysis prompt via stdin pipe
-# -p: non-interactive print mode (reads prompt from stdin when no arg given)
-# --tools "": disable all tools (pure text analysis, no file operations)
-RESPONSE=$(cat "$PROMPT_FILE" | $CLAUDE -p --tools "" 2>>"$LOG")
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -eq 0 ] && [ -n "$RESPONSE" ]; then
-    # Write response to results file
-    echo "$RESPONSE" > "$RESULTS"
-    # Remove pending file to signal completion
-    rm -f "$PENDING"
-    log "Analysis complete — results written to $RESULTS ($(echo "$RESPONSE" | wc -c) bytes)"
-elif [ $EXIT_CODE -eq 0 ]; then
-    # exit=0 but empty response: transient (not a real failure).
-    # Keep the pending file so the next cron slot retries — no data loss.
-    log "WARN: Claude CLI returned empty response (exit=0) — transient, keeping pending file to retry next slot"
-    exit 1
-else
-    log "ERROR: Claude CLI failed (exit=$EXIT_CODE), keeping pending file for retry"
-    exit 1
-fi
+exit 0

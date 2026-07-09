@@ -39,6 +39,11 @@ MAX_ARTICLES_PER_RUN = 100
 HAIKU_TIMEOUT = 30.0
 RETRY_DELAY = 5.0
 
+# SPEC-TRADING-062 REQ-062-C1: 호스트 CLI 청킹 단위. 2026-07-08 인시던트에서
+# 94~98개 단일배치가 거의 100% 스크램블됐다 — 작은 청크로 나눠 모델이 idx/
+# title_head 대응을 유지하도록 한다. 시장 종속 값 아님(REQ-062-C5).
+HOST_CHUNK_SIZE = 20
+
 # Haiku pricing: input $0.80/M, output $4.00/M
 HAIKU_IN_RATE = 0.80
 HAIKU_OUT_RATE = 4.0
@@ -568,12 +573,15 @@ def _alignment_reject_reasons(results: list[dict], article_ids: list[int]) -> di
 
 
 def _normalize_title_head(text: str) -> str:
-    """공백을 정규화(연속 공백 -> 1칸, 양끝 trim)한 뒤 앞 12자만 반환한다.
+    """공백을 정규화(연속 공백 -> 1칸, 양끝 trim)한 뒤 앞 12자를 rstrip해 반환한다.
 
     REQ-062-B2 앵커 비교 단위. 두 값 모두 이 함수를 거친 뒤 비교한다.
+    slice 후 rstrip: 제목의 12번째 문자가 공백이면 모델은 후행 공백 없이
+    echo하므로(2026-07-09 라이브 오탐 5~6/20 전수 확인), 절단 경계의 후행
+    공백은 비교에서 제외해야 완벽 정렬 배치를 거부하지 않는다.
     """
     collapsed = re.sub(r"\s+", " ", (text or "")).strip()
-    return collapsed[:12]
+    return collapsed[:12].rstrip()
 
 
 # @MX:SPEC: SPEC-TRADING-062 REQ-062-B2/B4
@@ -635,13 +643,18 @@ def _verify_content_anchor(
     *,
     path: str,
     actor: str = "analyzer",
+    chunk_id: str | None = None,
 ) -> bool:
     """content-anchor(title_head) 검증 후 필요 시 감사·로그를 남긴다(REQ-062-B2/B4).
 
-    저장 경로 3곳(_store_results/import_host_results/repair.import_repair_results)
-    이 idx 정렬 성공 직후 공통으로 호출하는 얇은 래퍼 — 순수 계산은
+    저장 경로(_store_results/import_host_results/repair.import_repair_results/
+    청크 import)가 idx 정렬 성공 직후 공통으로 호출하는 얇은 래퍼 — 순수 계산은
     ``_anchor_mismatch_count`` 가 전담하고, 이 함수는 그 결과를 감사로그로
     옮기는 부수효과만 담당한다.
+
+    ``chunk_id`` 는 SPEC-TRADING-062 Stage2(REQ-062-C3) 청크 import 전용 —
+    지정되면 ALIGN_REJECT 감사 상세에 포함한다. 기존 호출자(기본값 None)는
+    동작 변화 없음.
 
     Returns:
         True  — 임계 초과, 호출자는 저장을 중단하고 0건으로 처리해야 한다.
@@ -655,9 +668,10 @@ def _verify_content_anchor(
     mismatch_count = _anchor_mismatch_count(aligned, article_titles)
     if mismatch_count > ANCHOR_MISMATCH_MAX:
         reasons = _anchor_reject_reasons(article_ids, mismatch_count)
-        audit("NEWS_INTEL_ALIGN_REJECT", actor=actor, details={
-            "path": path, **reasons,
-        })
+        details = {"path": path, **reasons}
+        if chunk_id is not None:
+            details["chunk_id"] = chunk_id
+        audit("NEWS_INTEL_ALIGN_REJECT", actor=actor, details=details)
         LOG.warning(
             "content-anchor(title_head) 불일치 임계 초과 — fail-closed 저장 거부"
             "(0건): mismatch=%d/%d (path=%s)",
@@ -940,177 +954,34 @@ def _clear_today_analyses(sector: str | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Host CLI bridge: export / import via shared volume
+# Host CLI bridge: export / import via shared volume (SPEC-TRADING-062 Stage2
+# — 청크 단위 배선, REQ-062-C1~C4)
 # ---------------------------------------------------------------------------
 
-def export_pending_for_host(
-    *,
-    sector: str | None = None,
-    max_articles: int = MAX_ARTICLES_PER_RUN,
+
+def _clear_stale_chunk_files(chunks_dir: Path, results_dir: Path) -> None:
+    """새 배치를 쓰기 전 이전 청크 대기열/결과 잔재를 제거한다(REQ-062-C1).
+
+    이전 사이클에서 아직 소비되지 않은 청크가 있어도, 그 기사들은 아직
+    news_analysis 에 없으므로(import 되지 않았다는 뜻) 다음 export 의
+    get_unanalyzed_articles 조회에 다시 포함된다 — 데이터 손실 없이 안전하게
+    덮어쓸 수 있다(기존 단일파일 PENDING_FILE 무조건 덮어쓰기와 동일 정책의
+    다중파일 일반화).
+    """
+    for d in (chunks_dir, results_dir):
+        if d.exists():
+            for f in d.glob("*.json"):
+                f.unlink(missing_ok=True)
+
+
+def _persist_cli_results(
+    aligned: list[tuple[int, dict]], article_map: dict[int, dict],
 ) -> int:
-    """Export unanalyzed articles as a Claude CLI prompt to the shared volume.
+    """정렬된 (article_id, result) 쌍을 news_analysis 에 저장한다(CLI 경로 공통).
 
-    Writes data/pending_analysis.json with format:
-      {"prompt": "<system + user prompt>", "article_ids": [1, 2, ...]}
-
-    The host cron job reads this file and passes the prompt to `claude -p`.
-    Pre-filtered noise articles are stored directly (no CLI call needed).
-
-    Returns the number of articles exported for host analysis.
+    레거시 단일배치 경로와 Stage2 청크 경로가 공유하는 저장 루프 —
+    model_used="claude-cli", 비용 0(Max 구독), REQ-026-A2 섹터 보정 포함.
     """
-    articles = get_unanalyzed_articles(sector=sector, limit=max_articles)
-    if not articles:
-        LOG.info("export_pending: no unanalyzed articles")
-        return 0
-
-    # Pre-filter noise articles (same logic as analyze_articles)
-    noise_articles = []
-    real_articles = []
-    for art in articles:
-        if is_noise_title(art["title"]):
-            noise_articles.append(art)
-        else:
-            real_articles.append(art)
-
-    # Store pre-filtered noise directly — no need to send to host
-    if noise_articles:
-        count = _store_prefiltered_noise(noise_articles)
-        LOG.info("export_pending: pre-filtered %d noise articles", count)
-
-    if not real_articles:
-        LOG.info("export_pending: all articles were noise, nothing to export")
-        return 0
-
-    # Build the full prompt (system instructions embedded in user message)
-    batch_data = _prepare_batch(real_articles)
-    user_prompt = build_analysis_prompt(batch_data)
-    full_prompt = (
-        f"{ARTICLE_ANALYSIS_SYSTEM}\n\n"
-        f"---\n\n"
-        f"{user_prompt}"
-    )
-
-    article_ids = [art["id"] for art in real_articles]
-
-    # Write to shared volume
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "prompt": full_prompt,
-        "article_ids": article_ids,
-        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "count": len(article_ids),
-    }
-    PENDING_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-
-    # Write a separate metadata file that survives the host script's rm of pending
-    meta_file = _DATA_DIR / "pending_metadata.json"
-    meta_file.write_text(json.dumps({
-        "article_ids": article_ids,
-        "exported_at": payload["exported_at"],
-        "count": len(article_ids),
-    }, ensure_ascii=False))
-
-    audit("NEWS_INTEL_EXPORT_PENDING", actor="analyzer", details={
-        "articles_exported": len(article_ids),
-        "noise_prefiltered": len(noise_articles),
-    })
-    LOG.info(
-        "export_pending: wrote %d articles to %s (%d noise pre-filtered)",
-        len(article_ids), PENDING_FILE, len(noise_articles),
-    )
-    return len(article_ids)
-
-
-def import_host_results() -> int:
-    """Import analysis results produced by the host Claude CLI.
-
-    Reads data/analysis_results.json (raw Claude response) and
-    data/pending_analysis.json (for article_ids mapping).
-
-    Returns the number of articles successfully imported, or 0 if no results.
-    """
-    if not RESULTS_FILE.exists() or RESULTS_FILE.stat().st_size == 0:
-        LOG.info("import_results: no results file found")
-        return 0
-
-    # We need the article IDs from the pending file (or a companion metadata file).
-    # The pending file is deleted by the host script after writing results.
-    # So we store article_ids in a separate metadata file alongside the results.
-    meta_file = _DATA_DIR / "pending_metadata.json"
-
-    # Try to read article IDs from metadata or pending file
-    article_ids: list[int] = []
-    for candidate in [meta_file, PENDING_FILE]:
-        if candidate.exists():
-            try:
-                meta = json.loads(candidate.read_text())
-                article_ids = meta.get("article_ids", [])
-                if article_ids:
-                    break
-            except (json.JSONDecodeError, KeyError):
-                continue
-
-    if not article_ids:
-        LOG.warning("import_results: results file exists but no article_ids metadata found")
-        # Try to match by fetching currently unanalyzed articles
-        articles = get_unanalyzed_articles(limit=MAX_ARTICLES_PER_RUN)
-        # Filter out noise (they were already stored during export)
-        article_ids = [a["id"] for a in articles if not is_noise_title(a["title"])]
-        if not article_ids:
-            LOG.warning("import_results: cannot determine which articles to map results to")
-            return 0
-
-    # Read the raw response
-    raw_text = RESULTS_FILE.read_text().strip()
-    if not raw_text:
-        LOG.warning("import_results: results file is empty")
-        return 0
-
-    # Parse using the same robust parser
-    results = _parse_analysis_response(raw_text, len(article_ids))
-    if results is None:
-        LOG.error("import_results: failed to parse Claude CLI response (len=%d)", len(raw_text))
-        audit("NEWS_INTEL_IMPORT_PARSE_FAIL", actor="analyzer", details={
-            "raw_length": len(raw_text),
-            "first_200": raw_text[:200],
-        })
-        return 0
-
-    # Fetch article details for quality checks
-    article_map = _fetch_articles_by_ids(article_ids)
-
-    # Apply quality checks (title-similarity penalty)
-    articles_for_check = [article_map.get(aid, {"title": ""}) for aid in article_ids]
-    results = _apply_quality_checks(articles_for_check, results)
-
-    # REQ-061-2/3: echo된 idx로 article_id 에 정렬 매핑(RC1 — 과거에는
-    # enumerate 위치로 매핑해 결과 순서가 뒤섞이면 전 필드가 오염됐다).
-    # 정렬 검증 실패 시 fail-closed — 아무것도 저장하지 않는다.
-    aligned = _align_results_to_articles(results, article_ids)
-    if aligned is None:
-        reasons = _alignment_reject_reasons(results, article_ids)
-        audit("NEWS_INTEL_ALIGN_REJECT", actor="analyzer", details={
-            "path": "cli_import", **reasons,
-        })
-        LOG.error(
-            "import_results: 정렬 검증 실패 — fail-closed 저장 거부(0건): %s", reasons,
-        )
-        # 동일한 오염 배치가 다음 슬롯에서도 계속 재시도되지 않도록 소비한다.
-        RESULTS_FILE.unlink(missing_ok=True)
-        meta_file.unlink(missing_ok=True)
-        PENDING_FILE.unlink(missing_ok=True)
-        return 0
-
-    # SPEC-TRADING-062 REQ-062-B2: idx 정렬은 통과했으나 content-anchor
-    # (title_head)가 불일치하는 제2 실패모드 검증(2026-07-08 인시던트).
-    article_titles = {aid: article_map.get(aid, {}).get("title", "") for aid in article_ids}
-    if _verify_content_anchor(aligned, article_titles, article_ids, path="cli_import"):
-        RESULTS_FILE.unlink(missing_ok=True)
-        meta_file.unlink(missing_ok=True)
-        PENDING_FILE.unlink(missing_ok=True)
-        return 0
-
-    # Store results in DB
     stored_count = 0
     sql = """
         INSERT INTO news_analysis
@@ -1143,11 +1014,181 @@ def import_host_results() -> int:
                 )
 
             stored_count += 1
+    return stored_count
 
-    # Clean up processed files
+
+def export_pending_for_host(
+    *,
+    sector: str | None = None,
+    max_articles: int = MAX_ARTICLES_PER_RUN,
+) -> int:
+    """Export unanalyzed articles as chunked Claude CLI prompts (REQ-062-C1).
+
+    SPEC-TRADING-062 Stage2: real (non-noise) articles are split into chunks
+    of at most HOST_CHUNK_SIZE. Each chunk gets its own prompt file under
+    data/pending_chunks/ (local [1..n] article labels, own article_ids) plus
+    a single data/pending_metadata.json describing all chunks. This replaces
+    the previous single 100-article prompt, which the model scrambled almost
+    100% of the time at that size (2026-07-08 incident).
+
+    Pre-filtered noise articles are stored directly (no CLI call needed).
+    New exports never write the legacy single-prompt PENDING_FILE format
+    (REQ-062-C4) — that path is retained only for draining leftovers from
+    before this deploy (see import_host_results).
+
+    Returns the number of articles exported for host analysis.
+    """
+    articles = get_unanalyzed_articles(sector=sector, limit=max_articles)
+    if not articles:
+        LOG.info("export_pending: no unanalyzed articles")
+        return 0
+
+    # Pre-filter noise articles (same logic as analyze_articles)
+    noise_articles = []
+    real_articles = []
+    for art in articles:
+        if is_noise_title(art["title"]):
+            noise_articles.append(art)
+        else:
+            real_articles.append(art)
+
+    # Store pre-filtered noise directly — no need to send to host
+    if noise_articles:
+        count = _store_prefiltered_noise(noise_articles)
+        LOG.info("export_pending: pre-filtered %d noise articles", count)
+
+    if not real_articles:
+        LOG.info("export_pending: all articles were noise, nothing to export")
+        return 0
+
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    chunks_dir = _DATA_DIR / "pending_chunks"
+    results_dir = _DATA_DIR / "analysis_chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    _clear_stale_chunk_files(chunks_dir, results_dir)
+
+    exported_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    chunk_entries: list[dict] = []
+    for chunk_index, start in enumerate(range(0, len(real_articles), HOST_CHUNK_SIZE)):
+        chunk_articles = real_articles[start:start + HOST_CHUNK_SIZE]
+        chunk_id = f"{chunk_index:02d}"
+
+        # Build the chunk's own prompt — build_analysis_prompt labels [1..n]
+        # local to THIS chunk only, never the global batch position.
+        batch_data = _prepare_batch(chunk_articles)
+        user_prompt = build_analysis_prompt(batch_data)
+        full_prompt = f"{ARTICLE_ANALYSIS_SYSTEM}\n\n---\n\n{user_prompt}"
+        article_ids = [art["id"] for art in chunk_articles]
+
+        (chunks_dir / f"chunk_{chunk_id}.json").write_text(json.dumps({
+            "chunk_id": chunk_id,
+            "prompt": full_prompt,
+            "article_ids": article_ids,
+            "exported_at": exported_at,
+        }, ensure_ascii=False, indent=2))
+        chunk_entries.append({"chunk_id": chunk_id, "article_ids": article_ids})
+
+    meta_file = _DATA_DIR / "pending_metadata.json"
+    meta_file.write_text(json.dumps({
+        "chunks": chunk_entries,
+        "exported_at": exported_at,
+        "count": len(real_articles),
+    }, ensure_ascii=False))
+
+    audit("NEWS_INTEL_EXPORT_PENDING", actor="analyzer", details={
+        "articles_exported": len(real_articles),
+        "noise_prefiltered": len(noise_articles),
+        "chunks": len(chunk_entries),
+    })
+    LOG.info(
+        "export_pending: wrote %d articles across %d chunk(s) to %s (%d noise pre-filtered)",
+        len(real_articles), len(chunk_entries), chunks_dir, len(noise_articles),
+    )
+    return len(real_articles)
+
+
+def _import_legacy_single_batch() -> int:
+    """전환기 레거시 단일배치 잔여 처리(REQ-062-C4).
+
+    data/analysis_results.json(호스트가 남긴 단일 응답)이 남아있는 동안만
+    동작하는, Stage2 이전 프로토콜 그대로의 경로다. Stage2 export 는 더 이상
+    이 파일을 쓰지 않으므로(REQ-062-C4), 배포 시점에 이미 대기 중이던 배치를
+    1회 흡수하고 나면 자연히 no-op 이 된다.
+    """
+    if not RESULTS_FILE.exists() or RESULTS_FILE.stat().st_size == 0:
+        LOG.debug("import_results(legacy): no results file found")
+        return 0
+
+    meta_file = _DATA_DIR / "pending_metadata.json"
+
+    article_ids: list[int] = []
+    for candidate in [meta_file, PENDING_FILE]:
+        if candidate.exists():
+            try:
+                meta = json.loads(candidate.read_text())
+                article_ids = meta.get("article_ids", [])
+                if article_ids:
+                    break
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+    if not article_ids:
+        LOG.warning("import_results(legacy): results file exists but no article_ids metadata found")
+        articles = get_unanalyzed_articles(limit=MAX_ARTICLES_PER_RUN)
+        article_ids = [a["id"] for a in articles if not is_noise_title(a["title"])]
+        if not article_ids:
+            LOG.warning("import_results(legacy): cannot determine which articles to map results to")
+            return 0
+
+    raw_text = RESULTS_FILE.read_text().strip()
+    if not raw_text:
+        LOG.warning("import_results(legacy): results file is empty")
+        return 0
+
+    results = _parse_analysis_response(raw_text, len(article_ids))
+    if results is None:
+        LOG.error("import_results(legacy): failed to parse CLI response (len=%d)", len(raw_text))
+        audit("NEWS_INTEL_IMPORT_PARSE_FAIL", actor="analyzer", details={
+            "raw_length": len(raw_text),
+            "first_200": raw_text[:200],
+        })
+        return 0
+
+    article_map = _fetch_articles_by_ids(article_ids)
+
+    articles_for_check = [article_map.get(aid, {"title": ""}) for aid in article_ids]
+    results = _apply_quality_checks(articles_for_check, results)
+
+    # REQ-061-2/3: echo된 idx로 article_id 에 정렬 매핑(RC1 — 과거에는
+    # enumerate 위치로 매핑해 결과 순서가 뒤섞이면 전 필드가 오염됐다).
+    aligned = _align_results_to_articles(results, article_ids)
+    if aligned is None:
+        reasons = _alignment_reject_reasons(results, article_ids)
+        audit("NEWS_INTEL_ALIGN_REJECT", actor="analyzer", details={
+            "path": "cli_import", **reasons,
+        })
+        LOG.error(
+            "import_results(legacy): 정렬 검증 실패 — fail-closed 저장 거부(0건): %s", reasons,
+        )
+        RESULTS_FILE.unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+        PENDING_FILE.unlink(missing_ok=True)
+        return 0
+
+    # SPEC-TRADING-062 REQ-062-B2: idx 정렬은 통과했으나 content-anchor
+    # (title_head)가 불일치하는 제2 실패모드 검증(2026-07-08 인시던트).
+    article_titles = {aid: article_map.get(aid, {}).get("title", "") for aid in article_ids}
+    if _verify_content_anchor(aligned, article_titles, article_ids, path="cli_import"):
+        RESULTS_FILE.unlink(missing_ok=True)
+        meta_file.unlink(missing_ok=True)
+        PENDING_FILE.unlink(missing_ok=True)
+        return 0
+
+    stored_count = _persist_cli_results(aligned, article_map)
+
     RESULTS_FILE.unlink(missing_ok=True)
     meta_file.unlink(missing_ok=True)
-    # Pending file may already be deleted by host script
     PENDING_FILE.unlink(missing_ok=True)
 
     audit("NEWS_INTEL_IMPORT_OK", actor="analyzer", details={
@@ -1155,8 +1196,155 @@ def import_host_results() -> int:
         "results_parsed": len(results),
         "expected_count": len(article_ids),
     })
-    LOG.info("import_results: stored %d analysis results from host CLI", stored_count)
+    LOG.info("import_results(legacy): stored %d analysis results from host CLI", stored_count)
     return stored_count
+
+
+def _import_one_chunk(
+    chunk_id: str, article_ids: list[int], result_file: Path,
+) -> tuple[int, bool]:
+    """청크 하나를 파싱 -> 정렬 -> content-anchor -> 저장까지 독립 처리한다.
+
+    REQ-062-C3: 거부는 청크 전체 단위(fail-closed) — idx 정렬/content-anchor
+    실패 시 이 청크는 0건 저장하지만 다른 청크의 저장에는 영향을 주지 않는다.
+
+    Returns:
+        (저장된 기사 수, 거부 여부).
+    """
+    raw_text = result_file.read_text().strip()
+    if not raw_text:
+        return 0, True
+
+    results = _parse_analysis_response(raw_text, len(article_ids))
+    if results is None:
+        audit("NEWS_INTEL_IMPORT_PARSE_FAIL", actor="analyzer", details={
+            "path": "cli_import_chunk", "chunk_id": chunk_id,
+            "raw_length": len(raw_text),
+        })
+        LOG.error(
+            "import_results(chunk=%s): 파싱 실패(len=%d)", chunk_id, len(raw_text),
+        )
+        return 0, True
+
+    article_map = _fetch_articles_by_ids(article_ids)
+    articles_for_check = [article_map.get(aid, {"title": ""}) for aid in article_ids]
+    results = _apply_quality_checks(articles_for_check, results)
+
+    aligned = _align_results_to_articles(results, article_ids)
+    if aligned is None:
+        reasons = _alignment_reject_reasons(results, article_ids)
+        audit("NEWS_INTEL_ALIGN_REJECT", actor="analyzer", details={
+            "path": "cli_import_chunk", "chunk_id": chunk_id, **reasons,
+        })
+        LOG.error(
+            "import_results(chunk=%s): 정렬 검증 실패 — fail-closed 거부(0건): %s",
+            chunk_id, reasons,
+        )
+        return 0, True
+
+    article_titles = {aid: article_map.get(aid, {}).get("title", "") for aid in article_ids}
+    if _verify_content_anchor(
+        aligned, article_titles, article_ids,
+        path="cli_import_chunk", chunk_id=chunk_id,
+    ):
+        return 0, True
+
+    stored = _persist_cli_results(aligned, article_map)
+    return stored, False
+
+
+def _import_chunk_results() -> int:
+    """호스트가 생성한 청크 결과(REQ-062-C1~C3)를 청크 단위로 독립 import한다.
+
+    각 청크는 idx 정렬 -> content-anchor -> 저장까지 독립적으로 처리되어,
+    한 청크가 오염(스크램블)돼도 다른 청크는 정상 저장된다(fail-closed 격리).
+    아직 결과가 도착하지 않은 청크는 건드리지 않고, 메타데이터에 남겨 다음
+    슬롯에서 재시도한다 — 완전히 해소된 청크만 메타데이터에서 제거한다.
+    """
+    meta_file = _DATA_DIR / "pending_metadata.json"
+    results_dir = _DATA_DIR / "analysis_chunks"
+
+    if not meta_file.exists():
+        return 0
+    try:
+        meta = json.loads(meta_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return 0
+
+    chunk_entries = meta.get("chunks")
+    if not chunk_entries:
+        return 0
+
+    chunks_ok = 0
+    chunks_rejected = 0
+    articles_imported = 0
+    articles_rejected = 0
+    unresolved_entries: list[dict] = []
+
+    for entry in chunk_entries:
+        chunk_id = entry.get("chunk_id")
+        article_ids = entry.get("article_ids") or []
+        if not chunk_id or not article_ids:
+            continue
+
+        result_file = results_dir / f"result_{chunk_id}.json"
+        if not result_file.exists() or result_file.stat().st_size == 0:
+            # REQ-062-C3(c): 호스트가 이 청크를 아직 처리하지 못함 — 다음
+            # 슬롯 재시도 대상으로 메타데이터에 남긴다. 다른 청크는 계속 진행.
+            unresolved_entries.append(entry)
+            continue
+
+        stored, rejected = _import_one_chunk(chunk_id, article_ids, result_file)
+        result_file.unlink(missing_ok=True)  # 성공/거부 무관하게 소비 완료(REQ-062-C3)
+        if rejected:
+            chunks_rejected += 1
+            articles_rejected += len(article_ids)
+        else:
+            chunks_ok += 1
+            articles_imported += stored
+
+    if unresolved_entries:
+        meta_file.write_text(json.dumps({
+            "chunks": unresolved_entries,
+            "exported_at": meta.get("exported_at"),
+            "count": sum(len(e.get("article_ids") or []) for e in unresolved_entries),
+        }, ensure_ascii=False))
+    else:
+        meta_file.unlink(missing_ok=True)
+
+    if chunks_ok or chunks_rejected:
+        audit("NEWS_INTEL_IMPORT_OK", actor="analyzer", details={
+            "chunks_ok": chunks_ok,
+            "chunks_rejected": chunks_rejected,
+            "articles_imported": articles_imported,
+            "articles_rejected": articles_rejected,
+        })
+        LOG.info(
+            "import_results(chunked): chunks_ok=%d chunks_rejected=%d "
+            "articles_imported=%d articles_rejected=%d",
+            chunks_ok, chunks_rejected, articles_imported, articles_rejected,
+        )
+
+    return articles_imported
+
+
+def import_host_results() -> int:
+    """Import analysis results produced by the host Claude CLI.
+
+    SPEC-TRADING-062 Stage2 (REQ-062-C1~C4): the host now answers in small
+    per-chunk prompts (HOST_CHUNK_SIZE articles each) instead of one large
+    batch, so a single scrambled chunk can no longer wipe out the whole
+    cycle — each chunk is aligned / content-anchor-verified / stored
+    independently (_import_chunk_results). Any legacy single-batch leftover
+    from before this deploy (data/analysis_results.json + old-format
+    metadata) is drained once via the pre-Stage2 path (REQ-062-C4).
+
+    Returns the total number of articles successfully imported this call.
+    """
+    total = 0
+    total += _import_legacy_single_batch()
+    total += _import_chunk_results()
+    return total
 
 
 def _fetch_articles_by_ids(article_ids: list[int]) -> dict[int, dict]:

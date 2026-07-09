@@ -62,3 +62,56 @@ idx-집합 검사는 모델측 오라벨링을 구조적으로 탐지 불가.
 - A: `avg_down` 단일 breach는 주문만 거부·halt 없음(테스트); `daily_loss`는 halt(테스트).
 - B: 스크램블 배치(앵커 불일치)는 0건 저장+ALIGN_REJECT(테스트); 정상 배치는 전건 저장(테스트).
 - 오프라인 테스트 스위트 회귀 0.
+
+## Stage 2 — 호스트 CLI 청킹 (2026-07-09, throughput 복원)
+
+### 배경 (관측된 사실)
+2026-07-09 라이브 로그 감사: 그룹 A/B(fail-safe)가 배포된 뒤, 94~100개 기사
+단일배치 5사이클이 전부 거부됨 — 배치 2건은 `anchor_mismatch_count` 100/100,
+96/96(완전한 idx 순열이되 내용 전체 스크램블), 배치 3건은 idx 1~5개 누락.
+결과: 하루 종일 분석 저장 0건(fail-closed는 정상 작동했으나 throughput 사망).
+원인: `analyze_news.sh:62`가 최대 100개 기사를 **단일** `claude -p` 호출로
+전송 — 배치가 클수록 모델이 idx-내용 대응을 놓친다. 해법: 배치를 작은
+청크(20개 단위)로 나눠 모델이 정렬을 유지할 수 있는 크기로 호출한다.
+
+### 요구사항 (EARS)
+- REQ-062-C1: `export_pending_for_host` SHALL 실제(비noise) 기사를 최대
+  `HOST_CHUNK_SIZE = 20`(모듈 상수, 시장 중립) 단위로 나누어 청크별로 하나의
+  대기 파일을 `data/pending_chunks/`(예: `chunk_00.json` — `{chunk_id, prompt,
+  article_ids, exported_at}`) 아래 쓴다. 각 프롬프트는 `build_analysis_prompt`
+  로 그 청크의 기사만을 대상으로(로컬 `[1..n]` 라벨) 생성한다. 또한
+  `data/pending_metadata.json` `{chunks: [{chunk_id, article_ids}], exported_at,
+  count}`를 쓰며, 쓰기 전 `data/pending_chunks/`의 잔여 파일과 잔여 청크
+  결과를 정리한다.
+- REQ-062-C2: `scripts/analyze_news.sh` SHALL `data/pending_chunks/chunk_*.json`
+  을 순서대로 순회하며, 각각에 대해 프롬프트를 추출해 `claude -p --tools ""`
+  를 한 번 호출하고, `data/analysis_chunks/result_<동일 id>.json`에 쓰며,
+  비어있지 않은 성공 시 그 청크의 대기 파일을 제거한다. 실패/빈 응답 청크는
+  대기 파일을 유지(다음 슬롯 재시도)하며 루프는 나머지 청크로 계속
+  진행한다. 청크별 로그 라인을 남긴다. 기존 CLI 경로 해소·flock·무유료API
+  보장은 그대로 유지한다.
+- REQ-062-C3: `import_host_results` SHALL 사용 가능한 각
+  `data/analysis_chunks/result_*.json`을 메타데이터의 해당 청크
+  article_ids에 대해 독립적으로 처리한다(파싱 -> 검증 -> idx정렬 ->
+  content-anchor검증 -> 저장), fail-closed 거부는 그 청크에만 적용된다(다른
+  청크는 계속 저장). 감사: 청크별 `NEWS_INTEL_ALIGN_REJECT`에 `chunk_id`를
+  추가하고, 최종 집계 `NEWS_INTEL_IMPORT_OK`에 `{chunks_ok, chunks_rejected,
+  articles_imported, articles_rejected}` 상세를 남긴다. 소비된 결과 파일은
+  성공/거부 무관하게 처리 후 삭제한다.
+- REQ-062-C4: 전환기 1사이클 하위호환 — 레거시 `data/analysis_results.json`
+  + 구버전 메타데이터(최상위 article_ids 리스트)가 남아있으면 기존
+  단일배치 경로로 1회 import한 뒤 청크 파일 처리로 진행한다. 신규 export는
+  더 이상 레거시 단일 프롬프트 형식을 쓰지 않는다.
+- REQ-062-C5: 모든 청킹 헬퍼는 순수/시장중립(하드코딩된 시장 값 없음)이며,
+  기존 `_parse_analysis_response`/`_align_results_to_articles`/
+  `_verify_content_anchor`를 청크별로 그대로 재사용한다.
+
+### 인수 기준 (Stage 2)
+- export: 45개 기사 -> 3개 청크(20/20/5), 청크별 로컬 `[1..n]` 라벨, 잔여
+  청크/결과 파일 정리(테스트).
+- import: 청크 하나 스크램블 -> 그 청크만 0건 거부(`chunk_id` 포함
+  ALIGN_REJECT), 나머지 청크는 전건 저장, 집계 IMPORT_OK 정확(테스트).
+- import: 청크 결과 파일 누락(호스트 미처리) -> 다른 청크는 정상 import,
+  누락 청크는 메타데이터에 남아 재시도 대상(테스트).
+- import: 레거시 형식 잔여 -> 기존 경로로 1회 흡수(테스트).
+- `bash -n scripts/analyze_news.sh` 통과, 오프라인 테스트 스위트 회귀 0.
