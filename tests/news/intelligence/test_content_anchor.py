@@ -73,5 +73,14 @@ class TestAnchorMismatchCount:
         titles = {101: "Samsung Q1 profit surges"}
         assert _anchor_mismatch_count(aligned, titles) == 0
 
+    def test_trailing_space_at_cut_boundary_not_mismatch(self):
+        """2026-07-09 라이브 오탐 재현: 제목의 12번째 문자가 공백일 때 모델은
+        후행 공백 없이 echo한다 — 후행 공백 차이는 불일치가 아니다."""
+        # "가스기술공사, 중장기 로드맵…"의 앞 12자는 '가스기술공사, 중장기 '(끝=공백).
+        # 모델 echo는 '가스기술공사, 중장기'(후행 공백 없음) — 동일 기사여야 한다.
+        aligned = _aligned([(101, "가스기술공사, 중장기")])
+        titles = {101: "가스기술공사, 중장기 로드맵 발표"}
+        assert _anchor_mismatch_count(aligned, titles) == 0
+
     def test_default_threshold_constant(self):
         assert ANCHOR_MISMATCH_MAX == 1
