@@ -171,6 +171,68 @@ class TestExportChunking:
 
 
 # ---------------------------------------------------------------------------
+# (a2) export가 청소 전에 완료-미수입 결과를 drain — 2026-07-13 라이브 레이스 재현
+# ---------------------------------------------------------------------------
+
+
+class TestExportDrainsPendingResults:
+    def test_completed_results_imported_not_wiped_at_next_export(self, tmp_path):
+        """레이스 재현: :15 import가 호스트의 늦은 청크 완료 전에 실행되고,
+        다음 슬롯 export의 stale 청소가 완료된 결과를 폐기 — 슬롯당 1~2청크만
+        저장되던 7/10~13 라이브 증상. export는 청소 전에 잔여 결과를 drain해야
+        한다."""
+        results_dir = tmp_path / "analysis_chunks"
+        results_dir.mkdir()
+
+        # 이전 슬롯의 메타데이터 + 호스트가 늦게 완료한 결과 파일.
+        (tmp_path / "pending_metadata.json").write_text(json.dumps({
+            "chunks": [{"chunk_id": "00", "article_ids": [101, 102]}],
+            "exported_at": "2026-07-13T00:00:00",
+            "count": 2,
+        }))
+        titles = {101: "Samsung Q1 profit report", 102: "Hyundai launches new EV"}
+        (results_dir / "result_00.json").write_text(json.dumps([
+            _cli_result(1, "Samsung Q1 p", "a"),
+            _cli_result(2, "Hyundai laun", "b"),
+        ]))
+
+        new_articles = [_fake_article(i, f"새 뉴스 {i}") for i in range(201, 204)]
+
+        patch_conn, cur = _make_conn_patch(
+            "trading.news.intelligence.analyzer.connection"
+        )
+        with (
+            patch("trading.news.intelligence.analyzer._DATA_DIR", tmp_path),
+            patch(
+                "trading.news.intelligence.analyzer.RESULTS_FILE",
+                tmp_path / "analysis_results.json",
+            ),
+            patch(
+                "trading.news.intelligence.analyzer.get_unanalyzed_articles",
+                return_value=new_articles,
+            ),
+            patch_conn,
+            patch("trading.news.intelligence.analyzer.audit"),
+            patch(
+                "trading.news.intelligence.analyzer._fetch_articles_by_ids",
+                side_effect=lambda ids: {
+                    aid: {"title": titles[aid], "sector": ""} for aid in ids
+                },
+            ),
+        ):
+            exported = export_pending_for_host()
+
+        # 완료돼 있던 이전 슬롯 결과는 폐기가 아니라 저장돼야 한다.
+        inserted_ids = {p[0] for p in cur.insert_calls()}
+        assert inserted_ids == {101, 102}
+
+        # 새 export도 정상 진행.
+        assert exported == 3
+        assert [f.name for f in sorted((tmp_path / "pending_chunks").glob("*.json"))] \
+            == ["chunk_00.json"]
+
+
+# ---------------------------------------------------------------------------
 # (b) import_host_results — 청크 하나 스크램블 -> 그 청크만 거부, 나머지는 저장
 # ---------------------------------------------------------------------------
 

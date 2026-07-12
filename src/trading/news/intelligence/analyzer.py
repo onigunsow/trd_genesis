@@ -1066,6 +1066,12 @@ def export_pending_for_host(
     results_dir = _DATA_DIR / "analysis_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
+    # 2026-07-13 레이스 수정: :15 import가 호스트의 늦은 청크 완료 전에 돌고,
+    # 여기의 stale 청소가 그 완료된 결과를 폐기해 슬롯당 1~2청크만 저장되던
+    # 증상(7/10~13, backlog 8천+). 청소 전에 잔여 완료 결과를 먼저 drain한다.
+    drained = _import_chunk_results()
+    if drained:
+        LOG.info("export_pending: drained %d late-completed analyses before clear", drained)
     _clear_stale_chunk_files(chunks_dir, results_dir)
 
     exported_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")

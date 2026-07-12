@@ -113,7 +113,11 @@ with open('$PROMPT_FILE', 'w') as out:
         log "WARN: Chunk $CHUNK_ID: Claude CLI returned empty response (exit=0) — transient, keeping pending file to retry next slot"
         CHUNKS_FAILED=$((CHUNKS_FAILED + 1))
     else
-        log "ERROR: Chunk $CHUNK_ID: Claude CLI failed (exit=$EXIT_CODE), keeping pending file for retry"
+        # 2026-07-13 관측성: 실패 시 stdout(에러 메시지가 stdout으로 올 수 있음)
+        # 앞부분을 남긴다 — 7/10 4시간 장애가 무언의 exit=1로만 기록돼 원인
+        # (사용량 한도 의심) 확정이 불가능했다.
+        RESPONSE_HEAD=$(printf '%s' "$RESPONSE" | head -c 200 | tr '\n' ' ')
+        log "ERROR: Chunk $CHUNK_ID: Claude CLI failed (exit=$EXIT_CODE), keeping pending file for retry; stdout[:200]=${RESPONSE_HEAD:-<empty>}"
         CHUNKS_FAILED=$((CHUNKS_FAILED + 1))
     fi
 done
