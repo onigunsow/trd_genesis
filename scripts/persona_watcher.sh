@@ -198,7 +198,11 @@ with open('$RESULT_FILE', 'w') as f:
             log "Done $PERSONA -- ${EXEC_SECONDS}s, ${RESULT_BYTES} bytes"
         else
             # REQ-RUNNER-03-3: Write error result on CLI failure (양쪽 시도 모두 실패)
-            log "FAILED $PERSONA (exit=$EXIT_CODE)"
+            # 2026-07-14 관측성: 버려지던 stdout 앞 300자를 로그에 남긴다 — 7/13
+            # decision 종일 실패(exit=1, len=95 고정)의 정체가 무언의 exit=1로만
+            # 기록돼 원인 확정이 불가능했다. len=95 고정 문자열의 실체를 포착한다.
+            RESPONSE_HEAD=$(printf '%s' "$RESPONSE" | head -c 300 | tr '\n' ' ')
+            log "FAILED $PERSONA (exit=$EXIT_CODE, len=${#RESPONSE}); stdout[:300]=${RESPONSE_HEAD:-<empty>}"
             python3 -c "
 import json
 result = {
