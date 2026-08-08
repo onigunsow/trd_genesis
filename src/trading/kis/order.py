@@ -381,6 +381,23 @@ def submit_order(
         raise
 
     if resp.rt_cd != "0":
+        # SPEC-TRADING-063: 거부는 실행경로 고장이므로 운영자에게 즉시 알린다.
+        # 8/4~8/6 모의투자 계좌 만료 당시 거부 15건이 전용 알림 없이 묻혀
+        # 나흘간 체결 0건이 발견되지 않았다. 알림 실패가 주문 처리를 깨뜨리면
+        # 안 되므로 전 구간을 격리하고, KisError raise 는 그대로 유지한다.
+        try:
+            from trading.alerts import telegram as _tg
+
+            _tg.order_rejected(
+                order_id=order_id,
+                ticker=ticker,
+                side=side,
+                qty=qty,
+                mode=client.mode.value,
+                reason=f"{resp.msg_cd}:{resp.msg}",
+            )
+        except Exception:  # noqa: BLE001 — 알림은 주문 경로를 막지 않는다
+            LOG.exception("order_rejected alert failed (order_id=%s)", order_id)
         raise KisError(resp)
 
     # ── Step 4 (SPEC-039): paper-only synthetic fill. ──

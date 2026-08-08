@@ -253,3 +253,110 @@ def system_error(component: str, error: BaseException, *, context: str = "") -> 
             })
         except Exception:
             LOG.exception("system_error audit insert failed (component=%s)", component)
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-063: 주문 거부 알림
+# ---------------------------------------------------------------------------
+
+# 브로커측 고장(계좌 만료·권한 상실 등)은 사이클마다 같은 거부를 반복 생성한다.
+# 8/4~8/6 사례에서는 사흘간 15건이었다. 쓰로틀이 없으면 알림이 도배되어 오히려
+# 무시되므로, 같은 사유는 이 주기에 한 번만 알린다.
+ORDER_REJECT_ALERT_COOLDOWN_SEC = 3600
+
+
+def _reject_alert_throttled(key: str, cooldown_seconds: int) -> bool:
+    """같은 ``key`` 로 쿨다운 안에 이미 알렸으면 True.
+
+    상태를 audit_log(DB)에 두는 이유: 프로세스 메모리 dict 는 컨테이너 재시작에
+    지워져 쓰로틀이 풀린다(position_watchdog._TOOK_PROFIT 가 같은 이유로 미해소
+    결함으로 남아 있다). 조회가 실패하면 False 를 돌려 발송 쪽으로 열어 둔다 —
+    알림 누락이 도배보다 위험하다.
+    """
+    try:
+        from trading.db.session import connection
+
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM audit_log "
+                " WHERE event_type = 'ORDER_REJECT_ALERT' "
+                "   AND details->>'key' = %s "
+                "   AND ts > now() - (%s * interval '1 second') "
+                " LIMIT 1",
+                (key, cooldown_seconds),
+            )
+            return cur.fetchone() is not None
+    except Exception:  # 조회 실패는 fail-open (발송 쪽으로 열어 둔다)
+        LOG.exception("order_rejected throttle lookup failed (key=%s)", key)
+        return False
+
+
+def _record_reject_alert(key: str, details: dict[str, Any]) -> None:
+    """발송 사실을 audit_log 에 남긴다(다음 호출의 쓰로틀 기준)."""
+    from trading.db.session import audit
+
+    audit("ORDER_REJECT_ALERT", actor="kis", details={"key": key, **details})
+
+
+def order_rejected(
+    *,
+    order_id: int,
+    ticker: str,
+    side: str,
+    qty: int,
+    mode: str,
+    reason: str,
+    name: str | None = None,
+    cooldown_seconds: int | None = None,
+) -> bool:
+    """주문 거부를 침묵시키지 않는다 (SPEC-TRADING-063).
+
+    2026-08-04~06 모의투자 계좌 주문권한 만료로 주문 15건이 전부 거부됐으나
+    거부 전용 알림 경로가 없어 나흘간 발견되지 않았다. 거부는 실행경로 고장이므로
+    ``system_error`` 와 같은 등급으로 취급해 silent_mode 를 우회한다.
+
+    종목명은 호출자가 이미 알고 있을 때만 ``name`` 으로 넘긴다. 이 함수는
+    pykrx 조회를 하지 않는다 — 과거 pykrx 데드소켓이 26시간 블로킹을 만든 전력이
+    있어 실패 경로에서 네트워크를 타면 안 된다.
+
+    Returns:
+        실제로 발송했으면 True. 쓰로틀됐거나 전송에 실패했으면 False.
+    """
+    cooldown = (
+        ORDER_REJECT_ALERT_COOLDOWN_SEC if cooldown_seconds is None else cooldown_seconds
+    )
+    reason_text = (reason or "(사유 미기재)").strip()
+    key = f"{mode}:{reason_text[:80]}"
+
+    if _reject_alert_throttled(key, cooldown):
+        LOG.info("order_rejected alert throttled (key=%s, order_id=%s)", key, order_id)
+        return False
+
+    side_label = "매수" if side == "buy" else "매도"
+    name_str = f" {_escape_html(name)}" if name else ""
+    text = (
+        f"<b>[주문 거부 · {_escape_html(mode)} · {_now_kst()}]</b>\n"
+        f"{_escape_html(ticker)}{name_str} {qty}주 {side_label} 거부됨\n"
+        f"사유: {_escape_html(reason_text[:300])}\n"
+        f"<i>order_id={order_id}</i>"
+    )
+
+    try:
+        _send_raw(text)
+    except Exception:  # 주문 경로를 깨뜨리지 않는다
+        LOG.exception("order_rejected telegram delivery failed (order_id=%s)", order_id)
+        return False
+
+    try:
+        _record_reject_alert(key, {
+            "order_id": order_id,
+            "ticker": ticker,
+            "side": side,
+            "qty": qty,
+            "mode": mode,
+            "reason": reason_text[:300],
+        })
+    except Exception:  # 이미 보낸 알림을 되돌리지는 않는다
+        LOG.exception("order_rejected audit insert failed (order_id=%s)", order_id)
+
+    return True

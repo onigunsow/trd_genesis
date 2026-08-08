@@ -171,8 +171,14 @@ def _collect_portfolio() -> dict[str, Any]:
 
 def _gather_today() -> dict[str, Any]:
     today = date.today()
+    # SPEC-TRADING-063: rejected_reason 은 반드시 함께 실어야 한다. 이 컬럼이
+    # 빠져 있던 탓에 8/4~8/6 모의투자 계좌 만료로 인한 전량 거부의 사유가
+    # 리포트에 닿지 못했고("사유는 데이터에 포함되어 있지 않아 확인 불가"),
+    # 나흘짜리 고장이 운영자에게 보이지 않았다. 아래 프롬프트가 이 필드를
+    # 그대로 인용하도록 지시하므로 SELECT 목록과 프롬프트는 함께 움직여야 한다.
     sql_orders = """
-        SELECT id, ticker, side, qty, status, fill_price, fill_qty, fee, mode
+        SELECT id, ticker, side, qty, status, fill_price, fill_qty, fee, mode,
+               rejected_reason
           FROM orders WHERE ts::date = CURRENT_DATE ORDER BY id
     """
     sql_runs = """
