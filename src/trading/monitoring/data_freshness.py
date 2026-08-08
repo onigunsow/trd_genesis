@@ -29,7 +29,7 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from trading.db.session import connection
+from trading.db.session import audit, connection
 from trading.scheduler.calendar import is_trading_day
 
 LOG = logging.getLogger(__name__)
@@ -208,5 +208,31 @@ def check_and_alert(
             alert_sent = True
         except Exception as exc:
             LOG.exception("data_freshness alert delivery failed: %s", exc)
+
+    # 2026-08-08: KRX 비밀번호 만료로 5거래일치 데이터가 비었을 때, 이 점검이
+    # 돌긴 했는지·알림을 보냈는지를 사후에 확인할 수 없었다. 도커 로그는 컨테이너
+    # 재생성으로 사라지고 여기엔 아무 기록도 남지 않았기 때문이다. 감시자가 잤는지
+    # 감시 대상이 멀쩡했는지 구분하려면 점검 자체가 흔적을 남겨야 한다
+    # (SPEC-TRADING-063 에서 주문 거부에 대해 얻은 것과 같은 교훈).
+    try:
+        audit(
+            "DATA_FRESHNESS_CHECK",
+            actor="scheduler",
+            details={
+                "alert_sent": alert_sent,
+                "tables": [
+                    {
+                        "table": e["table"],
+                        "latest": e["latest"].isoformat() if e["latest"] else None,
+                        "stale": e["stale"],
+                        "hours_stale": e["hours_stale"],
+                    }
+                    for e in entries
+                ],
+            },
+        )
+    except Exception:
+        # 기록 실패가 점검·알림을 깨뜨리면 관측성 추가가 되레 위험이 된다.
+        LOG.exception("data_freshness audit insert failed")
 
     return {"entries": entries, "alert_sent": alert_sent}
