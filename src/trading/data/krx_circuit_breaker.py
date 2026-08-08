@@ -22,6 +22,7 @@ hammer-while-blocked 패턴을 완전히 차단한다.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,18 @@ _COOLDOWN_STEPS: list[timedelta] = [
     timedelta(hours=6),
     timedelta(hours=24),  # 상한 — 이 이상 증가하지 않음
 ]
+
+# HALF_OPEN probe 가 결과를 보고할 때까지 기다리는 최대 시간.
+#
+# probe 호출자(refresh_market_data._call_with_timeout)는 예산을 넘기면 호출을
+# 버린다. 그러면 record_success/record_failure 가 영영 오지 않고, HALF_OPEN 을
+# 벗어나는 유일한 경로가 그 둘이므로 서킷이 프로세스 수명 내내 고착된다.
+# 2026-08-08 에 실제로 그렇게 됐다 — KRX 가 복구된 뒤에도 52/52 전부 차단.
+# 이 데드라인을 넘긴 probe 는 실패로 간주해 백오프와 함께 다시 OPEN 한다.
+# pykrx 단일 호출 예산(수십 초)보다 넉넉하게 잡아 정상 probe 를 죽이지 않는다.
+_PROBE_DEADLINE: timedelta = timedelta(
+    seconds=float(os.getenv("KRX_CIRCUIT_PROBE_DEADLINE_S", "600"))
+)
 
 
 class CircuitState(Enum):
@@ -159,6 +172,9 @@ class KrxCircuitBreaker:
         self._cooldown_level: int = 0       # 지수 백오프 단계
         self._consecutive_failures: int = 0
         self._in_half_open: bool = False    # probe 허용 여부 플래그
+        # probe 를 허용한 시각. 결과가 보고되지 않은 채 _PROBE_DEADLINE 을
+        # 넘기면 버려진 probe 로 간주한다.
+        self._half_open_since: datetime | None = None
 
         # 시작 시 영속 상태 복원
         self._restore_from_store()
@@ -193,7 +209,26 @@ class KrxCircuitBreaker:
                 return
 
             if self._state == CircuitState.HALF_OPEN:
-                # 이미 probe 중 — 다음 호출은 차단
+                started = self._half_open_since
+                if started is None or now - started >= _PROBE_DEADLINE:
+                    # 결과가 보고되지 않은 채 데드라인을 넘긴 probe.
+                    # 영원히 기다리면 엔드포인트가 나아도 시스템이 멈춰 있는다
+                    # (2026-08-08 사고). 실패로 간주해 백오프와 함께 re-open
+                    # 하면, 쿨다운 경과 후 새 probe 가 자동으로 허용된다.
+                    LOG.warning(
+                        "KRX 서킷 probe 미보고 — 실패 간주 후 재차단 "
+                        "(half_open_since=%s, deadline=%s)",
+                        started,
+                        _PROBE_DEADLINE,
+                    )
+                    self._in_half_open = False
+                    self._half_open_since = None
+                    self._open_circuit(now=now, notify=False)
+                    raise KrxCircuitOpen(
+                        f"KRX 서킷 probe 미보고로 재차단. "
+                        f"open_until={self._open_until}"
+                    )
+                # 정상 probe 진행 중 — 동시 probe 를 막는다
                 raise KrxCircuitOpen(
                     f"KRX 서킷 HALF_OPEN probe 진행 중. "
                     f"open_until={self._open_until}"
@@ -205,6 +240,7 @@ class KrxCircuitBreaker:
                 # 쿨다운 경과 → HALF_OPEN으로 전이
                 self._state = CircuitState.HALF_OPEN
                 self._in_half_open = True
+                self._half_open_since = now
                 LOG.info(
                     "KRX 서킷 HALF_OPEN — probe 1회 허용 (open_until=%s 경과)",
                     self._open_until,
@@ -227,6 +263,7 @@ class KrxCircuitBreaker:
                 self._open_until = None
                 self._cooldown_level = 0
                 self._in_half_open = False
+                self._half_open_since = None
                 LOG.info("KRX 서킷 CLOSED — probe 성공으로 정상화")
                 self._persist()
             elif prev_state == CircuitState.CLOSED:
@@ -243,6 +280,7 @@ class KrxCircuitBreaker:
             if self._state == CircuitState.HALF_OPEN:
                 # probe 실패 → re-open (더 긴 쿨다운, 에피소드 카운터 유지)
                 self._in_half_open = False
+                self._half_open_since = None
                 self._open_circuit(now=now, notify=False)
                 return
 
@@ -314,7 +352,15 @@ class KrxCircuitBreaker:
             if not data:
                 return
             raw_state = data.get("state", "CLOSED")
-            self._state = CircuitState(raw_state)
+            restored = CircuitState(raw_state)
+            if restored is CircuitState.HALF_OPEN:
+                # 재시작 전 probe 의 결과를 알 수 없다. HALF_OPEN 으로 복원하면
+                # 그 probe 를 영원히 기다리게 되므로(체크만 하고 아무도 보고하지
+                # 않는다) OPEN 으로 되돌린다. 아래 open_until 이 이미 지났다면
+                # check_or_raise 가 곧바로 새 probe 를 허용한다.
+                LOG.info("KRX 서킷 HALF_OPEN 복원 → OPEN 으로 강등 (probe 결과 불명)")
+                restored = CircuitState.OPEN
+            self._state = restored
             raw_until = data.get("open_until")
             if raw_until:
                 # ISO 문자열 또는 datetime 모두 처리
