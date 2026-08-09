@@ -422,9 +422,17 @@ def _maybe_count_halt_bypass(
             )
         except Exception:
             LOG.warning("count-halt bypass telegram briefing failed")
+        # 한 번에 여러 매도가 우회하는 배치 이벤트다. 스칼라 `decision_id` 키에 리스트를
+        # 넣으면 `details->>'decision_id' = '2814'` 조회가 영영 안 맞아 이 이벤트만 추적에서
+        # 조용히 빠진다. B5(PORTFOLIO_ADJUSTMENT)와 같은 배치 규약을 쓴다.
         audit("COUNT_HALT_BYPASS_SELL", actor="orchestrator", details={
+            "decision_ids": bypass_ids,
+            "decision_scope": "batch",
             "cycle_kind": cycle_kind,
-            "sells": [{"ticker": s.get("ticker"), "qty": s.get("qty")} for s in bypass_sig],
+            "sells": [
+                {"ticker": s.get("ticker"), "qty": s.get("qty"), "decision_id": sid}
+                for s, sid in zip(bypass_sig, bypass_ids, strict=False)
+            ],
         })
         return (bypass_sig, bypass_ids)
 
@@ -612,8 +620,12 @@ def _maybe_enter_silent_mode(latest_signal_count: int) -> None:
             break
     if all_empty:
         update_system_state(silent_mode=True, updated_by="orchestrator")
+        # REQ-064-B8: 3사이클 무신호 집계 — 단일 결정 id 없음, 영구 면제(aggregate).
         audit("SILENT_MODE_ON", actor="orchestrator",
-              details={"reason": "3 consecutive no-signal decisions"})
+              details={
+                  "reason": "3 consecutive no-signal decisions",
+                  "decision_scope": "aggregate",
+              })
 
 
 def _get_persona_tools(persona_name: str, state: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -1249,6 +1261,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         if ticker and _count_holds_today(ticker) >= 3:
             LOG.info("Ticker %s blocked — 3+ HOLDs today", ticker)
             audit("TICKER_BLOCKED_BY_HOLDS", actor="orchestrator", details={
+                "decision_id": decision_id,
                 "ticker": ticker, "hold_count": _count_holds_today(ticker),
             })
             res.rejected.append(decision_id)
@@ -1391,7 +1404,8 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             # halt를 유발한 사고의 재발 방지.
             if requires_circuit_halt(chk.breaches):
                 circuit_breaker.trip(
-                    reason="pre-order limit breach", details={"breaches": chk.breaches}
+                    reason="pre-order limit breach",
+                    details={"breaches": chk.breaches, "decision_id": decision_id},
                 )
             res.rejected.append(decision_id)
             continue
@@ -1745,6 +1759,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
         if ticker and _count_holds_today(ticker) >= 3:
             LOG.info("Ticker %s blocked — 3+ HOLDs today", ticker)
             audit("TICKER_BLOCKED_BY_HOLDS", actor="orchestrator", details={
+                "decision_id": decision_id,
                 "ticker": ticker, "hold_count": _count_holds_today(ticker),
             })
             res.rejected.append(decision_id)
@@ -1862,7 +1877,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             if requires_circuit_halt(chk.breaches):
                 circuit_breaker.trip(
                     reason="pre-order limit breach",
-                    details={"breaches": chk.breaches},
+                    details={"breaches": chk.breaches, "decision_id": decision_id},
                 )
             res.rejected.append(decision_id)
             continue

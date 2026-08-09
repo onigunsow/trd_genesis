@@ -497,8 +497,15 @@ class TestCleanupFiveOrders:
         for tc in txn_cursors:
             assert any("expired" in u[0].lower() for u in _status_updates(tc))
         # The cleanup emits a summary audit (REQ-042-D3).
-        assert any(call.args and call.args[0] == "STUCK_ORDER_CLEANUP"
-                   for call in audit_sink.call_args_list)
+        cleanup_calls = [
+            call for call in audit_sink.call_args_list
+            if call.args and call.args[0] == "STUCK_ORDER_CLEANUP"
+        ]
+        assert cleanup_calls
+        # REQ-064-B8: whole-run summary — TIER 5 permanent exemption.
+        details = cleanup_calls[0].kwargs["details"]
+        assert details["decision_scope"] == "cleanup"
+        assert "decision_id" not in details
 
     def test_cleanup_rerun_is_noop(self):
         """A second cleanup run finds nothing in 'submitted' → resolves nothing."""

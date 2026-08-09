@@ -1,6 +1,6 @@
 ---
 id: SPEC-TRADING-064
-version: 0.2.0
+version: 0.3.0
 status: draft
 created_at: 2026-08-09
 updated_at: 2026-08-09
@@ -269,6 +269,13 @@ LLM 결정 없음"**이다. UI는 이것을 "기록 없음"과 **구별해서** 
   `circuit_breaker.py:76` CIRCUIT_BREAKER_TRIP(호출부 `orchestrator.py:1393`) — THE 시스템 SHALL
   이미 스코프에 있는 `decision_id`(각각 루프변수 1239/1735, `bypass_ids`(409행), 루프변수)를
   `details` 최상위에 추가한다. 함수 시그니처는 변경하지 않는다.
+- REQ-064-B3a: WHERE TIER 2 이벤트가 한 번에 복수 결정을 다루는 배치 이벤트인 경우 —
+  현재 `COUNT_HALT_BYPASS_SELL`(`orchestrator.py:425`, `bypass_ids`가 리스트) — THE 시스템
+  SHALL 스칼라 `decision_id` 키를 쓰지 않고 `decision_ids`(리스트) + `decision_scope: "batch"`
+  + 항목별 `decision_id`를 기록한다(B5와 동일 규약).
+  **근거**: 스칼라 키에 배열을 실으면 `details->>'decision_id' = '<id>'` 조회가 영영 일치하지
+  않아 이 이벤트만 추적에서 조용히 빠진다 — 본 SPEC이 없애려는 침묵을 새로 만드는 셈이다.
+  v0.2.0 초안의 B3은 이 이벤트를 스칼라로 규정했으나 구현 검증 중 부정확함이 드러나 개정했다.
 - REQ-064-B4: WHERE TIER 3 함수가 결정 문맥을 받을 수 있는 경우
   (`clamp_sell_to_confirmed`(`broker_truth.py:129,144`), `set_sell_inflight`
   (`sell_lock.py:163`), `guard_sell`(`sell_lock.py:210`)), THE 시스템 SHALL **Optional

@@ -319,6 +319,7 @@ def cleanup_stuck_orders(
     if not dry_run:
         from trading.db.session import audit
 
+        # REQ-064-B8: 정리 실행 전체 요약 — 단일 결정 id 없음, 영구 면제(cleanup).
         audit("STUCK_ORDER_CLEANUP", actor="resolver", details={
             "scanned": summary["scanned"],
             "resolved_filled": summary["resolved_filled"],
@@ -326,6 +327,7 @@ def cleanup_stuck_orders(
             "skipped": summary["skipped"],
             "errors": summary["errors"],
             "targeted_ids": order_ids,
+            "decision_scope": "cleanup",
         })
 
     return summary

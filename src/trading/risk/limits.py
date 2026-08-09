@@ -243,9 +243,13 @@ def check_pre_order(
     return chk
 
 
+# @MX:NOTE: decision_id is emitted at details top level; details.context keeps the
+#   original payload for backward compatibility with existing readers.
+# @MX:SPEC: SPEC-TRADING-064
 def record_breach(check: LimitCheck, context: dict) -> None:
     """Audit a limit breach. Caller still raises/returns to the caller."""
     audit("LIMIT_BREACH", actor="risk", details={
+        "decision_id": context.get("decision_id"),
         "breaches": check.breaches,
         "context": context,
     })

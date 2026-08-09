@@ -198,6 +198,7 @@ def intraday_reconcile(
     # Drift audit: positions_synced > 0 means the local cache diverged from the
     # KIS account and was reconverged this cycle (drift detected + corrected).
     drift = int(summary.get("positions_synced", 0) or 0)
+    # REQ-064-B8: 계좌 전체 대사 — 이벤트에 ticker조차 없음, 영구 면제(account).
     audit(
         "INTRADAY_RECONCILE",
         actor="kis",
@@ -209,6 +210,7 @@ def intraday_reconcile(
             "positions_synced": drift,
             "errors": summary.get("errors", 0),
             "drift_corrected": drift,
+            "decision_scope": "account",
         },
     )
 

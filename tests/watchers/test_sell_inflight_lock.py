@@ -327,7 +327,11 @@ class TestAuditTrail:
         with _patched(store, now=later):
             allowed = sell_lock.guard_sell("033780", actor="orchestrator")
         assert allowed is True
-        assert any(e == "SELL_INFLIGHT_CLEARED" for e, _ in store.audits)
+        cleared = [d for e, d in store.audits if e == "SELL_INFLIGHT_CLEARED"]
+        assert cleared
+        # REQ-064-B8: stale-marker sweep, no caller context — TIER 5 exemption.
+        assert cleared[0]["decision_scope"] == "cleanup"
+        assert "decision_id" not in cleared[0]
         # the stale marker row is gone
         assert not [m for m in store.markers if m.ticker == "033780"]
 

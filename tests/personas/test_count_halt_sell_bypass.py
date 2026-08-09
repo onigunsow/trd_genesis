@@ -192,6 +192,16 @@ class TestMaybeCountHaltBypass:
         mock_audit.assert_called_once()
         assert mock_audit.call_args[0][0] == "COUNT_HALT_BYPASS_SELL"
         mock_tg.assert_called_once()
+        # REQ-064-B3: 배치 이벤트이므로 스칼라 decision_id 가 아니라 decision_ids +
+        # decision_scope="batch" 규약을 따른다(B5 와 동일). 스칼라 키에 리스트를 넣으면
+        # details->>'decision_id' 조회에서 이 이벤트만 누락된다.
+        details = mock_audit.call_args.kwargs["details"]
+        assert details["decision_ids"] == kept_ids
+        assert details["decision_scope"] == "batch"
+        assert "decision_id" not in details, "스칼라 키에 리스트를 실으면 안 된다"
+        # 항목별 id 도 함께 실려야 개별 매도를 결정으로 되짚을 수 있다.
+        assert [s["decision_id"] for s in details["sells"]] == kept_ids
+        assert kept_ids == [11]
 
     def test_loss_halt_returns_empty_and_throttles(self):
         from unittest.mock import patch

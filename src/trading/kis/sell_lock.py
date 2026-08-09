@@ -183,7 +183,12 @@ def clear_sell_inflight(ticker: str) -> None:
     except Exception:
         LOG.warning("SPEC-042 sell_lock: clear_sell_inflight failed for %s", ticker)
         return
-    audit("SELL_INFLIGHT_CLEARED", actor="sell_lock", details={"ticker": ticker})
+    # REQ-064-B8: stale 마커 정리 — 호출 문맥 없음, 영구 면제(cleanup).
+    audit(
+        "SELL_INFLIGHT_CLEARED",
+        actor="sell_lock",
+        details={"ticker": ticker, "decision_scope": "cleanup"},
+    )
 
 
 # @MX:ANCHOR: the SINGLE shared sell-dedup gate. fan_in >= 2 — both firing paths

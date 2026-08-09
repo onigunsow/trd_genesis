@@ -88,7 +88,8 @@ def reset(actor: str = "operator") -> None:
     # SPEC-TRADING-031 REQ-031-3: clear the halt-cycle throttle atomically with
     # the halt release so the next halt episode's first cycle notifies immediately.
     update_system_state(halt_state=False, halt_notified_at=None, updated_by=actor)
-    audit("CIRCUIT_BREAKER_RESET", actor=actor, details={})
+    # REQ-064-B8: 운영자 /resume 액션 — 단일 결정 id 없음, 영구 면제(operator).
+    audit("CIRCUIT_BREAKER_RESET", actor=actor, details={"decision_scope": "operator"})
     try:
         system_briefing("회로차단 해제", "halt_state=false. 매매 재개 가능.")
     except Exception:  # noqa: BLE001

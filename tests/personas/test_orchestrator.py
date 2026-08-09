@@ -232,6 +232,10 @@ class TestPreMarketCircuitBreachClassification:
         assert not mock_cb.trip.called, "avg_down 단독 breach는 회로차단을 트립하면 안 된다"
         assert mock_record_breach.called, "LIMIT_BREACH 감사는 유지되어야 한다"
         assert mock_tg.system_briefing.called, "텔레그램 브리핑은 유지되어야 한다"
+        # REQ-064-B2: decision_id is already in scope at this call site and must
+        # be threaded into record_breach's context dict (record_breach lifts it
+        # to details top-level internally).
+        assert mock_record_breach.call_args[0][1]["decision_id"] == 100
 
     def test_daily_loss_breach_still_trips_circuit(self):
         result, mock_cb, mock_record_breach, mock_tg = self._run(
@@ -242,3 +246,117 @@ class TestPreMarketCircuitBreachClassification:
         assert mock_cb.trip.called, "daily_loss breach는 기존대로 회로차단을 트립해야 한다"
         assert mock_record_breach.called
         assert mock_tg.system_briefing.called
+        # REQ-064-B3: CIRCUIT_BREAKER_TRIP details must carry decision_id top-level
+        # (trip() merges its `details` kwarg directly into the audit payload).
+        assert mock_cb.trip.call_args.kwargs["details"]["decision_id"] == 100
+
+
+class TestPreMarketTickerBlockedByHoldsDecisionId:
+    """SPEC-TRADING-064 REQ-064-B3 — TICKER_BLOCKED_BY_HOLDS (orchestrator.py:1251).
+
+    decision_id is already the loop variable in scope (zip(signals, sig_ids));
+    it must be threaded into the audit details top-level, no signature change.
+    """
+
+    def test_ticker_blocked_by_holds_carries_decision_id(self):
+        from trading.personas.base import PersonaResult
+
+        micro_result = PersonaResult(
+            persona_run_id=1, response_text="{}",
+            response_json={"candidates": {"buy": [], "sell": [], "hold": []}},
+            input_tokens=1000, output_tokens=500, cost_krw=10.0, latency_ms=2000,
+        )
+        dec_result = PersonaResult(
+            persona_run_id=2, response_text="{}",
+            response_json={
+                "signals": [{"ticker": "086790", "side": "buy", "qty": 3, "rationale": "test"}]
+            },
+            input_tokens=1200, output_tokens=600, cost_krw=12.0, latency_ms=3000,
+        )
+
+        with (
+            patch("trading.personas.orchestrator.macro_persona") as mock_macro,
+            patch("trading.personas.orchestrator.micro_persona") as mock_micro,
+            patch("trading.personas.orchestrator.decision_persona") as mock_decision,
+            patch("trading.personas.orchestrator.risk_persona") as mock_risk,
+            patch("trading.personas.orchestrator.ctx") as mock_ctx,
+            patch("trading.personas.orchestrator.tg"),
+            patch("trading.personas.orchestrator.get_settings") as mock_settings,
+            patch("trading.personas.orchestrator.get_system_state") as mock_state,
+            patch("trading.personas.orchestrator._gather_assets") as mock_assets,
+            patch("trading.personas.orchestrator._count_holds_today", return_value=3),
+            patch("trading.personas.orchestrator.audit") as mock_audit,
+            patch("trading.personas.orchestrator.KisClient"),
+        ):
+            mock_macro.latest_cached.return_value = {"id": 10, "response": "bullish"}
+            mock_ctx.assemble_micro_input.return_value = {"today": "2026-07-08"}
+            mock_micro.run.return_value = micro_result
+            mock_decision.run.return_value = (dec_result, [100])
+            mock_settings.return_value = MagicMock(trading_mode="paper")
+            mock_state.return_value = {"halt_state": False}
+            mock_assets.return_value = {
+                "total_assets": 10_000_000, "cash_d2": 9_600_000,
+                "stock_eval": 400_000, "holdings": [],
+            }
+
+            from trading.personas.orchestrator import run_pre_market_cycle
+
+            result = run_pre_market_cycle(today="2026-07-08")
+
+        assert 100 in result.rejected
+        # Risk was never reached — the ticker was blocked before it.
+        assert not mock_risk.run.called
+        blocked_calls = [
+            c for c in mock_audit.call_args_list if c.args[0] == "TICKER_BLOCKED_BY_HOLDS"
+        ]
+        assert len(blocked_calls) == 1
+        assert blocked_calls[0].kwargs["details"]["decision_id"] == 100
+
+
+class TestSilentModeDecisionScope:
+    """SPEC-TRADING-064 REQ-064-B8 — SILENT_MODE_ON is a TIER 5 permanent
+    exemption: 3 consecutive no-signal Decision runs is an aggregate fact, not
+    a single decision. Must carry decision_scope, must NOT carry decision_id.
+    """
+
+    def test_silent_mode_on_carries_decision_scope_aggregate(self):
+        from trading.personas.orchestrator import _maybe_enter_silent_mode
+
+        empty_rows = [{"id": i, "response_json": {"signals": []}} for i in (1, 2, 3)]
+
+        class _Cursor:
+            def execute(self, *_a, **_k):
+                pass
+
+            def fetchall(self):
+                return empty_rows
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return None
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return None
+
+        with (
+            patch("trading.personas.orchestrator.connection", return_value=_Conn()),
+            patch("trading.personas.orchestrator.update_system_state"),
+            patch("trading.personas.orchestrator.audit") as mock_audit,
+        ):
+            _maybe_enter_silent_mode(0)
+
+        mock_audit.assert_called_once()
+        args, kwargs = mock_audit.call_args
+        assert args[0] == "SILENT_MODE_ON"
+        details = kwargs["details"]
+        assert details["decision_scope"] == "aggregate"
+        assert "decision_id" not in details

@@ -257,6 +257,10 @@ class TestDriftZero:
             )
 
         assert "INTRADAY_RECONCILE" in sink.events
+        # REQ-064-B8: account-wide reconcile — TIER 5 permanent exemption.
+        idx = sink.events.index("INTRADAY_RECONCILE")
+        assert sink.details[idx]["decision_scope"] == "account"
+        assert "decision_id" not in sink.details[idx]
 
     def test_intraday_reconcile_ttl_throttle(self):
         """REQ-042-A2/ADR-1: within TTL the reconcile is throttled (rate-limit)."""

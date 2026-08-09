@@ -33,6 +33,21 @@ REGIME_TTL_DAYS = 7
 VALID_REGIMES = ("bull", "neutral", "bear")
 VALID_RISK_APPETITES = ("risk-on", "neutral", "risk-off")
 
+# @MX:ANCHOR: SPEC-TRADING-064 REQ-064-B8 — TIER 5/6 결정 비종속 영구 면제 목록(SSOT).
+# @MX:REASON: 이 6개 이벤트는 배치/계좌/운영자/시스템 단위라 자연스러운 단일
+#   decision_id가 없다(구조적 설계). 문자열을 호출부마다 흩어두면 후속 작업자가
+#   "결정 id가 빠졌다"고 오인해 다시 배선을 시도할 수 있다 — 이 딕셔너리가 면제
+#   목록과 사유를 기계 판독 가능한 단일 지점으로 고정한다.
+# @MX:SPEC: SPEC-TRADING-064
+DECISION_SCOPE_EXEMPT_EVENTS: dict[str, str] = {
+    "SILENT_MODE_ON": "aggregate",
+    "CIRCUIT_BREAKER_RESET": "operator",
+    "INTRADAY_RECONCILE": "account",
+    "STUCK_ORDER_CLEANUP": "cleanup",
+    "SELL_INFLIGHT_CLEARED": "cleanup",
+    "SYSTEM_ERROR": "system",
+}
+
 
 def dsn() -> str:
     """Resolve in-container DATABASE_URL or build from POSTGRES_* env."""

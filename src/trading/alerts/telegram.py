@@ -246,10 +246,13 @@ def system_error(component: str, error: BaseException, *, context: str = "") -> 
         LOG.exception("system_error telegram delivery failed (component=%s)", component)
     if audit is not None:
         try:
+            # REQ-064-B8: 결정 id가 존재할 수 있기 이전 시점의 횡단 실패 —
+            # 영구 면제(system).
             audit("SYSTEM_ERROR", actor=component, details={
                 "error_type": err_type,
                 "error_msg": err_msg,
                 "context": context,
+                "decision_scope": "system",
             })
         except Exception:
             LOG.exception("system_error audit insert failed (component=%s)", component)

@@ -406,6 +406,8 @@ class TestIntradayCircuitBreachClassification:
         assert not mock_cb.trip.called, "avg_down 단독 breach는 회로차단을 트립하면 안 된다"
         assert mock_record_breach.called
         assert mock_tg.system_briefing.called
+        # REQ-064-B2: decision_id already in scope, threaded into record_breach.
+        assert mock_record_breach.call_args[0][1]["decision_id"] == 101
 
     def test_daily_loss_breach_still_trips_circuit(self):
         result, mock_cb, mock_record_breach, mock_tg = self._run(
@@ -416,3 +418,57 @@ class TestIntradayCircuitBreachClassification:
         assert mock_cb.trip.called, "daily_loss breach는 기존대로 회로차단을 트립해야 한다"
         assert mock_record_breach.called
         assert mock_tg.system_briefing.called
+        # REQ-064-B3: CIRCUIT_BREAKER_TRIP details must carry decision_id top-level.
+        assert mock_cb.trip.call_args.kwargs["details"]["decision_id"] == 101
+
+
+class TestIntradayTickerBlockedByHoldsDecisionId:
+    """SPEC-TRADING-064 REQ-064-B3 — TICKER_BLOCKED_BY_HOLDS (orchestrator.py:1747)."""
+
+    def test_ticker_blocked_by_holds_carries_decision_id(self):
+        cached_micro_row = {
+            "id": 42,
+            "response_json": {
+                "candidates": {"buy": [{"ticker": "086790"}], "sell": [], "hold": []}
+            },
+        }
+        signals = [{"ticker": "086790", "side": "buy", "qty": 3, "rationale": "test"}]
+
+        with (
+            patch("trading.personas.orchestrator.macro_persona") as mock_macro,
+            patch("trading.personas.orchestrator.micro_persona") as mock_micro,
+            patch("trading.personas.orchestrator.decision_persona") as mock_decision,
+            patch("trading.personas.orchestrator.risk_persona") as mock_risk,
+            patch("trading.personas.orchestrator.tg"),
+            patch("trading.personas.orchestrator.get_settings") as mock_settings,
+            patch("trading.personas.orchestrator.get_system_state") as mock_state,
+            patch("trading.personas.orchestrator._gather_assets") as mock_assets,
+            patch("trading.personas.orchestrator.get_blocked_tickers") as mock_blocked,
+            patch("trading.personas.orchestrator._count_holds_today", return_value=3),
+            patch("trading.personas.orchestrator.audit") as mock_audit,
+            patch("trading.personas.orchestrator.KisClient"),
+        ):
+            mock_macro.latest_cached.return_value = {
+                "id": 10, "response": "bullish", "response_json": {"regime": "neutral"},
+            }
+            mock_micro.latest_cached.return_value = cached_micro_row
+            mock_decision.run.return_value = (_decision_result(signals=signals), [101])
+            mock_settings.return_value = MagicMock(trading_mode="paper")
+            mock_state.return_value = {"halt_state": False}
+            mock_assets.return_value = {
+                "total_assets": 10_000_000, "cash_d2": 9_600_000,
+                "stock_eval": 400_000, "holdings": [],
+            }
+            mock_blocked.return_value = {"blocked": {}}
+
+            from trading.personas.orchestrator import run_intraday_cycle
+
+            result = run_intraday_cycle(today="2026-07-08")
+
+        assert 101 in result.rejected
+        assert not mock_risk.run.called
+        blocked_calls = [
+            c for c in mock_audit.call_args_list if c.args[0] == "TICKER_BLOCKED_BY_HOLDS"
+        ]
+        assert len(blocked_calls) == 1
+        assert blocked_calls[0].kwargs["details"]["decision_id"] == 101
