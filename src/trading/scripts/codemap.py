@@ -265,8 +265,8 @@ def glyph_uris() -> dict[str, str]:
     out = {}
     for mod, ch in MODULE_GLYPH.items():
         svg = (
-            '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44">'
-            f'<text x="22" y="30" font-size="21" text-anchor="middle">{ch}</text></svg>'
+            '<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52">'
+            f'<text x="26" y="36" font-size="27" text-anchor="middle">{ch}</text></svg>'
         )
         out[mod] = "data:image/svg+xml;utf8," + quote(svg, safe="")
     return out
@@ -361,61 +361,74 @@ def render(
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
-:root{{--bg:#0f1115;--panel:#161a21;--fg:#e6e9ef;--dim:#8b95a5;--line:#242a33}}
+/* n8n 계열 — 밝은 캔버스, 흰 카드, 얇은 회색 경계 */
+:root{{--bg:#fff;--panel:#fbfbfc;--fg:#20242b;--dim:#6b7280;--line:#e5e7eb;
+ --accent:#ff6d5a;--canvas:#f7f7f8}}
 *{{box-sizing:border-box}}
 body{{margin:0;height:100vh;display:flex;background:var(--bg);color:var(--fg);
  font:14px/1.55 -apple-system,"Noto Sans KR",sans-serif;overflow:hidden}}
-main{{flex:1;height:100vh;display:flex;flex-direction:column;min-width:0}}
+main{{flex:1;height:100vh;display:flex;flex-direction:column;min-width:0;position:relative}}
 nav{{display:flex;gap:4px;padding:10px 14px 0;border-bottom:1px solid var(--line)}}
 nav button{{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
  font:inherit;font-size:13px;padding:8px 14px;cursor:pointer}}
-nav button.on{{color:var(--fg);border-bottom-color:#7aa2f7}}
+nav button.on{{color:var(--fg);border-bottom-color:var(--accent)}}
 #crumb{{margin-left:16px;align-self:center;font-size:12px;color:var(--dim)}}
-#crumb a{{color:#7aa2f7;text-decoration:none}}
+#crumb a{{color:var(--accent);text-decoration:none}}
 #crumb b{{color:var(--fg);margin-left:4px}}
 #ov{{flex:1;overflow-y:auto;padding:24px 28px 60px}}
 #ov.hide,#cy.hide{{display:none}}
-#cy{{flex:1;min-height:0;background:#f6f7f9}}
-.warn{{background:#3d2b2b;border:1px solid #c0616f;border-radius:8px;padding:10px 14px;
- margin-bottom:18px;font-size:13px}}
-.mm{{background:#12151b;border:1px solid var(--line);border-radius:10px;padding:14px;
+/* n8n 캔버스의 도트 그리드 */
+#cy{{flex:1;min-height:0;background-color:var(--canvas);
+ background-image:radial-gradient(#d6d8dd 1px,transparent 1px);background-size:18px 18px}}
+#zoom.hide{{display:none}}
+#zoom{{position:absolute;left:18px;bottom:18px;display:flex;gap:4px;z-index:5;
+ background:#fff;border:1px solid var(--line);border-radius:8px;padding:3px;
+ box-shadow:0 1px 4px rgba(0,0,0,.08)}}
+#zoom button{{width:28px;height:28px;border:0;background:none;color:#4b5563;
+ border-radius:5px;font-size:15px;cursor:pointer;line-height:1}}
+#zoom button:hover{{background:#f1f2f4;color:#111}}
+.warn{{background:#fff3f1;border:1px solid #ffc4bb;color:#a33224;border-radius:8px;
+ padding:10px 14px;margin-bottom:18px;font-size:13px}}
+.mm{{background:#fafafb;border:1px solid var(--line);border-radius:10px;padding:14px;
  margin-bottom:22px;overflow-x:auto}}
-.card{{border-left:2px solid #2c333f;padding:2px 0 14px 16px;margin-left:6px}}
+.card{{border-left:2px solid var(--line);padding:2px 0 14px 16px;margin-left:6px}}
 .ct{{font-size:15px;font-weight:600;display:flex;align-items:center;gap:9px}}
-.no{{background:#7aa2f7;color:#0f1115;border-radius:50%;width:20px;height:20px;
+.no{{background:var(--accent);color:#fff;border-radius:50%;width:20px;height:20px;
  display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:0 0 auto}}
 .tot{{margin-left:auto;font-size:12px;color:var(--dim);font-weight:400}}
-.cw{{color:#b7c0cf;font-size:13px;margin:3px 0 7px}}
+.cw{{color:#4b5563;font-size:13px;margin:3px 0 7px}}
 .chip.ok{{cursor:pointer;font-family:ui-monospace,monospace}}
-.chip.ok:hover{{border-color:#7aa2f7;color:#fff}}
-.chip.miss{{border-color:#c0616f;color:#f7768e}}
+.chip.ok:hover{{border-color:var(--accent);color:var(--accent)}}
+.chip.miss{{border-color:#ffc4bb;background:#fff3f1;color:#a33224}}
+.chip.far{{color:#9aa1ac}}
 #ov table{{margin-top:26px}}
-td.mod{{font-family:ui-monospace,monospace;color:#c0caf5;white-space:nowrap}}
+td.mod{{font-family:ui-monospace,monospace;color:#374151;white-space:nowrap}}
 tr.go{{cursor:pointer}}
-tr.go:hover td{{background:#1e2430;color:#fff}}
+tr.go:hover td{{background:#f4f5f7;color:#111}}
 .chip.go{{cursor:pointer}}
-.chip.go:hover{{border-color:#7aa2f7;color:#fff}}
-button.drill{{margin:10px 0 2px;width:100%;background:#1e2430;border:1px solid var(--line);
- color:#7aa2f7;border-radius:6px;padding:7px;font:inherit;font-size:12px;cursor:pointer}}
-button.drill:hover{{border-color:#7aa2f7;background:#232a37}}
-aside .cw{{color:#b7c0cf;font-size:13px;margin:4px 0 6px}}
+.chip.go:hover{{border-color:var(--accent);color:var(--accent)}}
+button.drill{{margin:10px 0 2px;width:100%;background:#fff;border:1px solid var(--accent);
+ color:var(--accent);border-radius:6px;padding:7px;font:inherit;font-size:12px;cursor:pointer}}
+button.drill:hover{{background:var(--accent);color:#fff}}
+aside .cw{{color:#4b5563;font-size:13px;margin:4px 0 6px}}
 aside{{width:360px;background:var(--panel);border-left:1px solid var(--line);
  padding:18px;overflow-y:auto}}
 h1{{font-size:16px;margin:0 0 2px}}
 h2{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
  margin:22px 0 8px;font-weight:600}}
 .sub{{color:var(--dim);font-size:12px}}
-input{{width:100%;background:#0f1115;border:1px solid var(--line);color:var(--fg);
+input{{width:100%;background:#fff;border:1px solid var(--line);color:var(--fg);
  border-radius:6px;padding:7px 10px;font:inherit;font-size:13px;margin-top:12px}}
+input:focus{{outline:none;border-color:var(--accent)}}
 table{{border-collapse:collapse;width:100%;font-size:12px}}
 td,th{{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;vertical-align:top}}
 th{{color:var(--dim);font-weight:600}}
 .num{{text-align:right;font-variant-numeric:tabular-nums}}
 .dim{{color:var(--dim)}}
-code{{font:12px ui-monospace,monospace;color:#c0caf5;word-break:break-all}}
+code{{font:12px ui-monospace,monospace;color:#374151;word-break:break-all}}
 #sel{{min-height:60px}}
-.chip{{display:inline-block;background:#1e2430;border:1px solid var(--line);
- border-radius:5px;padding:1px 7px;font-size:11px;color:var(--dim)}}
+.chip{{display:inline-block;background:#f4f5f7;border:1px solid var(--line);
+ border-radius:5px;padding:1px 7px;font-size:11px;color:#4b5563;margin:2px 3px 2px 0}}
 .legend span{{display:inline-flex;align-items:center;gap:5px;margin:3px 9px 3px 0;font-size:11px}}
 .dot{{width:9px;height:9px;border-radius:50%;display:inline-block}}
 </style></head><body>
@@ -431,6 +444,11 @@ code{{font:12px ui-monospace,monospace;color:#c0caf5;word-break:break-all}}
     {overview}
   </div>
   <div id="cy" class="hide"></div>
+  <div id="zoom" class="hide">
+    <button data-z="out" title="축소">−</button>
+    <button data-z="in" title="확대">+</button>
+    <button data-z="fit" title="전체 맞춤">⤢</button>
+  </div>
 </main>
 <aside>
   <h1>의사결정 흐름도</h1>
@@ -524,55 +542,57 @@ const cy = cytoscape({{
   container: document.getElementById('cy'),
   elements: [],
   style: [
-    // 노코드 캔버스 — 색 타일 안에 픽토그램, 이름은 타일 아래.
+    // n8n 노드 — 흰 카드에 컬러 픽토그램, 이름은 카드 아래 진한 글씨.
     {{selector: 'node', style: {{
-      'shape': 'round-rectangle', 'width': 44, 'height': 44,
-      'background-color': e => color(e.data('module')),
+      'shape': 'round-rectangle', 'width': 58, 'height': 58,
+      'background-color': '#ffffff',
       'background-image': e => GLYPH[e.data('module')] || 'none',
       'background-fit': 'none', 'background-clip': 'none',
       'label': 'data(label)',
-      'color': '#3b4453', 'font-size': 10, 'font-family': 'ui-monospace,monospace',
-      'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 7,
-      'text-wrap': 'wrap', 'text-max-width': 110,
-      'border-width': e => e.data('events').length ? 3 : 0, 'border-color': '#ffffff',
-      'border-opacity': 1,
-      'shadow-blur': 6, 'shadow-color': '#8a93a5', 'shadow-opacity': .25,
-      'shadow-offset-y': 2
+      'color': '#20242b', 'font-size': 10.5, 'font-family': 'ui-monospace,monospace',
+      'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 8,
+      'text-wrap': 'wrap', 'text-max-width': 120,
+      'border-width': 1.5, 'border-color': '#dcdfe4', 'border-opacity': 1,
+      'shadow-blur': 5, 'shadow-color': '#20242b', 'shadow-opacity': .10,
+      'shadow-offset-y': 1
+    }}}},
+    // 기록을 남기는 블록은 모듈 색 테두리로 구분한다.
+    {{selector: 'node[?total]', style: {{
+      'border-width': 2.5, 'border-color': e => color(e.data('module'))
     }}}},
     // 이름이 check_/requires_/is_/guard_ 로 시작하면 판정 블록 — 다이아몬드로 세운다.
     {{selector: 'node[kind = "판정"]', style: {{
-      'shape': 'diamond', 'width': 52, 'height': 52, 'font-weight': 'bold'
+      'shape': 'diamond', 'width': 66, 'height': 66
     }}}},
+    // n8n 트리거처럼 왼쪽이 둥근 시작 노드.
     {{selector: 'node[kind = "진입점"]', style: {{
-      'shape': 'ellipse', 'width': 56, 'height': 56, 'background-color': '#2f6df6',
+      'shape': 'round-rectangle', 'width': 66, 'height': 66,
+      'background-color': '#fff6f4', 'border-width': 2.5, 'border-color': '#ff6d5a',
       'background-image': GLYPH['__entry__'],
-      'font-size': 12, 'font-weight': 'bold', 'color': '#1b2534'
+      'font-size': 11.5, 'font-weight': 'bold'
     }}}},
-    // 모듈 타일은 함수 타일보다 크고, 라벨에 함수 수와 기록 건수를 함께 적는다.
     {{selector: 'node[kind = "모듈"]', style: {{
-      'width': 78, 'height': 78, 'font-size': 13, 'font-weight': 'bold',
-      'text-margin-y': 9, 'color': '#1b2534',
+      'width': 84, 'height': 84, 'font-size': 12.5, 'font-weight': 'bold',
+      'text-margin-y': 9,
       'label': e => e.data('label') + '\\n' + e.data('fns') + '개 함수'
         + (e.data('total') ? ' · ' + e.data('total') + '건' : ''),
-      'background-image': e => GLYPH[e.data('module')] || 'none',
-      'border-width': e => e.data('total') ? 4 : 0
+      'background-image': e => GLYPH[e.data('module')] || 'none'
     }}}},
+    // n8n 연결선 — 부드러운 베지어, 출발점에 출력 포트 점.
     {{selector: 'edge', style: {{
-      'width': 1.2, 'line-color': '#c3cad6', 'target-arrow-color': '#c3cad6',
-      'target-arrow-shape': 'triangle', 'arrow-scale': .9,
-      'curve-style': 'taxi', 'taxi-direction': 'horizontal',
-      // 팬아웃이 큰 노드에서 모든 선이 같은 x 에서 꺾이면 세로줄 뭉치가 된다.
-      // 엣지마다 꺾는 지점을 흩뿌려 겹침을 푼다.
-      'taxi-turn': e => (18 + (e.id().length * 13 + e.id().charCodeAt(1) * 7) % 62) + 'px',
-      'taxi-turn-min-distance': 10,
-      'label': 'data(label)', 'font-size': 9, 'color': '#7c8798',
-      'text-background-color': '#f6f7f9', 'text-background-opacity': 1,
-      'text-background-padding': 2
+      'width': 1.6, 'line-color': '#b8bdc7',
+      'curve-style': 'bezier', 'control-point-step-size': 60,
+      'source-arrow-shape': 'circle', 'source-arrow-color': '#b8bdc7',
+      'target-arrow-shape': 'triangle', 'target-arrow-color': '#b8bdc7',
+      'arrow-scale': .75,
+      'label': 'data(label)', 'font-size': 9, 'color': '#8b919c',
+      'text-background-color': '#f7f7f8', 'text-background-opacity': 1,
+      'text-background-padding': 3
     }}}},
-    {{selector: '.faded', style: {{'opacity': .12, 'text-opacity': .05}}}},
+    {{selector: '.faded', style: {{'opacity': .13, 'text-opacity': .06}}}},
     {{selector: '.hot', style: {{
-      'line-color': '#2f6df6', 'target-arrow-color': '#2f6df6', 'width': 2,
-      'color': '#2f6df6', 'z-index': 9
+      'line-color': '#ff6d5a', 'target-arrow-color': '#ff6d5a',
+      'source-arrow-color': '#ff6d5a', 'width': 2.4, 'color': '#e0503c', 'z-index': 9
     }}}}
   ]
 }});
@@ -711,7 +731,16 @@ document.getElementById('legend').addEventListener('click', ev => {{
 
 setView(null);
 
-mermaid.initialize({{startOnLoad: true, theme: 'dark',
+document.getElementById('zoom').addEventListener('click', ev => {{
+  const b = ev.target.closest('[data-z]');
+  if (!b) return;
+  if (b.dataset.z === 'fit') cy.animate({{fit: {{padding: 40}}}}, {{duration: 250}});
+  else cy.animate({{zoom: cy.zoom() * (b.dataset.z === 'in' ? 1.3 : 1 / 1.3),
+                    renderedPosition: {{x: cy.width() / 2, y: cy.height() / 2}}}},
+                   {{duration: 150}});
+}});
+
+mermaid.initialize({{startOnLoad: true, theme: 'default',
   themeVariables: {{fontSize: '13px', fontFamily: 'Noto Sans KR, sans-serif'}},
   flowchart: {{curve: 'basis', nodeSpacing: 30, rankSpacing: 40}}}});
 
@@ -720,6 +749,7 @@ let fitted = false;
 function tab(showGraph) {{
   document.getElementById('ov').classList.toggle('hide', showGraph);
   document.getElementById('cy').classList.toggle('hide', !showGraph);
+  document.getElementById('zoom').classList.toggle('hide', !showGraph);
   document.getElementById('tab-ov').classList.toggle('on', !showGraph);
   document.getElementById('tab-gr').classList.toggle('on', showGraph);
   if (showGraph) {{ cy.resize(); if (!fitted) {{ cy.fit(30); fitted = true; }} }}
