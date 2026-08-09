@@ -1,0 +1,5 @@
+# 빌드 산출물·의존성은 그래프에서 뺀다.
+# 난독화된 번들 심볼(index-*.js 의 Ty·jz 등)이 커뮤니티 허브 상위를 차지해
+# 실제 논리 구조를 가린다. 프런트엔드 "소스"(frontend/src)는 그대로 인덱싱된다.
+node_modules/
+src/trading/dashboard/static/

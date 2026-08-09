@@ -45,3 +45,9 @@ pip-log.txt
 # Claude Code — personal/machine-local state (settings.json is shared, tracked)
 .claude/settings.local.json
 .claude/agent-memory/
+
+# 코드 그래프 인덱스·시각화 산출물 — 로컬 재생성물
+# (graphify update / code-graph-mcp / trading.scripts.codemap)
+graphify-out/
+.code-graph/
+.codemap/
