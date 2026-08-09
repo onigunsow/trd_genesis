@@ -380,6 +380,18 @@ nav button.on{{color:var(--fg);border-bottom-color:var(--accent)}}
 /* n8n 캔버스의 도트 그리드 */
 #cy{{flex:1;min-height:0;background-color:var(--canvas);
  background-image:radial-gradient(#d6d8dd 1px,transparent 1px);background-size:18px 18px}}
+/* 캔버스 위 +/− 버튼 레이어 — 선은 통과시키고 버튼만 받는다 */
+#ovl{{position:absolute;inset:0;pointer-events:none;z-index:4}}
+#ovl.hide{{display:none}}
+#ovl button{{position:absolute;pointer-events:auto;font:inherit;cursor:pointer;
+ box-shadow:0 1px 3px rgba(0,0,0,.14)}}
+#ovl button.exp{{width:20px;height:20px;border-radius:50%;border:1.5px solid #dcdfe4;
+ background:#fff;color:#4b5563;font-size:14px;line-height:1;padding:0}}
+#ovl button.exp:hover{{border-color:var(--accent);color:var(--accent)}}
+button.col{{height:21px;border-radius:11px;border:1.5px solid var(--accent);
+ background:#fff;color:var(--accent);font:inherit;font-size:11px;padding:0 9px;
+ line-height:1;cursor:pointer;margin-left:5px}}
+button.col:hover{{background:var(--accent);color:#fff}}
 #zoom.hide{{display:none}}
 #zoom{{position:absolute;left:18px;bottom:18px;display:flex;gap:4px;z-index:5;
  background:#fff;border:1px solid var(--line);border-radius:8px;padding:3px;
@@ -444,6 +456,7 @@ code{{font:12px ui-monospace,monospace;color:#374151;word-break:break-all}}
     {overview}
   </div>
   <div id="cy" class="hide"></div>
+  <div id="ovl" class="hide"></div>
   <div id="zoom" class="hide">
     <button data-z="out" title="축소">−</button>
     <button data-z="in" title="확대">+</button>
@@ -479,64 +492,92 @@ const FN = els.filter(e => !e.data.source);
 const ED = els.filter(e => e.data.source);
 const BY_ID = Object.fromEntries(FN.map(e => [e.data.id, e.data]));
 
-// 1단계 — 모듈 뷰. 진입점은 모듈로 접지 않고 그대로 둔다(흐름의 시작점이라서).
-function moduleView() {{
+// 접힘/펼침 — 펼친 모듈만 함수가 제자리에서 드러나고, 나머지는 모듈 하나로 남는다.
+// 진입점은 접지 않는다(흐름의 시작점이라 접으면 방향이 사라진다).
+const expanded = new Set();
+const anchor = d => d.kind === '진입점' ? d.id
+  : (expanded.has(d.module) ? d.id : 'm:' + d.module);
+
+function buildElements() {{
   const nodes = {{}};
   for (const e of FN) {{
     const d = e.data;
-    if (d.kind === '진입점') {{ nodes[d.id] = {{data: d}}; continue; }}
-    const k = 'm:' + d.module;
-    if (!nodes[k]) nodes[k] = {{data: {{
-      id: k, label: d.module, module: d.module, kind: '모듈', path: d.module,
+    const id = anchor(d);
+    if (id === d.id) {{ nodes[id] = {{data: d}}; continue; }}
+    if (!nodes[id]) nodes[id] = {{data: {{
+      id: id, label: d.module, module: d.module, kind: '모듈', path: d.module,
       file: '', events: [], total: 0, fns: 0
     }}}};
-    nodes[k].data.fns++;
-    nodes[k].data.total += d.total;
+    nodes[id].data.fns++;
+    nodes[id].data.total += d.total;
   }}
-  const key = d => d.kind === '진입점' ? d.id : 'm:' + d.module;
-  const cnt = {{}};
+  const cnt = {{}}, lbl = {{}};
   for (const e of ED) {{
     const s = BY_ID[e.data.source], t = BY_ID[e.data.target];
     if (!s || !t) continue;
-    const a = key(s), b = key(t);
+    const a = anchor(s), b = anchor(t);
     if (a === b) continue;
-    cnt[a + '>' + b] = (cnt[a + '>' + b] || 0) + 1;
+    const k = a + '\\u0001' + b;
+    cnt[k] = (cnt[k] || 0) + 1;
+    // 함수끼리 직접 이어진 선은 원래 라벨(실제 기록)을 지키고,
+    // 모듈로 접힌 선만 호출 수로 바꾼다.
+    if (a === s.id && b === t.id) lbl[k] = e.data.label || '';
   }}
   const edges = Object.entries(cnt).map(([k, n]) => {{
-    const p = k.split('>');
-    return {{data: {{id: 'me' + k, source: p[0], target: p[1], label: n + '개 호출'}}}};
+    const p = k.split('\\u0001');
+    return {{data: {{id: 'e' + k, source: p[0], target: p[1],
+                   label: (k in lbl) ? lbl[k] : n + '개 호출'}}}};
   }});
   return Object.values(nodes).concat(edges);
 }}
 
-// 2단계 — 한 모듈의 함수들 + 그 함수들과 직접 이어진 바깥 블록.
-function drillView(m) {{
-  const own = new Set(FN.filter(e => e.data.module === m).map(e => e.data.id));
-  const keep = new Set(own);
-  for (const e of ED) {{
-    if (own.has(e.data.source)) keep.add(e.data.target);
-    if (own.has(e.data.target)) keep.add(e.data.source);
-  }}
-  return FN.filter(e => keep.has(e.data.id))
-    .concat(ED.filter(e => keep.has(e.data.source) && keep.has(e.data.target)));
-}}
-
 const LAYOUT = {{name: 'dagre', rankDir: 'LR', nodeSep: 34, rankSep: 150, edgeSep: 14}};
-let view = null;   // null = 모듈 뷰, 문자열 = 그 모듈의 함수 뷰
 
-function setView(m) {{
-  view = m;
+function refresh() {{
   cy.elements().remove();
-  cy.add(m ? drillView(m) : moduleView());
+  cy.add(buildElements());
   cy.layout(LAYOUT).run();
   cy.fit(40);
-  document.getElementById('crumb').innerHTML = m
-    ? '<a href="#" id="back">← 모듈 전체</a> <b>' + m + '</b>'
-    : '모듈을 클릭하면 그 안의 함수 블록이 열립니다';
-  const b = document.getElementById('back');
-  if (b) b.onclick = ev => {{ ev.preventDefault(); setView(null); }};
+  placeButtons();
+  const crumb = document.getElementById('crumb');
+  crumb.innerHTML = expanded.size
+    ? '펼침 ' + [...expanded].map(m =>
+        '<button class="col" data-col="' + m + '">− ' + m + '</button>').join('')
+    : '모듈 카드의 + 버튼으로 그 자리에서 함수 블록을 펼칩니다';
+  crumb.querySelectorAll('[data-col]').forEach(
+    b => b.onclick = () => toggle(b.dataset.col));
   renderLevel();
 }}
+
+function toggle(m) {{
+  expanded.has(m) ? expanded.delete(m) : expanded.add(m);
+  refresh();
+}}
+
+// 캔버스 위에 겹쳐 그리는 +/− 버튼. 노드 좌표를 따라다닌다.
+function placeButtons() {{
+  const ovl = document.getElementById('ovl');
+  ovl.innerHTML = '';
+  const cyEl = document.getElementById('cy');
+  const cr = cyEl.getBoundingClientRect(), mr = cyEl.parentElement.getBoundingClientRect();
+  const ox = cr.left - mr.left, oy = cr.top - mr.top;
+  const mk = (cls, text, title, x, y, fn) => {{
+    const b = document.createElement('button');
+    b.className = cls; b.textContent = text; b.title = title;
+    b.style.left = x + 'px'; b.style.top = y + 'px';
+    b.onclick = ev => {{ ev.stopPropagation(); fn(); }};
+    ovl.appendChild(b);
+  }};
+  cy.nodes('[kind = "모듈"]').forEach(n => {{
+    const p = n.renderedPosition();
+    mk('exp', '+', n.data('module') + ' 펼치기',
+       ox + p.x + n.renderedWidth() / 2 - 10,
+       oy + p.y + n.renderedHeight() / 2 - 10,
+       () => toggle(n.data('module')));
+  }});
+}}
+// 접기 버튼은 캔버스에 두지 않는다 — dagre 가 펼친 함수를 여러 단에 흩어 놓아
+// 그룹 경계상자가 엉뚱한 곳을 가리킨다. 항상 맞는 자리인 상단 빵부스러기에 둔다.
 
 const cy = cytoscape({{
   container: document.getElementById('cy'),
@@ -647,7 +688,8 @@ function panelModule(m) {{
     '<div class="cw">' + esc(ROLE[m] || '') + '</div>' +
     '<div class="dim" style="font-size:12px">함수 ' + f.length + '개 · 30일 기록 ' +
       f.reduce((a, d) => a + d.total, 0) + '건</div>' +
-    '<button class="drill" data-go-m="' + esc(m) + '">안의 함수 블록 열기 →</button>' +
+    '<button class="drill" data-go-m="' + esc(m) + '">' +
+      (expanded.has(m) ? '− 이 모듈 접기' : '+ 이 자리에서 함수 블록 펼치기') + '</button>' +
     (hot.length ? '<h2>기록을 남기는 함수</h2><table>' + hot.map(d =>
       '<tr class="go" data-f="' + esc(d.label) + '"><td class=mod>' + esc(d.label) +
       '</td><td class=num>' + d.total + '</td></tr>').join('') + '</table>' : '') +
@@ -682,7 +724,9 @@ function panelFunc(n) {{
     '<h2>이 블록이 부르는 곳</h2><div>' + list(n.outgoers('node'), '없음(말단)') + '</div>';
 }}
 
-function renderLevel() {{ view ? panelFuncs(view) : panelModules(); }}
+function renderLevel() {{
+  expanded.size === 1 ? panelFuncs([...expanded][0]) : panelModules();
+}}
 
 function focusFn(label) {{
   const n = cy.nodes().filter(x => x.data('label') === label);
@@ -710,26 +754,27 @@ cy.on('tap', e => {{
 // 패널 안의 행·칩·버튼 클릭을 한 곳에서 처리한다.
 SEL.addEventListener('click', ev => {{
   const drill = ev.target.closest('[data-go-m]');
-  if (drill) {{ setView(drill.dataset.goM); return; }}
+  if (drill) {{ toggle(drill.dataset.goM); panelModule(drill.dataset.goM); return; }}
   const row = ev.target.closest('[data-m]');
   if (row) {{ panelModule(row.dataset.m); return; }}
   const f = ev.target.closest('[data-f]');
   if (f) {{
     const src = FN.find(x => x.data.label === f.dataset.f);
-    if (src && view !== src.data.module) setView(src.data.module);
+    if (src && !expanded.has(src.data.module)) toggle(src.data.module);
     focusFn(f.dataset.f);
   }}
 }});
 
-// 범례 클릭 = 그 모듈의 함수 뷰로 내려간다.
+// 범례 클릭 = 그 모듈을 제자리에서 펼치거나 접는다.
 document.getElementById('legend').addEventListener('click', ev => {{
   const chip = ev.target.closest('[data-m]');
   if (!chip) return;
   tab(true);
-  setView(view === chip.dataset.m ? null : chip.dataset.m);
+  toggle(chip.dataset.m);
 }});
 
-setView(null);
+cy.on('pan zoom resize', placeButtons);
+refresh();
 
 document.getElementById('zoom').addEventListener('click', ev => {{
   const b = ev.target.closest('[data-z]');
@@ -750,9 +795,14 @@ function tab(showGraph) {{
   document.getElementById('ov').classList.toggle('hide', showGraph);
   document.getElementById('cy').classList.toggle('hide', !showGraph);
   document.getElementById('zoom').classList.toggle('hide', !showGraph);
+  document.getElementById('ovl').classList.toggle('hide', !showGraph);
   document.getElementById('tab-ov').classList.toggle('on', !showGraph);
   document.getElementById('tab-gr').classList.toggle('on', showGraph);
-  if (showGraph) {{ cy.resize(); if (!fitted) {{ cy.fit(30); fitted = true; }} }}
+  if (showGraph) {{
+    cy.resize();
+    if (!fitted) {{ cy.fit(40); fitted = true; }}
+    placeButtons();
+  }}
 }}
 document.getElementById('tab-ov').onclick = () => tab(false);
 document.getElementById('tab-gr').onclick = () => tab(true);
@@ -764,7 +814,7 @@ document.getElementById('ov').addEventListener('click', ev => {{
   const src = FN.find(e => e.data.label === chip.dataset.go);
   if (!src) return;
   tab(true);
-  if (view !== src.data.module) setView(src.data.module);
+  if (!expanded.has(src.data.module)) toggle(src.data.module);
   focusFn(chip.dataset.go);
 }});
 
