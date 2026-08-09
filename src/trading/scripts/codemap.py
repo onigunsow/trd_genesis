@@ -28,6 +28,45 @@ from trading.db.session import connection
 
 WINDOW_DAYS = 30
 
+# 사람이 읽는 설명. 여기 적힌 심볼이 실제 호출그래프에 없으면 화면에 경고가 뜬다 —
+# 손으로 쓴 설명이 조용히 낡는 것을 막는 장치다(verify_overview 참조).
+STAGES = [
+    ("상태·계좌 확보", "지금 매매해도 되는 상태인지, 계좌에 얼마가 있는지부터 확인한다.",
+     ["get_system_state", "balance"]),
+    ("후보 선별", "차단된 종목을 먼저 걷어내고 판단 대상만 남긴다.",
+     ["_filter_and_expand_candidates", "get_blocked_tickers"]),
+    ("페르소나 판단", "매크로·마이크로·의사결정 페르소나가 후보와 근거를 만든다. CLI 경로라 비용 0.",
+     ["call_persona", "resolve_model"]),
+    ("포트폴리오 조정", "제안을 거부하지 않고 국면·섹터 한도에 맞춰 수정한다.",
+     ["_apply_portfolio_adjustment", "_emit_transparency", "adjust_for_regime",
+      "enforce_sector_cap"]),
+    ("리스크 관문", "여기서 막히면 주문이 나가지 않는다. 일일손실 한도만 하루 정지를 부른다.",
+     ["check_pre_order", "record_breach", "check_pre_order_safety",
+      "requires_circuit_halt", "trip"]),
+    ("사이징", "얼마나 살지 정한다. 엣지 검증 미통과면 실거래 사이징이 차단된다.",
+     ["compute_qty", "half_kelly_cap", "portfolio_heat", "is_validation_passed"]),
+    ("실행", "중복 매도를 잠그고, 증권사 보유수량을 진실로 삼아 수량을 다시 깎는다.",
+     ["_execute_signal", "guard_sell", "set_sell_inflight", "clamp_sell_to_confirmed",
+      "intraday_reconcile", "resolve_stuck_orders"]),
+    ("보고", "결과를 텔레그램으로 알린다. 실패도 알린다.",
+     ["persona_briefing", "trade_briefing", "order_rejected", "system_error"]),
+]
+
+MODULE_ROLE = {
+    "personas": "사이클 전체 지휘 + LLM 판단 생성. 후보 선별·게이트 호출·실행·보고를 엮는 유일한 지점",
+    "risk": "한도·안전성 검사와 매매 정지. 통과 못하면 주문 없음",
+    "strategy": "수량 결정 — 변동성 목표 기본 수량에 half-Kelly 상한과 포트폴리오 히트를 적용",
+    "edge": "엣지 검증과 실현손익 산출. 일일손실 한도의 입력이자 실거래 사이징의 관문",
+    "kis": "증권사 연동. 보유수량을 단일 진실로 삼아 매도 수량을 클램프하고 미체결을 정리",
+    "alerts": "텔레그램 통보",
+    "data": "시세·종목 데이터 수집. KRX 장애 시 여기서 차단되어 판단 자체가 굶는다",
+    "db": "상태 저장과 audit 기록",
+    "screener": "유니버스 확장",
+    "models": "어떤 모델로 판단할지 라우팅",
+    "tools": "페르소나가 쓸 도구 결정",
+    "config": "설정과 수수료 추정",
+}
+
 
 # --- 입력: 호출그래프 -------------------------------------------------------
 
@@ -89,14 +128,16 @@ def build_graph(
 # --- 다리: 소스의 audit() 리터럴 -------------------------------------------
 
 
-def scan_audit_calls(pkg: Path | None = None) -> dict[tuple[str, str], list[str]]:
-    """(파일, 감싸는 함수) -> [event_type] 매핑을 소스에서 추출한다.
+def scan_audit_calls(pkg: Path | None = None) -> tuple[dict[tuple[str, str], list[str]], set[str]]:
+    """(파일, 감싸는 함수) -> [event_type] 매핑과, 소스에 존재하는 전체 함수 이름을 뽑는다.
 
     파일 경로는 code-graph-mcp 와 맞추기 위해 ``src/trading/...`` 형태로 만든다.
+    함수 이름 집합은 "설명이 낡았다"와 "이 경로 밖에 있다"를 구분하는 데 쓴다.
     """
     pkg = pkg or Path(trading.__file__).resolve().parent
     src_root = pkg.parent  # .../src
     found: dict[tuple[str, str], list[str]] = defaultdict(list)
+    all_funcs: set[str] = set()
 
     for path in pkg.rglob("*.py"):
         try:
@@ -108,7 +149,11 @@ def scan_audit_calls(pkg: Path | None = None) -> dict[tuple[str, str], list[str]
 
         def walk(node: ast.AST) -> None:
             for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    all_funcs.add(child.name)
+                    if isinstance(child, ast.ClassDef):
+                        walk(child)
+                        continue
                     stack.append(child.name)
                     walk(child)
                     stack.pop()
@@ -126,7 +171,7 @@ def scan_audit_calls(pkg: Path | None = None) -> dict[tuple[str, str], list[str]
                 walk(child)
 
         walk(tree)
-    return dict(found)
+    return dict(found), all_funcs
 
 
 # --- 결과: DB 실측 ----------------------------------------------------------
@@ -182,11 +227,64 @@ def to_cytoscape(
     return elements
 
 
+def render_overview(elements: list[dict[str, Any]], all_funcs: set[str]) -> tuple[str, str, int]:
+    """사람이 읽는 설명 화면. 설명에 적힌 심볼을 실제 그래프와 대조해 낡음을 잡아낸다."""
+    by_name: dict[str, dict] = {}
+    for e in elements:
+        d = e["data"]
+        if "source" not in d:
+            by_name.setdefault(d["label"], d)
+
+    stale = 0
+    cards = []
+    mermaid = ["flowchart LR", '  E(["진입점"])']
+    prev = "E"
+    for i, (title, why, syms) in enumerate(STAGES):
+        node = f"S{i}"
+        mermaid.append(f'  {prev} --> {node}["{i + 1}. {title}"]')
+        prev = node
+        chips = []
+        total = 0
+        for s in syms:
+            hit = by_name.get(s)
+            if hit is None:
+                # 소스에 있으면 단지 이 깊이 밖일 뿐이고, 없으면 설명이 낡은 것이다.
+                if s in all_funcs:
+                    chips.append(
+                        f'<span class="chip far" title="소스에 있으나 이 경로 깊이 밖">'
+                        f"{html.escape(s)}</span>"
+                    )
+                else:
+                    stale += 1
+                    chips.append(
+                        f'<span class="chip miss" title="소스에서 사라짐">⚠ {html.escape(s)}</span>'
+                    )
+                continue
+            total += hit["total"]
+            n = f' <b>{hit["total"]}</b>' if hit["total"] else ""
+            chips.append(f'<span class="chip ok" data-go="{html.escape(s)}">{html.escape(s)}{n}</span>')
+        cards.append(
+            f'<div class="card"><div class="ct"><span class="no">{i + 1}</span>{html.escape(title)}'
+            + (f'<span class="tot">{total}건</span>' if total else "")
+            + f'</div><div class="cw">{html.escape(why)}</div><div>{"".join(chips)}</div></div>'
+        )
+
+    mods_seen = {e["data"]["module"] for e in elements if "source" not in e["data"]}
+    rows = "".join(
+        f"<tr><td class=mod>{html.escape(m)}</td><td>{html.escape(MODULE_ROLE.get(m, ''))}</td></tr>"
+        for m in sorted(mods_seen)
+        if m and m != "?"
+    )
+    table = f"<table><tr><th>모듈</th><th>어떤 결정에 관여하는가</th></tr>{rows}</table>"
+    return "".join(cards) + table, "\n".join(mermaid), stale
+
+
 def render(
     elements: list[dict[str, Any]],
     orders: list[dict[str, Any]],
     n_nodes: int,
     n_files: int,
+    all_funcs: set[str],
 ) -> str:
     payload = json.dumps(elements, ensure_ascii=False)
     order_rows = (
@@ -200,6 +298,13 @@ def render(
         )
         or "<tr><td colspan=3 class=dim>기록 없음</td></tr>"
     )
+    overview, mermaid_src, stale = render_overview(elements, all_funcs)
+    stale_banner = (
+        f'<div class="warn">설명에 적힌 심볼 {stale}개가 소스에서 사라졌습니다 — '
+        "코드가 바뀌었는데 설명이 안 따라왔다는 뜻입니다. STAGES 를 고치세요.</div>"
+        if stale
+        else ""
+    )
 
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -207,12 +312,35 @@ def render(
 <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
 :root{{--bg:#0f1115;--panel:#161a21;--fg:#e6e9ef;--dim:#8b95a5;--line:#242a33}}
 *{{box-sizing:border-box}}
 body{{margin:0;height:100vh;display:flex;background:var(--bg);color:var(--fg);
  font:14px/1.55 -apple-system,"Noto Sans KR",sans-serif;overflow:hidden}}
-#cy{{flex:1;height:100vh}}
+main{{flex:1;height:100vh;display:flex;flex-direction:column;min-width:0}}
+nav{{display:flex;gap:4px;padding:10px 14px 0;border-bottom:1px solid var(--line)}}
+nav button{{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
+ font:inherit;font-size:13px;padding:8px 14px;cursor:pointer}}
+nav button.on{{color:var(--fg);border-bottom-color:#7aa2f7}}
+#ov{{flex:1;overflow-y:auto;padding:24px 28px 60px}}
+#ov.hide,#cy.hide{{display:none}}
+#cy{{flex:1;min-height:0}}
+.warn{{background:#3d2b2b;border:1px solid #c0616f;border-radius:8px;padding:10px 14px;
+ margin-bottom:18px;font-size:13px}}
+.mm{{background:#12151b;border:1px solid var(--line);border-radius:10px;padding:14px;
+ margin-bottom:22px;overflow-x:auto}}
+.card{{border-left:2px solid #2c333f;padding:2px 0 14px 16px;margin-left:6px}}
+.ct{{font-size:15px;font-weight:600;display:flex;align-items:center;gap:9px}}
+.no{{background:#7aa2f7;color:#0f1115;border-radius:50%;width:20px;height:20px;
+ display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:0 0 auto}}
+.tot{{margin-left:auto;font-size:12px;color:var(--dim);font-weight:400}}
+.cw{{color:#b7c0cf;font-size:13px;margin:3px 0 7px}}
+.chip.ok{{cursor:pointer;font-family:ui-monospace,monospace}}
+.chip.ok:hover{{border-color:#7aa2f7;color:#fff}}
+.chip.miss{{border-color:#c0616f;color:#f7768e}}
+#ov table{{margin-top:26px}}
+td.mod{{font-family:ui-monospace,monospace;color:#c0caf5;white-space:nowrap}}
 aside{{width:360px;background:var(--panel);border-left:1px solid var(--line);
  padding:18px;overflow-y:auto}}
 h1{{font-size:16px;margin:0 0 2px}}
@@ -233,7 +361,18 @@ code{{font:12px ui-monospace,monospace;color:#c0caf5;word-break:break-all}}
 .legend span{{display:inline-flex;align-items:center;gap:5px;margin:3px 9px 3px 0;font-size:11px}}
 .dot{{width:9px;height:9px;border-radius:50%;display:inline-block}}
 </style></head><body>
-<div id="cy"></div>
+<main>
+  <nav>
+    <button id="tab-ov" class="on">개요 — 판단은 이렇게 흐른다</button>
+    <button id="tab-gr">상세 그래프 — {n_nodes}개 블록 전부</button>
+  </nav>
+  <div id="ov">
+    {stale_banner}
+    <div class="mm"><pre class="mermaid">{mermaid_src}</pre></div>
+    {overview}
+  </div>
+  <div id="cy" class="hide"></div>
+</main>
 <aside>
   <h1>의사결정 흐름도</h1>
   <div class="sub">{n_nodes}개 블록 · {n_files}개 파일 · 결과는 최근 {WINDOW_DAYS}일 실측</div>
@@ -260,24 +399,35 @@ document.getElementById('legend').innerHTML = mods.map(m =>
 const cy = cytoscape({{
   container: document.getElementById('cy'),
   elements: els,
-  layout: {{name: 'dagre', rankDir: 'LR', nodeSep: 26, rankSep: 260, edgeSep: 10}},
+  layout: {{name: 'dagre', rankDir: 'LR', nodeSep: 14, rankSep: 130, edgeSep: 12}},
   style: [
+    // 노코드 툴처럼 — 라벨을 품은 카드 박스에 왼쪽 모듈 색 띠를 두른다.
     {{selector: 'node', style: {{
-      'label': 'data(label)', 'color': '#e6e9ef', 'font-size': 11,
-      'font-family': 'ui-monospace,monospace',
-      'text-valign': 'center', 'text-halign': 'right', 'text-margin-x': 7,
-      'background-color': e => color(e.data('module')),
-      'width':  e => 12 + Math.min(26, Math.sqrt(e.data('total') || 0) * 2),
-      'height': e => 12 + Math.min(26, Math.sqrt(e.data('total') || 0) * 2),
-      'border-width': e => e.data('events').length ? 2 : 0, 'border-color': '#fff'
+      'shape': 'round-rectangle',
+      'label': e => e.data('total')
+        ? e.data('label') + '   ' + e.data('total')
+        : e.data('label'),
+      'color': '#e6e9ef', 'font-size': 11, 'font-family': 'ui-monospace,monospace',
+      'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'none',
+      'background-color': '#1b212b',
+      'border-width': e => e.data('events').length ? 2 : 1,
+      'border-color': e => color(e.data('module')),
+      'border-opacity': e => e.data('events').length ? 1 : .5,
+      'padding': '9px',
+      'width': 'label', 'height': 22
     }}}},
     {{selector: 'node[kind = "진입점"]', style: {{
-      'shape': 'round-rectangle', 'width': 15, 'height': 15,
-      'background-color': '#fff', 'font-size': 13, 'font-weight': 'bold'
+      'background-color': '#7aa2f7', 'color': '#0f1115', 'font-weight': 'bold',
+      'font-size': 13, 'height': 30, 'border-width': 0, 'padding': '13px'
     }}}},
     {{selector: 'edge', style: {{
-      'width': 1, 'line-color': '#2c333f', 'target-arrow-color': '#2c333f',
-      'target-arrow-shape': 'triangle', 'arrow-scale': .7, 'curve-style': 'bezier'
+      'width': 1.2, 'line-color': '#2f3743', 'target-arrow-color': '#2f3743',
+      'target-arrow-shape': 'triangle', 'arrow-scale': .8,
+      'curve-style': 'taxi', 'taxi-direction': 'horizontal',
+      // 팬아웃이 큰 노드에서 모든 선이 같은 x 에서 꺾이면 세로줄 뭉치가 된다.
+      // 엣지마다 꺾는 지점을 흩뿌려 겹침을 푼다.
+      'taxi-turn': e => (18 + (e.id().length * 13 + e.id().charCodeAt(1) * 7) % 62) + 'px',
+      'taxi-turn-min-distance': 10
     }}}},
     {{selector: '.faded', style: {{'opacity': .1, 'text-opacity': .04}}}},
     {{selector: '.hot', style: {{
@@ -332,6 +482,36 @@ document.getElementById('legend').addEventListener('click', ev => {{
     c => c.style.opacity = c.dataset.m === m ? 1 : .35);
 }});
 
+mermaid.initialize({{startOnLoad: true, theme: 'dark',
+  themeVariables: {{fontSize: '13px', fontFamily: 'Noto Sans KR, sans-serif'}},
+  flowchart: {{curve: 'basis', nodeSpacing: 30, rankSpacing: 40}}}});
+
+// 탭 전환. 그래프는 숨겨진 채로 레이아웃되면 크기가 0 이라 처음 보일 때 다시 맞춘다.
+let fitted = false;
+function tab(showGraph) {{
+  document.getElementById('ov').classList.toggle('hide', showGraph);
+  document.getElementById('cy').classList.toggle('hide', !showGraph);
+  document.getElementById('tab-ov').classList.toggle('on', !showGraph);
+  document.getElementById('tab-gr').classList.toggle('on', showGraph);
+  if (showGraph) {{ cy.resize(); if (!fitted) {{ cy.fit(30); fitted = true; }} }}
+}}
+document.getElementById('tab-ov').onclick = () => tab(false);
+document.getElementById('tab-gr').onclick = () => tab(true);
+
+// 개요의 심볼 칩을 누르면 그래프로 넘어가 그 블록을 선택한다.
+document.getElementById('ov').addEventListener('click', ev => {{
+  const chip = ev.target.closest('[data-go]');
+  if (!chip) return;
+  const n = cy.nodes().filter(x => x.data('label') === chip.dataset.go);
+  if (!n.length) return;
+  tab(true);
+  cy.elements().addClass('faded');
+  n.union(n.predecessors()).union(n.successors()).removeClass('faded');
+  n.predecessors('edge').addClass('hot');
+  cy.animate({{center: {{eles: n}}, zoom: 1.1}}, {{duration: 300}});
+  show(n[0]);
+}});
+
 document.getElementById('q').addEventListener('input', ev => {{
   const q = ev.target.value.trim().toLowerCase();
   cy.elements().removeClass('faded').removeClass('hot');
@@ -346,11 +526,14 @@ document.getElementById('q').addEventListener('input', ev => {{
 
 def selftest() -> None:
     """가장 작은 실행 가능한 검사 — 다리(ast 스캔)와 그래프 조립이 살아있는지만 본다."""
-    m = scan_audit_calls()
+    m, funcs = scan_audit_calls()
     hits = {k: v for k, v in m.items() if "LIMIT_BREACH" in v}
     assert hits, "risk/limits.py 의 LIMIT_BREACH 를 못 찾았다 — ast 스캔이 깨졌다"
     assert any("limits.py" in f for f, _ in hits), f"엉뚱한 파일에서 찾았다: {hits}"
     assert all(f.startswith("src/trading/") for f, _ in m), "경로 형식이 code-graph 와 안 맞는다"
+    # 설명이 낡았는지 판정하는 근거 — STAGES 심볼이 소스에 실재하는지 여기서 본다.
+    missing = {s for _, _, syms in STAGES for s in syms if s not in funcs}
+    assert not missing, f"STAGES 설명이 낡았다 — 소스에 없는 심볼: {sorted(missing)}"
 
     nodes, edges = build_graph(
         read_callgraphs(
@@ -371,11 +554,11 @@ def main() -> None:
     if not runs:
         sys.exit("호출그래프 JSON 이 stdin 으로 들어오지 않았다")
     nodes, edges = build_graph(runs, entry_names)
-    audit_map = scan_audit_calls()
+    audit_map, all_funcs = scan_audit_calls()
     event_counts, orders = fetch_outcomes()
     elements = to_cytoscape(nodes, edges, audit_map, event_counts)
     n_files = len({n["file"] for n in nodes.values() if n["file"]})
-    sys.stdout.write(render(elements, orders, len(nodes), n_files))
+    sys.stdout.write(render(elements, orders, len(nodes), n_files, all_funcs))
 
 
 if __name__ == "__main__":
