@@ -194,6 +194,31 @@ class TestRC3DuplicateSellReproduction:
 
         assert sell_counter == ["wd"], f"expected ONE sell, got {sell_counter}"
 
+    def test_watchdog_fire_records_decision_scope_watchdog(self):
+        """REQ-064-B4: the real watchdog call site declares decision_scope
+        explicitly (never inferred) since it has no persona decision."""
+        store = _Store()
+        sell_counter: list[str] = []
+
+        with _patch_sell_lock(store, now=_T0):
+            _fire_watchdog(sell_counter)
+
+        locked = next(d for e, d in store.audits if e == "SELL_INFLIGHT_LOCKED")
+        assert locked["decision_id"] is None
+        assert locked["decision_scope"] == "watchdog"
+
+    def test_persona_fire_records_decision_id(self):
+        """REQ-064-B4: the real orchestrator call site threads decision_id."""
+        store = _Store()
+        sell_counter: list[str] = []
+
+        with _patch_sell_lock(store, now=_T0):
+            _fire_persona(sell_counter)
+
+        locked = next(d for e, d in store.audits if e == "SELL_INFLIGHT_LOCKED")
+        assert locked["decision_id"] == 99
+        assert locked["decision_scope"] is None
+
     def test_both_paths_respect_same_lock_persona_first(self):
         """The persona can take the lock and the watchdog then suppresses (the
         symmetric case — proves a SINGLE shared lock, not per-path logic)."""

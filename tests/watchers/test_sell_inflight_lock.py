@@ -337,6 +337,76 @@ class TestAuditTrail:
 
 
 # --------------------------------------------------------------------------- #
+# SPEC-TRADING-064 REQ-064-B4 — Optional decision_id/decision_scope threading
+# --------------------------------------------------------------------------- #
+class TestDecisionIdThreading:
+    def test_set_sell_inflight_records_decision_id_when_provided(self):
+        store = _Store()
+        with _patched(store, now=_T0):
+            from trading.kis import sell_lock
+
+            sell_lock.set_sell_inflight("033780", decision_id=42)
+        details = next(d for e, d in store.audits if e == "SELL_INFLIGHT_LOCKED")
+        assert details["decision_id"] == 42
+        assert details["decision_scope"] is None
+
+    def test_set_sell_inflight_records_watchdog_scope(self):
+        """position_watchdog has no decision — it declares decision_scope
+        explicitly instead of leaving decision_id absent-but-guessable."""
+        store = _Store()
+        with _patched(store, now=_T0):
+            from trading.kis import sell_lock
+
+            sell_lock.set_sell_inflight("033780", decision_scope="watchdog")
+        details = next(d for e, d in store.audits if e == "SELL_INFLIGHT_LOCKED")
+        assert details["decision_id"] is None
+        assert details["decision_scope"] == "watchdog"
+
+    def test_set_sell_inflight_records_nulls_when_neither_supplied(self):
+        """Neither supplied → both null, never inferred from each other."""
+        store = _Store()
+        with _patched(store, now=_T0):
+            from trading.kis import sell_lock
+
+            sell_lock.set_sell_inflight("033780")
+        details = next(d for e, d in store.audits if e == "SELL_INFLIGHT_LOCKED")
+        assert details["decision_id"] is None
+        assert details["decision_scope"] is None
+
+    def test_guard_sell_suppress_records_decision_id(self):
+        store = _Store()
+        with _patched(store, now=_T0):
+            from trading.kis import sell_lock
+
+            sell_lock.set_sell_inflight("033780")
+            allowed = sell_lock.guard_sell(
+                "033780", actor="orchestrator", decision_id=99
+            )
+        assert allowed is False
+        details = next(
+            d for e, d in store.audits if e == "SELL_SUPPRESSED_DUPLICATE"
+        )
+        assert details["decision_id"] == 99
+        assert details["decision_scope"] is None
+
+    def test_guard_sell_suppress_records_watchdog_scope(self):
+        store = _Store()
+        with _patched(store, now=_T0):
+            from trading.kis import sell_lock
+
+            sell_lock.set_sell_inflight("033780")
+            allowed = sell_lock.guard_sell(
+                "033780", actor="position_watchdog", decision_scope="watchdog"
+            )
+        assert allowed is False
+        details = next(
+            d for e, d in store.audits if e == "SELL_SUPPRESSED_DUPLICATE"
+        )
+        assert details["decision_id"] is None
+        assert details["decision_scope"] == "watchdog"
+
+
+# --------------------------------------------------------------------------- #
 # Fail-open safety — capital-preservation: a lock that wrongly BLOCKS a
 # stop-loss is worse than a duplicate. On any DB error the guard ALLOWS.
 # --------------------------------------------------------------------------- #

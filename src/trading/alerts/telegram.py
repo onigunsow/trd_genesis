@@ -311,6 +311,7 @@ def order_rejected(
     reason: str,
     name: str | None = None,
     cooldown_seconds: int | None = None,
+    decision_id: int | None = None,
 ) -> bool:
     """주문 거부를 침묵시키지 않는다 (SPEC-TRADING-063).
 
@@ -358,6 +359,7 @@ def order_rejected(
             "qty": qty,
             "mode": mode,
             "reason": reason_text[:300],
+            "decision_id": decision_id,
         })
     except Exception:  # 이미 보낸 알림을 되돌리지는 않는다
         LOG.exception("order_rejected audit insert failed (order_id=%s)", order_id)

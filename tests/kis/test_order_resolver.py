@@ -141,7 +141,8 @@ def _old_ts(minutes: int = 60) -> datetime:
 
 
 def _candidate(order_id: int, ticker: str, *, side: str = "sell",
-               ts: datetime | None = None, qty: int = 3) -> dict[str, Any]:
+               ts: datetime | None = None, qty: int = 3,
+               persona_decision_id: int | None = None) -> dict[str, Any]:
     return {
         "id": order_id,
         "ts": ts or _old_ts(),
@@ -149,7 +150,17 @@ def _candidate(order_id: int, ticker: str, *, side: str = "sell",
         "ticker": ticker,
         "qty": qty,
         "status": "submitted",
+        "persona_decision_id": persona_decision_id,
     }
+
+
+def _audit_details(cursor: ScriptedCursor, event_type: str) -> dict[str, Any]:
+    import json
+
+    for sql, params in cursor.calls:
+        if "audit_log" in sql.lower() and params and params[0] == event_type:
+            return json.loads(params[2])
+    raise AssertionError(f"no {event_type} audit_log INSERT was executed")
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +437,104 @@ class TestResolverNoArbitraryFill:
 
         # The resolver module exposes no order-submission surface.
         client.post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-064 REQ-064-B6 — persona_decision_id threading
+# ---------------------------------------------------------------------------
+
+
+class TestResolverDecisionId:
+    def test_select_sql_includes_persona_decision_id_column(self):
+        """REQ-064-B6: the driving SELECT (both order_ids and full-scan
+        branches) carries persona_decision_id."""
+        from trading.kis import order_resolver
+
+        client = _paper_client()
+        select_cursor = ScriptedCursor(fetchall_queue=[[]])
+        with (
+            patch.object(order_resolver, "connection",
+                         _conn_sequence([select_cursor])),
+            patch.object(order_resolver, "confirm_fills", MagicMock()),
+        ):
+            order_resolver.resolve_stuck_orders(client)
+        assert "persona_decision_id" in select_cursor.calls[0][0]
+
+    def test_select_sql_includes_persona_decision_id_column_order_ids_branch(self):
+        from trading.kis import order_resolver
+
+        client = _paper_client()
+        select_cursor = ScriptedCursor(fetchall_queue=[[]])
+        with (
+            patch.object(order_resolver, "connection",
+                         _conn_sequence([select_cursor])),
+            patch.object(order_resolver, "confirm_fills", MagicMock()),
+        ):
+            order_resolver.resolve_stuck_orders(client, order_ids=[1, 2])
+        assert "persona_decision_id" in select_cursor.calls[0][0]
+
+    def test_stuck_order_expired_carries_decision_id_when_present(self):
+        from trading.kis import order_resolver
+
+        client = _paper_client()
+        select_cursor = ScriptedCursor(
+            fetchall_queue=[[_candidate(42, "055550", persona_decision_id=7)]],
+        )
+        txn_cursor = ScriptedCursor(fetchone_queue=[{"status": "submitted"}])
+        with (
+            patch.object(order_resolver, "connection",
+                         _conn_sequence([select_cursor, txn_cursor])),
+            patch.object(order_resolver, "confirm_fills", MagicMock()),
+        ):
+            order_resolver.resolve_stuck_orders(client)
+
+        details = _audit_details(txn_cursor, "STUCK_ORDER_EXPIRED")
+        assert details["decision_id"] == 7
+        assert details["decision_scope"] is None
+        # existing keys preserved
+        assert details["order_id"] == 42
+        assert details["ticker"] == "055550"
+
+    def test_stuck_order_expired_null_decision_id_is_rule_based(self):
+        """REQ-064-B6/C5: NULL persona_decision_id -> decision_scope='rule_based',
+        not a missing record."""
+        from trading.kis import order_resolver
+
+        client = _paper_client()
+        select_cursor = ScriptedCursor(
+            fetchall_queue=[[_candidate(42, "055550")]],  # persona_decision_id=None
+        )
+        txn_cursor = ScriptedCursor(fetchone_queue=[{"status": "submitted"}])
+        with (
+            patch.object(order_resolver, "connection",
+                         _conn_sequence([select_cursor, txn_cursor])),
+            patch.object(order_resolver, "confirm_fills", MagicMock()),
+        ):
+            order_resolver.resolve_stuck_orders(client)
+
+        details = _audit_details(txn_cursor, "STUCK_ORDER_EXPIRED")
+        assert details["decision_id"] is None
+        assert details["decision_scope"] == "rule_based"
+
+    def test_order_resolved_carries_decision_id_when_present(self):
+        from trading.kis import order_resolver
+
+        client = _paper_client()
+        select_cursor = ScriptedCursor(
+            fetchall_queue=[[_candidate(60, "064350", persona_decision_id=13)]],
+        )
+        # Under FOR UPDATE the order is already 'filled' (reconcile advanced it).
+        txn_cursor = ScriptedCursor(fetchone_queue=[{"status": "filled"}])
+        with (
+            patch.object(order_resolver, "connection",
+                         _conn_sequence([select_cursor, txn_cursor])),
+            patch.object(order_resolver, "confirm_fills", MagicMock()),
+        ):
+            order_resolver.resolve_stuck_orders(client)
+
+        details = _audit_details(txn_cursor, "ORDER_RESOLVED")
+        assert details["decision_id"] == 13
+        assert details["decision_scope"] is None
 
 
 # ---------------------------------------------------------------------------

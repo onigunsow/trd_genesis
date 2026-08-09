@@ -110,7 +110,20 @@ def confirm_held_qty(client: Any, ticker: str) -> int:
 # held qty BEFORE submission is the broker-truth invariant: a sell is only ever
 # issued for a quantity the KIS account actually holds (REQ-042-A1/A5). This is a
 # READ-ONLY guard (never fills) so it is safe on both paper and live.
-def clamp_sell_to_confirmed(client: Any, ticker: str, qty: int) -> int:
+# @MX:WARN: money path. Clamping to broker-confirmed quantity is the invariant;
+#   the added decision_id only enriches the audit payload.
+# @MX:REASON: SPEC-TRADING-042 made the broker the single source of truth. A
+#   refactor that threads decision_id must not alter the clamp arithmetic or
+#   its ordering relative to submit.
+# @MX:SPEC: SPEC-TRADING-042, SPEC-TRADING-064
+def clamp_sell_to_confirmed(
+    client: Any,
+    ticker: str,
+    qty: int,
+    *,
+    decision_id: int | None = None,
+    decision_scope: str | None = None,
+) -> int:
     """Clamp a sell qty to the KIS-confirmed held qty (REQ-042-A1/A5).
 
     Returns the qty that may be safely sold:
@@ -122,6 +135,13 @@ def clamp_sell_to_confirmed(client: Any, ticker: str, qty: int) -> int:
       issued — this is distinct from SPEC-039's post-POST synthetic clamp).
     - confirmed >= qty → returns qty unchanged (capital-preservation: a genuine
       held position is never blocked).
+
+    SPEC-TRADING-064 REQ-064-B4: ``decision_id``/``decision_scope`` are Optional
+    keyword-only — the orchestrator sell path passes ``decision_id``; a caller
+    with no decision (none exists today, but kept for parity with guard_sell/
+    set_sell_inflight) would pass ``decision_scope``. Neither is inferred from
+    the other; both are recorded exactly as given (including null) so a wiring
+    gap is never mistaken for an intentionally decision-free path.
     """
     confirmed = confirm_held_qty(client, ticker)
 
@@ -136,6 +156,8 @@ def clamp_sell_to_confirmed(client: Any, ticker: str, qty: int) -> int:
                 "mode": getattr(client.mode, "value", str(client.mode)),
                 "reason": "KIS account holds no such position (phantom) — "
                 "real KIS sell suppressed (REQ-042-A1/A5)",
+                "decision_id": decision_id,
+                "decision_scope": decision_scope,
             },
         )
         return 0
@@ -150,6 +172,8 @@ def clamp_sell_to_confirmed(client: Any, ticker: str, qty: int) -> int:
                 "confirmed_qty": confirmed,
                 "dropped_excess": qty - confirmed,
                 "mode": getattr(client.mode, "value", str(client.mode)),
+                "decision_id": decision_id,
+                "decision_scope": decision_scope,
             },
         )
         return confirmed
@@ -365,7 +389,7 @@ def _apply_live_fills(
                 cur.execute(
                     """
                     SELECT id, qty, COALESCE(fill_qty, 0) AS fill_qty,
-                           status, kis_order_no, ticker, side
+                           status, kis_order_no, ticker, side, persona_decision_id
                       FROM orders
                      WHERE status IN ('submitted', 'partial')
                        AND kis_order_no IS NOT NULL
@@ -455,7 +479,8 @@ def _apply_one_fill(
             (new_status, ccld_qty, ccld_price, order_id),
         )
         _emit_fill_audit(
-            cur, order_id, ticker, side, order_qty, ccld_qty, ccld_price, new_status
+            cur, order_id, ticker, side, order_qty, ccld_qty, ccld_price, new_status,
+            decision_id=order.get("persona_decision_id"),
         )
 
     if new_status == "filled":
@@ -479,8 +504,17 @@ def _emit_fill_audit(
     fill_qty: int,
     fill_price: int,
     new_status: str,
+    *,
+    decision_id: int | None = None,
 ) -> None:
-    """Emit an audit_log row inside the caller's transaction (REQ-042-D3)."""
+    """Emit an audit_log row inside the caller's transaction (REQ-042-D3).
+
+    SPEC-TRADING-064 REQ-064-B6: ``decision_id`` comes from the driving order's
+    ``persona_decision_id`` column. A NULL value is not "unknown origin" — it is
+    a rule-based execution (late_cycle/watchdog/ghost_convergence never set it),
+    so it is recorded as ``decision_scope: "rule_based"`` (C5) rather than a
+    silent gap.
+    """
     event = "ORDER_FILLED" if new_status == "filled" else "ORDER_PARTIAL"
     cur.execute(
         "INSERT INTO audit_log (event_type, actor, details) VALUES (%s, %s, %s::jsonb)",
@@ -493,6 +527,8 @@ def _emit_fill_audit(
             "fill_price": fill_price,
             "new_status": new_status,
             "source": "inquire-daily-ccld",  # [확인 필요-2]
+            "decision_id": decision_id,
+            "decision_scope": None if decision_id is not None else "rule_based",
         })),
     )
 

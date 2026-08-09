@@ -241,6 +241,7 @@ def _apply_portfolio_adjustment(
     today: str,
     cycle_kind: str,
     res_rejected: list[int] | None = None,
+    decision_run_id: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Apply binding, buy-only portfolio adjustments to ``signals``/``sig_ids``.
 
@@ -253,6 +254,11 @@ def _apply_portfolio_adjustment(
         today/cycle_kind: prompt + audit context.
         res_rejected: when provided, dropped buy sig_ids are appended here so the
             caller's ``CycleResult.rejected`` records portfolio rejections.
+        decision_run_id: SPEC-TRADING-064 REQ-064-B5 — the cycle-level
+            correlation key (``res.decision_run_id``, set before this gate runs)
+            recorded on the ``PORTFOLIO_ADJUSTMENT`` audit event top level. This
+            is a batch event (multiple sig_ids in one row); per-item
+            ``decision_id`` lives inside each ``adjusted``/``rejected`` entry.
 
     Returns:
         ``(new_signals, new_sig_ids)`` — adjusted buys + untouched non-buys with
@@ -375,20 +381,24 @@ def _apply_portfolio_adjustment(
             "ticker": s.get("ticker"),
             "qty_original": orig_qty.get(sid),
             "qty_adjusted": s.get("qty"),
+            "decision_id": sid,
         }
         for s, sid in kept_buys
         if s.get("ticker") in adjusted and s.get("qty") != orig_qty.get(sid)
     ]
     dropped_set = set(dropped_sids)
     rejected_report = [
-        {"ticker": s.get("ticker")}
+        {"ticker": s.get("ticker"), "decision_id": sid}
         for s, sid in buys
         if sid in dropped_set
     ]
 
     # REQ-034-7: non-trivial adjustment/rejection -> telegram + audit.
     if adjusted_report or rejected_report:
-        _emit_transparency(cycle_kind, adjusted_report, rejected_report)
+        _emit_transparency(
+            cycle_kind, adjusted_report, rejected_report,
+            decision_run_id=decision_run_id,
+        )
 
     return new_signals, new_sig_ids
 
@@ -409,8 +419,16 @@ def _emit_transparency(
     cycle_kind: str,
     adjusted_report: list[dict[str, Any]],
     rejected_report: list[dict[str, Any]],
+    *,
+    decision_run_id: int | None = None,
 ) -> None:
-    """REQ-034-7: one telegram briefing + one audit entry per non-trivial run."""
+    """REQ-034-7: one telegram briefing + one audit entry per non-trivial run.
+
+    SPEC-TRADING-064 REQ-064-B5: this is a batch event — ``adjusted``/``rejected``
+    entries each carry their own ``decision_id`` (the ticker's persona_decisions
+    row id); ``decision_run_id`` is the cycle-level correlation key at the audit
+    top level. ``decision_scope`` is always ``"batch"`` for this event.
+    """
     lines: list[str] = []
     for a in adjusted_report:
         lines.append(
@@ -430,5 +448,7 @@ def _emit_transparency(
             "cycle": cycle_kind,
             "adjusted": adjusted_report,
             "rejected": rejected_report,
+            "decision_run_id": decision_run_id,
+            "decision_scope": "batch",
         },
     )

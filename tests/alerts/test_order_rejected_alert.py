@@ -180,6 +180,45 @@ class TestOrderRejectedThrottle:
 
 
 # ---------------------------------------------------------------------------
+# SPEC-TRADING-064 REQ-064-B7 — decision_id 배선
+# ---------------------------------------------------------------------------
+
+
+class TestOrderRejectedDecisionId:
+    def test_decision_id_recorded_when_provided(self):
+        """submit_order이 넘긴 persona_decision_id가 audit details에 실린다."""
+        from trading.alerts import telegram as tg
+
+        captured: dict[str, Any] = {}
+
+        def _spy(key: str, details: dict[str, Any]) -> None:
+            captured.update(details)
+
+        with patch.object(tg, "_send_raw"), \
+             patch.object(tg, "_reject_alert_throttled", return_value=False), \
+             patch.object(tg, "_record_reject_alert", side_effect=_spy):
+            tg.order_rejected(**_kwargs(), decision_id=555)
+
+        assert captured["decision_id"] == 555
+
+    def test_decision_id_defaults_to_none(self):
+        """decision_id 미지정 시 None으로 명시 기록된다(키 누락 금지)."""
+        from trading.alerts import telegram as tg
+
+        captured: dict[str, Any] = {}
+
+        def _spy(key: str, details: dict[str, Any]) -> None:
+            captured.update(details)
+
+        with patch.object(tg, "_send_raw"), \
+             patch.object(tg, "_reject_alert_throttled", return_value=False), \
+             patch.object(tg, "_record_reject_alert", side_effect=_spy):
+            tg.order_rejected(**_kwargs())
+
+        assert captured["decision_id"] is None
+
+
+# ---------------------------------------------------------------------------
 # AC-4 격리
 # ---------------------------------------------------------------------------
 

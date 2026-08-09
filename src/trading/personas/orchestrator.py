@@ -1050,12 +1050,14 @@ def _execute_signal(
         # duplicate while a sell is pending/in-flight; it fails OPEN (allows) on
         # any error so a genuine exit is never wrongly blocked (REQ-042-C2). A
         # NEW exit after the order resolves + cooldown is allowed through.
-        if not guard_sell(ticker, actor="orchestrator"):
+        if not guard_sell(ticker, actor="orchestrator", decision_id=decision_id):
             return None
 
         try:
             intraday_reconcile(client, reason="pre_sell")
-            confirmed_qty = clamp_sell_to_confirmed(client, ticker, qty)
+            confirmed_qty = clamp_sell_to_confirmed(
+                client, ticker, qty, decision_id=decision_id
+            )
         except Exception:
             LOG.exception(
                 "SPEC-042 pre-sell confirm failed (%s); proceeding with "
@@ -1085,7 +1087,7 @@ def _execute_signal(
         # a duplicate exit for this ticker while it is in flight. Best-effort: a
         # marker write failure never affects the (successful) order.
         if side == "sell":
-            set_sell_inflight(ticker)
+            set_sell_inflight(ticker, decision_id=decision_id)
         # SPEC-TRADING-042 REQ-042-A2: immediately after an order submission the
         # book has changed — force a reconcile (bypassing the TTL) so the local
         # cache reconverges before the next decision and no stale phantom lingers.
@@ -1247,6 +1249,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         cash_pct=compute_balance_pcts(assets)[0],
         today=today, cycle_kind=res.cycle_kind,
         res_rejected=res.rejected,
+        decision_run_id=res.decision_run_id,
     )
     for sig, decision_id in zip(signals, sig_ids, strict=False):
         # Issue 3: Skip Risk for qty=0 signals (save API cost)
@@ -1580,6 +1583,7 @@ def run_event_trigger_cycle(
         cash_pct=compute_balance_pcts(assets)[0],
         today=today, cycle_kind=res.cycle_kind,
         res_rejected=res.rejected,
+        decision_run_id=res.decision_run_id,
     )
     for sig, decision_id in zip(signals, sig_ids, strict=False):
         rk_input = {
@@ -1744,6 +1748,7 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
         cash_pct=compute_balance_pcts(assets)[0],
         today=today, cycle_kind=res.cycle_kind,
         res_rejected=res.rejected,
+        decision_run_id=res.decision_run_id,
     )
 
     for sig, decision_id in zip(signals, sig_ids, strict=False):

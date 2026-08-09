@@ -358,7 +358,7 @@ def _execute_trim(
     # SPEC-TRADING-042 REQ-042-C1: respect the SHARED sell in-flight lock — a trim
     # must not double-sell a ticker whose stop/take/persona exit is already in
     # flight (the lock is keyed per ticker, not per exit kind). Suppress on lock.
-    if not guard_sell(ticker, actor="position_watchdog"):
+    if not guard_sell(ticker, actor="position_watchdog", decision_scope="watchdog"):
         return False
 
     kis_sell(
@@ -368,7 +368,9 @@ def _execute_trim(
         order_type="market",
         persona_decision_id=None,
     )
-    set_sell_inflight(ticker)  # take the shared in-flight lock (REQ-042-C1)
+    # SPEC-TRADING-064 REQ-064-B4: cron-driven exit — no persona decision exists.
+    # take the shared in-flight lock (REQ-042-C1)
+    set_sell_inflight(ticker, decision_scope="watchdog")
     _mark_action(ticker, _TRIM_ACTION)  # shared marker — one trim per ticker/day
     # threshold field reused to carry the cap% that drove a concentration trim
     # (0.0 for a stagnation rotation, which is not cap-driven).
@@ -494,7 +496,9 @@ def poll_position_watchdog() -> dict[str, Any]:
             # shared lock 033780 fired 4 sells in 5 min (RC-3, 2026-06-08). Suppress
             # a duplicate while a sell for this ticker is pending/in-flight. Fails
             # OPEN (allows) on any error so a genuine stop-loss is never blocked.
-            if not guard_sell(ticker, actor="position_watchdog"):
+            if not guard_sell(
+                ticker, actor="position_watchdog", decision_scope="watchdog"
+            ):
                 metrics["skipped"] += 1
                 continue
 
@@ -510,7 +514,10 @@ def poll_position_watchdog() -> dict[str, Any]:
                 order_type="market",
                 persona_decision_id=None,
             )
-            set_sell_inflight(ticker)  # take the shared in-flight lock (REQ-042-C1)
+            # SPEC-TRADING-064 REQ-064-B4: cron-driven exit — no persona decision exists.
+            set_sell_inflight(
+                ticker, decision_scope="watchdog"
+            )  # take the shared in-flight lock (REQ-042-C1)
 
             if action == "take":
                 _mark_took_profit(ticker)

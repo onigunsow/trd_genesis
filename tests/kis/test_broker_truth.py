@@ -24,6 +24,7 @@ All tests are offline: ``balance`` / ``reconcile_from_balance`` are patched and
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -317,6 +318,214 @@ class TestDriftZero:
 # ---------------------------------------------------------------------------
 # AC-1 (live safety) — no fabrication on live, phantom sell never issued
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-064 REQ-064-B4 — Optional decision_id/decision_scope threading
+# ---------------------------------------------------------------------------
+
+
+class TestClampDecisionIdThreading:
+    def test_phantom_sell_records_decision_id_when_provided(self):
+        """The orchestrator sell path passes decision_id; it lands at the
+        details top level alongside the existing keys (no regression)."""
+        from trading.kis import broker_truth
+
+        client = _paper_client()
+        sink = _AuditSink()
+        with (
+            patch.object(broker_truth, "balance", return_value=_bal([])),
+            patch.object(broker_truth, "audit", sink),
+        ):
+            broker_truth.clamp_sell_to_confirmed(
+                client, "000270", 1, decision_id=42
+            )
+
+        idx = sink.events.index("PHANTOM_SELL_BLOCKED")
+        assert sink.details[idx]["decision_id"] == 42
+        assert sink.details[idx]["decision_scope"] is None
+        # existing keys preserved (observability regression 0)
+        assert sink.details[idx]["ticker"] == "000270"
+        assert sink.details[idx]["requested_qty"] == 1
+
+    def test_phantom_sell_records_null_decision_id_and_scope_when_absent(self):
+        """Neither decision_id nor decision_scope supplied → both null, never
+        inferred (a wiring gap must never look like an intentional watchdog path)."""
+        from trading.kis import broker_truth
+
+        client = _paper_client()
+        sink = _AuditSink()
+        with (
+            patch.object(broker_truth, "balance", return_value=_bal([])),
+            patch.object(broker_truth, "audit", sink),
+        ):
+            broker_truth.clamp_sell_to_confirmed(client, "000270", 1)
+
+        idx = sink.events.index("PHANTOM_SELL_BLOCKED")
+        assert sink.details[idx]["decision_id"] is None
+        assert sink.details[idx]["decision_scope"] is None
+
+    def test_oversell_clamped_records_decision_id(self):
+        from trading.kis import broker_truth
+
+        client = _paper_client()
+        sink = _AuditSink()
+        with (
+            patch.object(
+                broker_truth, "balance",
+                return_value=_bal([_held("000270", 1)]),
+            ),
+            patch.object(broker_truth, "audit", sink),
+        ):
+            broker_truth.clamp_sell_to_confirmed(
+                client, "000270", 3, decision_id=7
+            )
+
+        idx = sink.events.index("OVERSELL_CLAMPED_PRESUBMIT")
+        assert sink.details[idx]["decision_id"] == 7
+        assert sink.details[idx]["decision_scope"] is None
+
+    def test_explicit_decision_scope_is_recorded_verbatim(self):
+        """decision_scope is never inferred from decision_id — it is recorded
+        exactly as the caller supplies it."""
+        from trading.kis import broker_truth
+
+        client = _paper_client()
+        sink = _AuditSink()
+        with (
+            patch.object(broker_truth, "balance", return_value=_bal([])),
+            patch.object(broker_truth, "audit", sink),
+        ):
+            broker_truth.clamp_sell_to_confirmed(
+                client, "000270", 1, decision_scope="watchdog"
+            )
+
+        idx = sink.events.index("PHANTOM_SELL_BLOCKED")
+        assert sink.details[idx]["decision_id"] is None
+        assert sink.details[idx]["decision_scope"] == "watchdog"
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-064 REQ-064-B6 — TIER 4 fill-audit decision_id threading
+# ---------------------------------------------------------------------------
+
+
+class _FillCursor:
+    def __init__(self, orders_rows: list[dict[str, Any]]) -> None:
+        self.calls: list[tuple[str, Any]] = []
+        self._orders_rows = orders_rows
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        self.calls.append((sql, params))
+
+    def fetchall(self) -> Any:
+        return self._orders_rows
+
+    def fetchone(self) -> Any:
+        return None
+
+    def __enter__(self) -> _FillCursor:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+
+class _FillConn:
+    def __init__(self, cursor: _FillCursor) -> None:
+        self._cursor = cursor
+
+    def cursor(self) -> _FillCursor:
+        return self._cursor
+
+    def __enter__(self) -> _FillConn:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+
+def _fill_audit_details(cursor: _FillCursor) -> dict[str, Any]:
+    import json
+
+    for sql, params in cursor.calls:
+        if "audit_log" in sql.lower():
+            return json.loads(params[2])
+    raise AssertionError("no audit_log INSERT was executed")
+
+
+class TestFillAuditDecisionId:
+    def test_select_includes_persona_decision_id_column(self):
+        """REQ-064-B6: the driving SELECT must carry persona_decision_id so the
+        fill audit can thread it through — no new JOIN, one added column."""
+        from trading.kis import broker_truth
+
+        cursor = _FillCursor([])
+        conn = _FillConn(cursor)
+
+        @contextmanager
+        def _factory(*_a: Any, **_k: Any):
+            yield conn
+
+        # A non-empty kis_by_odno is required to reach the SELECT at all (an
+        # empty records list short-circuits before any DB access).
+        records = [{"ODNO": "0000000001", "CCLD_QTY": 0, "CCLD_AVG_UNPR": 0}]
+        with patch.object(broker_truth, "connection", _factory):
+            broker_truth._apply_live_fills(MagicMock(), records)
+
+        select_sql = cursor.calls[0][0]
+        assert "persona_decision_id" in select_sql
+
+    def test_order_filled_carries_decision_id_when_present(self):
+        from trading.kis import broker_truth
+
+        order_row = {
+            "id": 1, "qty": 5, "fill_qty": 0, "status": "submitted",
+            "kis_order_no": "0000012345", "ticker": "005930", "side": "buy",
+            "persona_decision_id": 42,
+        }
+        cursor = _FillCursor([order_row])
+        conn = _FillConn(cursor)
+
+        @contextmanager
+        def _factory(*_a: Any, **_k: Any):
+            yield conn
+
+        records = [{"ODNO": "0000012345", "CCLD_QTY": 5, "CCLD_AVG_UNPR": 70_000}]
+        with patch.object(broker_truth, "connection", _factory):
+            broker_truth._apply_live_fills(MagicMock(), records)
+
+        details = _fill_audit_details(cursor)
+        assert details["decision_id"] == 42
+        assert details["decision_scope"] is None
+        # existing keys preserved
+        assert details["order_id"] == 1
+        assert details["ticker"] == "005930"
+
+    def test_order_filled_null_decision_id_is_rule_based(self):
+        """REQ-064-B6/C5: a NULL persona_decision_id order (late_cycle/watchdog/
+        ghost_convergence) is a rule-based execution, not a missing record."""
+        from trading.kis import broker_truth
+
+        order_row = {
+            "id": 2, "qty": 5, "fill_qty": 0, "status": "submitted",
+            "kis_order_no": "0000099999", "ticker": "005930", "side": "sell",
+            "persona_decision_id": None,
+        }
+        cursor = _FillCursor([order_row])
+        conn = _FillConn(cursor)
+
+        @contextmanager
+        def _factory(*_a: Any, **_k: Any):
+            yield conn
+
+        records = [{"ODNO": "0000099999", "CCLD_QTY": 5, "CCLD_AVG_UNPR": 70_000}]
+        with patch.object(broker_truth, "connection", _factory):
+            broker_truth._apply_live_fills(MagicMock(), records)
+
+        details = _fill_audit_details(cursor)
+        assert details["decision_id"] is None
+        assert details["decision_scope"] == "rule_based"
 
 
 class TestLiveSafety:

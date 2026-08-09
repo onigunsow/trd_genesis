@@ -174,6 +174,138 @@ class TestOrderResolver:
         total_resolved = result.get("resolved_expired", 0) + result.get("resolved_filled", 0)
         assert total_resolved >= 0  # 예외 없이 반환되면 스키마 통과
 
+    def test_resolve_stuck_orders_select_includes_persona_decision_id(
+        self, migrated_db: Any
+    ) -> None:
+        """SPEC-TRADING-064 REQ-064-B6: 후보 SELECT의 persona_decision_id 컬럼이
+        실 Postgres 스키마에서 예외 없이 조회되고, decision_id를 감사에 싣는다."""
+        from datetime import UTC, datetime, timedelta
+
+        from trading.kis.order_resolver import resolve_stuck_orders
+
+        now = datetime.now(UTC)
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO persona_runs (
+                    persona_name, cycle_kind, ts, model, prompt, response,
+                    input_tokens, output_tokens
+                ) VALUES (
+                    'decision', 'intraday', %s, 'claude-sonnet-4-6', 'p', 'r', 1, 1
+                )
+                RETURNING id
+                """,
+                (now,),
+            )
+            run_id = cur.fetchone()["id"]
+            cur.execute(
+                """
+                INSERT INTO persona_decisions (
+                    persona_run_id, cycle_kind, ticker, side, qty,
+                    confidence, rationale, ts
+                ) VALUES (%s, 'intraday', '028260', 'sell', 2, 0.8, 't', %s)
+                RETURNING id
+                """,
+                (run_id, now),
+            )
+            decision_id = cur.fetchone()["id"]
+            cur.execute(
+                """
+                INSERT INTO orders (
+                    ts, mode, side, ticker, qty, order_type, status,
+                    persona_decision_id
+                ) VALUES (
+                    %s, 'paper', 'sell', '028260', 2, 'market', 'submitted', %s
+                )
+                """,
+                (now - timedelta(hours=2), decision_id),
+            )
+            migrated_db.commit()
+
+        client = MagicMock()
+        result = resolve_stuck_orders(client, window_seconds=0, dry_run=False)
+        assert isinstance(result, dict)
+
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                "SELECT details FROM audit_log "
+                " WHERE event_type = 'STUCK_ORDER_EXPIRED' "
+                "   AND details->>'ticker' = '028260' "
+                " ORDER BY ts DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        assert row is not None, "STUCK_ORDER_EXPIRED 감사 행이 없음"
+        assert row["details"]["decision_id"] == decision_id
+
+
+# ---------------------------------------------------------------------------
+# 2b. kis/broker_truth — SPEC-TRADING-064 REQ-064-B6 fill-audit decision_id
+# ---------------------------------------------------------------------------
+
+class TestBrokerTruthFillAudit:
+    """kis/broker_truth._apply_live_fills 의 실 SQL 검증 (persona_decision_id)."""
+
+    def test_apply_live_fills_persists_decision_id(self, migrated_db: Any) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from trading.kis.broker_truth import _apply_live_fills
+
+        now = datetime.now(UTC)
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO persona_runs (
+                    persona_name, cycle_kind, ts, model, prompt, response,
+                    input_tokens, output_tokens
+                ) VALUES (
+                    'decision', 'intraday', %s, 'claude-sonnet-4-6', 'p', 'r', 1, 1
+                )
+                RETURNING id
+                """,
+                (now,),
+            )
+            run_id = cur.fetchone()["id"]
+            cur.execute(
+                """
+                INSERT INTO persona_decisions (
+                    persona_run_id, cycle_kind, ticker, side, qty,
+                    confidence, rationale, ts
+                ) VALUES (%s, 'intraday', '090430', 'buy', 2, 0.8, 't', %s)
+                RETURNING id
+                """,
+                (run_id, now),
+            )
+            decision_id = cur.fetchone()["id"]
+            cur.execute(
+                """
+                INSERT INTO orders (
+                    ts, mode, side, ticker, qty, order_type, status,
+                    kis_order_no, persona_decision_id
+                ) VALUES (
+                    %s, 'live', 'buy', '090430', 2, 'market', 'submitted',
+                    '0000055512', %s
+                )
+                """,
+                (now - timedelta(minutes=10), decision_id),
+            )
+            migrated_db.commit()
+
+        client = MagicMock()
+        records = [{"ODNO": "0000055512", "CCLD_QTY": 2, "CCLD_AVG_UNPR": 50_000}]
+        summary = _apply_live_fills(client, records)
+        assert summary["filled_count"] == 1
+
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                "SELECT details FROM audit_log "
+                " WHERE event_type = 'ORDER_FILLED' "
+                "   AND details->>'ticker' = '090430' "
+                " ORDER BY ts DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+        assert row is not None, "ORDER_FILLED 감사 행이 없음"
+        assert row["details"]["decision_id"] == decision_id
+
 
 # ---------------------------------------------------------------------------
 # 3. edge/roundtrips — _FILL_SQL 컬럼·correction 컬럼 검증

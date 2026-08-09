@@ -137,13 +137,30 @@ def is_sell_locked(ticker: str, *, now: datetime | None = None) -> bool:
         return False
 
 
-def set_sell_inflight(ticker: str) -> None:
+# @MX:WARN: money path. Optional decision_id; position_watchdog.py calls without
+#   one (decision_scope="watchdog" instead).
+# @MX:REASON: The in-flight lock must engage identically with or without a
+#   decision id. Ordering and unconditional engagement are the invariant; the
+#   audit payload is not.
+# @MX:SPEC: SPEC-TRADING-064
+def set_sell_inflight(
+    ticker: str,
+    *,
+    decision_id: int | None = None,
+    decision_scope: str | None = None,
+) -> None:
     """Mark ``ticker`` as having just fired a sell (take/refresh the lock).
 
     UPSERTs the marker with ``created_at = NOW()`` so a re-fire slides the cooldown
     window forward (idempotent, single row — REQ-042-C3). Best-effort: a write
     failure is logged but NEVER raised, so a marker hiccup cannot crash the sell
     path. Audits ``SELL_INFLIGHT_LOCKED`` (REQ-042-D3).
+
+    SPEC-TRADING-064 REQ-064-B4: ``decision_id``/``decision_scope`` are Optional
+    keyword-only. The orchestrator sell path passes ``decision_id``; the watchdog
+    passes ``decision_scope="watchdog"`` (it has no decision). Neither is
+    inferred from the other — both are recorded exactly as given so a wiring
+    gap is never mistaken for an intentionally decision-free path.
     """
     try:
         with connection() as conn, conn.cursor() as cur:
@@ -163,7 +180,12 @@ def set_sell_inflight(ticker: str) -> None:
     audit(
         "SELL_INFLIGHT_LOCKED",
         actor="sell_lock",
-        details={"ticker": ticker, "cooldown_seconds": SELL_INFLIGHT_COOLDOWN_SECONDS},
+        details={
+            "ticker": ticker,
+            "cooldown_seconds": SELL_INFLIGHT_COOLDOWN_SECONDS,
+            "decision_id": decision_id,
+            "decision_scope": decision_scope,
+        },
     )
 
 
@@ -199,7 +221,19 @@ def clear_sell_inflight(ticker: str) -> None:
 # while a position is in-flight (REQ-042-C1). Returns True = the caller may sell;
 # False = SUPPRESS (a duplicate). Fails OPEN (allow) via is_sell_locked so a
 # stop-loss is never wrongly blocked (capital-preservation, REQ-042-C2).
-def guard_sell(ticker: str, *, actor: str, now: datetime | None = None) -> bool:
+# @MX:WARN: money path. decision_id is Optional by design — the watchdog callers
+#   (position_watchdog.py) have no decision.
+# @MX:REASON: Making decision_id required here would raise on the watchdog path
+#   and disable duplicate-sell suppression, the exact guard SPEC-042 added.
+# @MX:SPEC: SPEC-TRADING-064
+def guard_sell(
+    ticker: str,
+    *,
+    actor: str,
+    now: datetime | None = None,
+    decision_id: int | None = None,
+    decision_scope: str | None = None,
+) -> bool:
     """Shared in-flight gate: True to proceed with the sell, False to suppress.
 
     - If the ticker is locked (in-flight / cooled-down) → audit
@@ -208,6 +242,13 @@ def guard_sell(ticker: str, *, actor: str, now: datetime | None = None) -> bool:
       (``SELL_INFLIGHT_CLEARED``) so the lock lifecycle is closed, and return True
       (REQ-042-C2 — a genuine new exit is allowed).
     - Else return True.
+
+    SPEC-TRADING-064 REQ-064-B4: ``decision_id``/``decision_scope`` are Optional
+    keyword-only. The orchestrator sell path passes ``decision_id``; the watchdog
+    passes ``decision_scope="watchdog"`` (it has no decision). Neither is
+    inferred from the other — both are recorded exactly as given (including
+    null) so a wiring gap is never silently mistaken for an intentionally
+    decision-free path.
     """
     ref = now or _now()
     if is_sell_locked(ticker, now=ref):
@@ -218,6 +259,8 @@ def guard_sell(ticker: str, *, actor: str, now: datetime | None = None) -> bool:
                 details={
                     "ticker": ticker,
                     "reason": "sell already pending/in-flight (REQ-042-C1)",
+                    "decision_id": decision_id,
+                    "decision_scope": decision_scope,
                 },
             )
         except Exception:

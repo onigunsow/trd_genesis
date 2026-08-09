@@ -395,6 +395,7 @@ def submit_order(
                 qty=qty,
                 mode=client.mode.value,
                 reason=f"{resp.msg_cd}:{resp.msg}",
+                decision_id=persona_decision_id,
             )
         except Exception:  # noqa: BLE001 — 알림은 주문 경로를 막지 않는다
             LOG.exception("order_rejected alert failed (order_id=%s)", order_id)

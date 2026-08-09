@@ -150,7 +150,7 @@ def resolve_stuck_orders(
             if order_ids:
                 cur.execute(
                     """
-                    SELECT id, ts, side, ticker, qty, status
+                    SELECT id, ts, side, ticker, qty, status, persona_decision_id
                       FROM orders
                      WHERE status = 'submitted'
                        AND ts <= %s
@@ -162,7 +162,7 @@ def resolve_stuck_orders(
             else:
                 cur.execute(
                     """
-                    SELECT id, ts, side, ticker, qty, status
+                    SELECT id, ts, side, ticker, qty, status, persona_decision_id
                       FROM orders
                      WHERE status = 'submitted'
                        AND ts <= %s
@@ -215,6 +215,12 @@ def _resolve_one(
     order_id = int(cand["id"])
     side = cand.get("side")
     ticker = cand.get("ticker")
+    # SPEC-TRADING-064 REQ-064-B6: a NULL persona_decision_id is not "unknown
+    # origin" — it is a rule-based execution (late_cycle/watchdog/
+    # ghost_convergence never set it), so it is recorded as decision_scope
+    # "rule_based" (C5) rather than a silent gap.
+    decision_id = cand.get("persona_decision_id")
+    decision_scope = None if decision_id is not None else "rule_based"
 
     with connection() as conn, conn.cursor() as cur:
         # Re-read under FOR UPDATE so a concurrent reconcile/cleanup cannot make us
@@ -237,6 +243,7 @@ def _resolve_one(
                 _audit(cur, "ORDER_RESOLVED", {
                     "order_id": order_id, "ticker": ticker, "side": side,
                     "resolved_status": current, "source": "fill_confirmation",
+                    "decision_id": decision_id, "decision_scope": decision_scope,
                 }, dry_run=dry_run)
             return
 
@@ -267,6 +274,8 @@ def _resolve_one(
                       "order-state ledger converged to 'expired' without "
                       "fabricating a fill (REQ-042-B1/B3). Genuine exit intent "
                       "is re-evaluated next cycle from KIS truth.",
+            "decision_id": decision_id,
+            "decision_scope": decision_scope,
         }, dry_run=dry_run)
 
 

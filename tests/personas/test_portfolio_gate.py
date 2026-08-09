@@ -254,6 +254,73 @@ class TestGateAdjustments:
         assert m_audit.call_count == 0
 
 
+class TestGateDecisionIdWiring:
+    """SPEC-TRADING-064 REQ-064-B5 — per-item decision_id + decision_run_id."""
+
+    def test_adjusted_and_rejected_entries_carry_decision_id(self):
+        signals, sig_ids = _split([_buy("X", 10, 11), _buy("Y", 5, 22)])
+        pj = {
+            "adjusted_signals": [
+                {"ticker": "X", "qty_original": 10, "qty_adjusted": 4},
+            ],
+            "rejected": [{"ticker": "Y", "reason": "섹터 편중"}],
+        }
+        with (
+            patch.object(portfolio_gate.portfolio, "run",
+                         return_value=_persona_result(pj)),
+            patch.object(portfolio_gate.tg, "system_briefing"),
+            patch.object(portfolio_gate, "audit") as m_audit,
+        ):
+            portfolio_gate._apply_portfolio_adjustment(
+                signals, sig_ids, decision_run_id=555, **_kwargs(),
+            )
+        details = m_audit.call_args.kwargs["details"]
+        assert details["adjusted"][0]["decision_id"] == 11
+        assert details["rejected"][0]["decision_id"] == 22
+
+    def test_decision_run_id_and_scope_recorded_at_top_level(self):
+        signals, sig_ids = _split([_buy("X", 10, 11)])
+        pj = {
+            "adjusted_signals": [
+                {"ticker": "X", "qty_original": 10, "qty_adjusted": 4},
+            ],
+            "rejected": [],
+        }
+        with (
+            patch.object(portfolio_gate.portfolio, "run",
+                         return_value=_persona_result(pj)),
+            patch.object(portfolio_gate.tg, "system_briefing"),
+            patch.object(portfolio_gate, "audit") as m_audit,
+        ):
+            portfolio_gate._apply_portfolio_adjustment(
+                signals, sig_ids, decision_run_id=777, **_kwargs(),
+            )
+        details = m_audit.call_args.kwargs["details"]
+        assert details["decision_run_id"] == 777
+        assert details["decision_scope"] == "batch"
+
+    def test_decision_run_id_defaults_to_none_when_not_supplied(self):
+        signals, sig_ids = _split([_buy("X", 10, 11)])
+        pj = {
+            "adjusted_signals": [
+                {"ticker": "X", "qty_original": 10, "qty_adjusted": 4},
+            ],
+            "rejected": [],
+        }
+        with (
+            patch.object(portfolio_gate.portfolio, "run",
+                         return_value=_persona_result(pj)),
+            patch.object(portfolio_gate.tg, "system_briefing"),
+            patch.object(portfolio_gate, "audit") as m_audit,
+        ):
+            portfolio_gate._apply_portfolio_adjustment(
+                signals, sig_ids, **_kwargs(),
+            )
+        details = m_audit.call_args.kwargs["details"]
+        assert details["decision_run_id"] is None
+        assert details["decision_scope"] == "batch"
+
+
 class TestGateSkipAndBuyOnly:
     """REQ-034-4/5 — sells untouched, holdings<5 skips."""
 
