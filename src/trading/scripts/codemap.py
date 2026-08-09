@@ -391,6 +391,14 @@ nav button.on{{color:var(--fg);border-bottom-color:#7aa2f7}}
 .chip.miss{{border-color:#c0616f;color:#f7768e}}
 #ov table{{margin-top:26px}}
 td.mod{{font-family:ui-monospace,monospace;color:#c0caf5;white-space:nowrap}}
+tr.go{{cursor:pointer}}
+tr.go:hover td{{background:#1e2430;color:#fff}}
+.chip.go{{cursor:pointer}}
+.chip.go:hover{{border-color:#7aa2f7;color:#fff}}
+button.drill{{margin:10px 0 2px;width:100%;background:#1e2430;border:1px solid var(--line);
+ color:#7aa2f7;border-radius:6px;padding:7px;font:inherit;font-size:12px;cursor:pointer}}
+button.drill:hover{{border-color:#7aa2f7;background:#232a37}}
+aside .cw{{color:#b7c0cf;font-size:13px;margin:4px 0 6px}}
 aside{{width:360px;background:var(--panel);border-left:1px solid var(--line);
  padding:18px;overflow-y:auto}}
 h1{{font-size:16px;margin:0 0 2px}}
@@ -509,6 +517,7 @@ function setView(m) {{
     : '모듈을 클릭하면 그 안의 함수 블록이 열립니다';
   const b = document.getElementById('back');
   if (b) b.onclick = ev => {{ ev.preventDefault(); setView(null); }};
+  renderLevel();
 }}
 
 const cy = cytoscape({{
@@ -568,42 +577,129 @@ const cy = cytoscape({{
   ]
 }});
 
-function show(n) {{
-  const d = n.data();
-  let evs;
-  if (d.events.length) {{
-    evs = '<table><tr><th>남기는 기록</th><th class=num>' + WIN + '일</th></tr>' +
-      d.events.map(e => '<tr><td>' + e.event + '</td><td class=num>' +
-        (e.n ? e.n : '<span class=dim>0</span>') + '</td></tr>').join('') + '</table>';
-  }} else {{
-    evs = '<div class="dim">이 블록은 audit 기록을 남기지 않습니다.</div>';
+// ---- 우측 패널: 지금 보고 있는 레벨에 맞는 내용을 낸다 --------------------
+const SEL = document.getElementById('sel');
+const esc = s => String(s).replace(/[&<>]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;'}})[c]);
+const fnsOf = m => FN.filter(e => e.data.module === m).map(e => e.data);
+const evTable = rows => rows.length
+  ? '<table><tr><th>남기는 기록</th><th class=num>' + WIN + '일</th></tr>' +
+    rows.map(e => '<tr><td>' + esc(e.event) + '</td><td class=num>' +
+      (e.n ? e.n : '<span class=dim>0</span>') + '</td></tr>').join('') + '</table>'
+  : '<div class="dim">audit 기록을 남기지 않습니다.</div>';
+
+// 모듈 사이 연결 — 어느 모듈에서 들어오고 어디로 나가는지.
+function modLinks(m) {{
+  const inn = {{}}, out = {{}};
+  for (const e of ED) {{
+    const s = BY_ID[e.data.source], t = BY_ID[e.data.target];
+    if (!s || !t) continue;
+    const sm = s.kind === '진입점' ? s.label : s.module;
+    const tm = t.kind === '진입점' ? t.label : t.module;
+    if (tm === m && sm !== m) inn[sm] = (inn[sm] || 0) + 1;
+    if (sm === m && tm !== m) out[tm] = (out[tm] || 0) + 1;
   }}
-  document.getElementById('sel').innerHTML =
-    '<div><b>' + d.label + '</b> <span class="chip">' + d.kind + '</span></div>' +
-    '<div style="margin:6px 0"><code>' + (d.file || '—') + '</code></div>' + evs;
+  const fmt = o => Object.entries(o).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => '<span class="chip">' + esc(k) + ' ' + n + '</span>').join('') || '<span class=dim>없음</span>';
+  return '<h2>연결</h2><div class="cw">들어옴</div><div>' + fmt(inn) +
+         '</div><div class="cw" style="margin-top:8px">나감</div><div>' + fmt(out) + '</div>';
+}}
+
+// 레벨 0 — 모듈 순위표.
+function panelModules() {{
+  const rows = mods.filter(m => m && m !== '?').map(m => {{
+    const f = fnsOf(m);
+    return {{m, n: f.length, t: f.reduce((a, d) => a + d.total, 0)}};
+  }}).sort((a, b) => b.t - a.t || b.n - a.n);
+  SEL.innerHTML = '<div class="dim" style="font-size:12px;margin-bottom:8px">' +
+    '모듈 타일을 클릭하면 여기에 상세가 나옵니다.</div>' +
+    '<table><tr><th>모듈</th><th class=num>함수</th><th class=num>기록</th></tr>' +
+    rows.map(r => '<tr class="go" data-m="' + esc(r.m) + '"><td class=mod>' + esc(r.m) +
+      '</td><td class=num>' + r.n + '</td><td class=num>' +
+      (r.t ? r.t : '<span class=dim>0</span>') + '</td></tr>').join('') + '</table>';
+}}
+
+// 레벨 0 선택 — 모듈 상세.
+function panelModule(m) {{
+  const f = fnsOf(m);
+  const hot = f.filter(d => d.total).sort((a, b) => b.total - a.total);
+  SEL.innerHTML =
+    '<div><b>' + esc(m) + '</b> <span class="chip">모듈</span></div>' +
+    '<div class="cw">' + esc(ROLE[m] || '') + '</div>' +
+    '<div class="dim" style="font-size:12px">함수 ' + f.length + '개 · 30일 기록 ' +
+      f.reduce((a, d) => a + d.total, 0) + '건</div>' +
+    '<button class="drill" data-go-m="' + esc(m) + '">안의 함수 블록 열기 →</button>' +
+    (hot.length ? '<h2>기록을 남기는 함수</h2><table>' + hot.map(d =>
+      '<tr class="go" data-f="' + esc(d.label) + '"><td class=mod>' + esc(d.label) +
+      '</td><td class=num>' + d.total + '</td></tr>').join('') + '</table>' : '') +
+    modLinks(m);
+}}
+
+// 레벨 1 — 이 모듈의 함수 목록.
+function panelFuncs(m) {{
+  const f = fnsOf(m).sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+  SEL.innerHTML =
+    '<div><b>' + esc(m) + '</b> <span class="chip">함수 ' + f.length + '개</span></div>' +
+    '<div class="cw">' + esc(ROLE[m] || '') + '</div>' +
+    '<div class="dim" style="font-size:12px;margin-bottom:6px">블록을 클릭하면 상세가 나옵니다.</div>' +
+    '<table>' + f.map(d => '<tr class="go" data-f="' + esc(d.label) + '"><td class=mod>' +
+      esc(d.label) + (d.kind === '판정' ? ' <span class="chip">판정</span>' : '') +
+      '</td><td class=num>' + (d.total ? d.total : '<span class=dim>·</span>') +
+      '</td></tr>').join('') + '</table>' + modLinks(m);
+}}
+
+// 레벨 1 선택 — 함수 상세 + 호출 관계.
+function panelFunc(n) {{
+  const d = n.data();
+  const list = (eles, none) => eles.length
+    ? eles.map(x => '<span class="chip go" data-f="' + esc(x.data('label')) + '">' +
+        esc(x.data('label')) + '</span>').join('')
+    : '<span class=dim>' + none + '</span>';
+  SEL.innerHTML =
+    '<div><b>' + esc(d.label) + '</b> <span class="chip">' + esc(d.kind) + '</span></div>' +
+    '<div style="margin:6px 0"><code>' + esc(d.file || '—') + '</code></div>' +
+    evTable(d.events) +
+    '<h2>이 블록을 부르는 곳</h2><div>' + list(n.incomers('node'), '없음(진입점 계열)') + '</div>' +
+    '<h2>이 블록이 부르는 곳</h2><div>' + list(n.outgoers('node'), '없음(말단)') + '</div>';
+}}
+
+function renderLevel() {{ view ? panelFuncs(view) : panelModules(); }}
+
+function focusFn(label) {{
+  const n = cy.nodes().filter(x => x.data('label') === label);
+  if (!n.length) return;
+  cy.elements().addClass('faded');
+  n.union(n.predecessors()).union(n.successors()).removeClass('faded');
+  n.predecessors('edge').addClass('hot');
+  cy.animate({{center: {{eles: n}}}}, {{duration: 250}});
+  panelFunc(n[0]);
 }}
 
 cy.on('tap', 'node', e => {{
   const n = e.target;
-  if (n.data('kind') === '모듈') {{ setView(n.data('module')); showModule(n); return; }}
+  if (n.data('kind') === '모듈') {{ panelModule(n.data('module')); return; }}
   const hood = n.predecessors().union(n.successors()).union(n);
   cy.elements().addClass('faded');
   hood.removeClass('faded');
   n.predecessors('edge').addClass('hot');
-  show(n);
+  panelFunc(n);
 }});
 cy.on('tap', e => {{
-  if (e.target === cy) cy.elements().removeClass('faded').removeClass('hot');
+  if (e.target === cy) {{ cy.elements().removeClass('faded').removeClass('hot'); renderLevel(); }}
 }});
 
-function showModule(n) {{
-  const d = n.data();
-  document.getElementById('sel').innerHTML =
-    '<div><b>' + d.label + '</b> <span class="chip">모듈</span></div>' +
-    '<div class="cw">' + (ROLE[d.label] || '') + '</div>' +
-    '<div class="dim" style="font-size:12px">함수 ' + d.fns + '개 · 30일 기록 '
-    + d.total + '건</div>';
-}}
+// 패널 안의 행·칩·버튼 클릭을 한 곳에서 처리한다.
+SEL.addEventListener('click', ev => {{
+  const drill = ev.target.closest('[data-go-m]');
+  if (drill) {{ setView(drill.dataset.goM); return; }}
+  const row = ev.target.closest('[data-m]');
+  if (row) {{ panelModule(row.dataset.m); return; }}
+  const f = ev.target.closest('[data-f]');
+  if (f) {{
+    const src = FN.find(x => x.data.label === f.dataset.f);
+    if (src && view !== src.data.module) setView(src.data.module);
+    focusFn(f.dataset.f);
+  }}
+}});
 
 // 범례 클릭 = 그 모듈의 함수 뷰로 내려간다.
 document.getElementById('legend').addEventListener('click', ev => {{
@@ -639,13 +735,7 @@ document.getElementById('ov').addEventListener('click', ev => {{
   if (!src) return;
   tab(true);
   if (view !== src.data.module) setView(src.data.module);
-  const n = cy.nodes().filter(x => x.data('label') === chip.dataset.go);
-  if (!n.length) return;
-  cy.elements().addClass('faded');
-  n.union(n.predecessors()).union(n.successors()).removeClass('faded');
-  n.predecessors('edge').addClass('hot');
-  cy.animate({{center: {{eles: n}}, zoom: 1.1}}, {{duration: 300}});
-  show(n[0]);
+  focusFn(chip.dataset.go);
 }});
 
 document.getElementById('q').addEventListener('input', ev => {{
