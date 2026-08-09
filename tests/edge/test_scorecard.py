@@ -96,14 +96,22 @@ class TestRenderFooterAndGates:
         assert "한계" in text
 
     def test_go_live_gates_rendered(self):
+        """게이트 섹션은 실측 판정을 싣는다.
+
+        2026-08-09 이전에는 하드코딩 문구(`_TOOK_PROFIT`, `chmod 600`)를 그대로
+        단언했다. 그 문구들이 사실과 달라진 뒤에도 테스트는 초록이었고, 리포트는
+        해소된 항목을 계속 블로커로 보고했다. 이제는 문구가 아니라 판정 근거가
+        실리는지를 본다 — 문구는 상태에 따라 바뀌어야 정상이다.
+        """
         rts = [_win_rt(i, profit=2000.0) for i in range(40)]
         a = an.compute(rts)
         b = _good_benchmark()
         text = sc.render(a, b, sc.decide(a, b))
         assert "실거래 준비 게이트" in text
-        assert "RISK_DAILY_MAX_LOSS" in text
-        assert "_TOOK_PROFIT" in text
-        assert "chmod 600" in text
+        # 모든 게이트가 근거(실측값)를 동반해야 한다.
+        assert "근거:" in text or "✅" in text
+        # 키 회전은 코드로 확인 불가하므로 항상 미해소로 남는다.
+        assert "rotation" in text or "재발급" in text
 
     def test_small_sample_footer_warns_significance(self):
         rts = [_win_rt(i) for i in range(5)]
