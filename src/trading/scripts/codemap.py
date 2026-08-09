@@ -22,6 +22,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import trading
 from trading.db.session import connection
@@ -51,6 +52,14 @@ STAGES = [
     ("보고", "결과를 텔레그램으로 알린다. 실패도 알린다.",
      ["persona_briefing", "trade_briefing", "order_rejected", "system_error"]),
 ]
+
+# 모듈별 픽토그램. 노코드 캔버스에서 타일 안에 들어간다.
+MODULE_GLYPH = {
+    "personas": "🧠", "risk": "🛡", "strategy": "📐", "edge": "📈", "kis": "🏦",
+    "alerts": "🔔", "data": "📊", "db": "🗄", "screener": "🔍", "models": "🤖",
+    "tools": "🔧", "config": "⚙", "scripts": "▶", "news": "📰", "watchers": "👁",
+    "jit": "⚡", "tests": "🧪", "__entry__": "🚀",
+}
 
 MODULE_ROLE = {
     "personas": "사이클 전체 지휘 + LLM 판단 생성. 후보 선별·게이트 호출·실행·보고를 엮는 유일한 지점",
@@ -206,6 +215,11 @@ def to_cytoscape(
     for nid, n in nodes.items():
         path = n["file"].removeprefix("src/trading/").removesuffix(".py") or "?"
         evs = audit_map.get((n["file"], n["name"]), [])
+        kind = n["type"]
+        if kind != "진입점" and n["name"].startswith(
+            ("check_", "requires_", "is_", "guard_", "_split_", "has_")
+        ):
+            kind = "판정"
         # 소스에 있는 이벤트만 센다. DB 에 기록이 없으면 0 — 추정하지 않는다.
         rows = [{"event": e, "n": event_counts.get(e, 0)} for e in sorted(set(evs))]
         elements.append(
@@ -216,15 +230,46 @@ def to_cytoscape(
                     "file": n["file"],
                     "module": path.split("/")[0],
                     "path": path,
-                    "kind": n["type"],
+                    "kind": kind,
                     "events": rows,
                     "total": sum(r["n"] for r in rows),
                 }
             }
         )
+    # 선 위 라벨은 지어내지 않는다 — 도착 블록이 실제로 남긴 기록을 그대로 쓴다.
+    label_of = {
+        e["data"]["id"]: (
+            f'{max(e["data"]["events"], key=lambda r: r["n"])["event"]} '
+            f'{max(e["data"]["events"], key=lambda r: r["n"])["n"]}'
+            if e["data"]["total"]
+            else ""
+        )
+        for e in elements
+    }
     for a, b in edges:
-        elements.append({"data": {"id": f"e{a}-{b}", "source": str(a), "target": str(b)}})
+        elements.append(
+            {
+                "data": {
+                    "id": f"e{a}-{b}",
+                    "source": str(a),
+                    "target": str(b),
+                    "label": label_of.get(str(b), ""),
+                }
+            }
+        )
     return elements
+
+
+def glyph_uris() -> dict[str, str]:
+    """모듈 픽토그램을 인라인 SVG data URI 로 만든다(외부 아이콘 의존 없음)."""
+    out = {}
+    for mod, ch in MODULE_GLYPH.items():
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44">'
+            f'<text x="22" y="30" font-size="21" text-anchor="middle">{ch}</text></svg>'
+        )
+        out[mod] = "data:image/svg+xml;utf8," + quote(svg, safe="")
+    return out
 
 
 def render_overview(elements: list[dict[str, Any]], all_funcs: set[str]) -> tuple[str, str, int]:
@@ -287,6 +332,7 @@ def render(
     all_funcs: set[str],
 ) -> str:
     payload = json.dumps(elements, ensure_ascii=False)
+    glyphs = json.dumps(glyph_uris(), ensure_ascii=False)
     order_rows = (
         "".join(
             "<tr><td>{}</td><td>{}</td><td class=num>{}</td></tr>".format(
@@ -325,7 +371,7 @@ nav button{{background:none;border:0;border-bottom:2px solid transparent;color:v
 nav button.on{{color:var(--fg);border-bottom-color:#7aa2f7}}
 #ov{{flex:1;overflow-y:auto;padding:24px 28px 60px}}
 #ov.hide,#cy.hide{{display:none}}
-#cy{{flex:1;min-height:0}}
+#cy{{flex:1;min-height:0;background:#f6f7f9}}
 .warn{{background:#3d2b2b;border:1px solid #c0616f;border-radius:8px;padding:10px 14px;
  margin-bottom:18px;font-size:13px}}
 .mm{{background:#12151b;border:1px solid var(--line);border-radius:10px;padding:14px;
@@ -388,9 +434,10 @@ code{{font:12px ui-monospace,monospace;color:#c0caf5;word-break:break-all}}
 <script>
 const WIN = {WINDOW_DAYS};
 const els = {payload};
+const GLYPH = {glyphs};
 const mods = [...new Set(els.filter(e => e.data.module).map(e => e.data.module))].sort();
-const palette = ['#7aa2f7','#f7768e','#9ece6a','#e0af68','#bb9af7','#7dcfff','#ff9e64',
-                 '#73daca','#c0caf5','#f7c8dc','#a0d8b3','#d9a066'];
+const palette = ['#2f6df6','#e8453c','#2aa84a','#f5a623','#8b53d4','#00a9c4','#ff7043',
+                 '#12a594','#5c6bc0','#e0518f','#66a83a','#b07a2e'];
 const color = m => palette[Math.max(0, mods.indexOf(m)) % palette.length];
 document.getElementById('legend').innerHTML = mods.map(m =>
   '<span data-m="' + m + '"><i class="dot" style="background:' + color(m) + '"></i>' +
@@ -399,39 +446,48 @@ document.getElementById('legend').innerHTML = mods.map(m =>
 const cy = cytoscape({{
   container: document.getElementById('cy'),
   elements: els,
-  layout: {{name: 'dagre', rankDir: 'LR', nodeSep: 14, rankSep: 130, edgeSep: 12}},
+  layout: {{name: 'dagre', rankDir: 'LR', nodeSep: 34, rankSep: 150, edgeSep: 14}},
   style: [
-    // 노코드 툴처럼 — 라벨을 품은 카드 박스에 왼쪽 모듈 색 띠를 두른다.
+    // 노코드 캔버스 — 색 타일 안에 픽토그램, 이름은 타일 아래.
     {{selector: 'node', style: {{
-      'shape': 'round-rectangle',
-      'label': e => e.data('total')
-        ? e.data('label') + '   ' + e.data('total')
-        : e.data('label'),
-      'color': '#e6e9ef', 'font-size': 11, 'font-family': 'ui-monospace,monospace',
-      'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'none',
-      'background-color': '#1b212b',
-      'border-width': e => e.data('events').length ? 2 : 1,
-      'border-color': e => color(e.data('module')),
-      'border-opacity': e => e.data('events').length ? 1 : .5,
-      'padding': '9px',
-      'width': 'label', 'height': 22
+      'shape': 'round-rectangle', 'width': 44, 'height': 44,
+      'background-color': e => color(e.data('module')),
+      'background-image': e => GLYPH[e.data('module')] || 'none',
+      'background-fit': 'none', 'background-clip': 'none',
+      'label': 'data(label)',
+      'color': '#3b4453', 'font-size': 10, 'font-family': 'ui-monospace,monospace',
+      'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 7,
+      'text-wrap': 'wrap', 'text-max-width': 110,
+      'border-width': e => e.data('events').length ? 3 : 0, 'border-color': '#ffffff',
+      'border-opacity': 1,
+      'shadow-blur': 6, 'shadow-color': '#8a93a5', 'shadow-opacity': .25,
+      'shadow-offset-y': 2
+    }}}},
+    // 이름이 check_/requires_/is_/guard_ 로 시작하면 판정 블록 — 다이아몬드로 세운다.
+    {{selector: 'node[kind = "판정"]', style: {{
+      'shape': 'diamond', 'width': 52, 'height': 52, 'font-weight': 'bold'
     }}}},
     {{selector: 'node[kind = "진입점"]', style: {{
-      'background-color': '#7aa2f7', 'color': '#0f1115', 'font-weight': 'bold',
-      'font-size': 13, 'height': 30, 'border-width': 0, 'padding': '13px'
+      'shape': 'ellipse', 'width': 56, 'height': 56, 'background-color': '#2f6df6',
+      'background-image': GLYPH['__entry__'],
+      'font-size': 12, 'font-weight': 'bold', 'color': '#1b2534'
     }}}},
     {{selector: 'edge', style: {{
-      'width': 1.2, 'line-color': '#2f3743', 'target-arrow-color': '#2f3743',
-      'target-arrow-shape': 'triangle', 'arrow-scale': .8,
+      'width': 1.2, 'line-color': '#c3cad6', 'target-arrow-color': '#c3cad6',
+      'target-arrow-shape': 'triangle', 'arrow-scale': .9,
       'curve-style': 'taxi', 'taxi-direction': 'horizontal',
       // 팬아웃이 큰 노드에서 모든 선이 같은 x 에서 꺾이면 세로줄 뭉치가 된다.
       // 엣지마다 꺾는 지점을 흩뿌려 겹침을 푼다.
       'taxi-turn': e => (18 + (e.id().length * 13 + e.id().charCodeAt(1) * 7) % 62) + 'px',
-      'taxi-turn-min-distance': 10
+      'taxi-turn-min-distance': 10,
+      'label': 'data(label)', 'font-size': 9, 'color': '#7c8798',
+      'text-background-color': '#f6f7f9', 'text-background-opacity': 1,
+      'text-background-padding': 2
     }}}},
-    {{selector: '.faded', style: {{'opacity': .1, 'text-opacity': .04}}}},
+    {{selector: '.faded', style: {{'opacity': .12, 'text-opacity': .05}}}},
     {{selector: '.hot', style: {{
-      'line-color': '#7aa2f7', 'target-arrow-color': '#7aa2f7', 'width': 2, 'z-index': 9
+      'line-color': '#2f6df6', 'target-arrow-color': '#2f6df6', 'width': 2,
+      'color': '#2f6df6', 'z-index': 9
     }}}}
   ]
 }});
