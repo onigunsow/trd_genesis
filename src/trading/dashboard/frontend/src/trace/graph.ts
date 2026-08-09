@@ -146,7 +146,10 @@ export const GLYPH_URI: Record<string, string> = Object.fromEntries(
 
 export type NodeKind = 'entry' | 'predicate' | 'function' | 'module' | 'group'
 
-export type TraceStateLookup = (file: string, fn: string) => { state: TraceNodeState; eventCount: number }
+export type TraceStateLookup = (
+  file: string,
+  fn: string,
+) => { state: TraceNodeState; eventCount: number; firstTs?: string | null }
 
 export interface CyNodeData {
   id: string
@@ -158,13 +161,17 @@ export interface CyNodeData {
   parent?: string
   fns?: number
   recordedCount?: number
+  /** 이벤트 시각 순서(1부터). 기록이 있는 블록에만 붙는다. */
+  seq?: number
 }
 
 export interface CyEdgeData {
   id: string
   source: string
   target: string
-  // REQ-064-C2/인수기준: 이 결정의 경로(양끝 모두 recorded)만 강조하기 위한 플래그.
+  // 이 결정이 실제로 지나간 경로. 양끝이 모두 "관여"(진입점 포함)면 강조한다.
+  // 양끝 모두 recorded 를 요구했더니 recorded 가 1개뿐인 결정에서 강조선이 0개였다
+  // — 그래프인데 경로가 안 보였다(운영자 지적, 2026-08-09).
   pathHot: boolean
 }
 
@@ -178,16 +185,20 @@ interface LeafInfo {
   kind: Exclude<NodeKind, 'module' | 'group'>
   state: TraceNodeState
   eventCount: number
+  firstTs: string | null
 }
 
 function classify(n: StructureNode, stateLookup: TraceStateLookup): LeafInfo {
   const isEntry = n.type === '진입점'
   const kind: LeafInfo['kind'] = isEntry ? 'entry' : isPredicate(n.name) ? 'predicate' : 'function'
   const module = moduleOf(n.file)
-  const { state, eventCount } = isEntry
-    ? { state: 'not_involved' as TraceNodeState, eventCount: 0 }
+  const hit = isEntry
+    ? { state: 'not_involved' as TraceNodeState, eventCount: 0, firstTs: null }
     : stateLookup(n.file, n.name)
-  return { structId: n.id, name: n.name, file: n.file, module, kind, state, eventCount }
+  return {
+    structId: n.id, name: n.name, file: n.file, module, kind,
+    state: hit.state, eventCount: hit.eventCount, firstTs: hit.firstTs ?? null,
+  }
 }
 
 function rollupState(states: TraceNodeState[]): TraceNodeState {
@@ -197,12 +208,16 @@ function rollupState(states: TraceNodeState[]): TraceNodeState {
   return 'not_involved'
 }
 
-function labelFor(name: string, state: TraceNodeState, eventCount: number): string {
+const SEQ_MARK = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮']
+
+function labelFor(name: string, state: TraceNodeState, eventCount: number, seq?: number): string {
   // REQ-064-C2: 빈칸이 "통과"로 읽혀선 안 된다 — 상태별 칩을 라벨에 바로 붙인다.
-  if (state === 'decision_agnostic') return `${name}\n결정 단위 아님`
-  if (state === 'rule_based') return `${name}\n규칙 기반 실행`
-  if (state === 'recorded' && eventCount) return `${name}\n${eventCount}건`
-  return name
+  // seq 는 이벤트 시각 순서다 — 그래프만으로 "무엇이 먼저 일어났는가"를 읽게 한다.
+  const head = seq ? `${SEQ_MARK[seq - 1] ?? seq + '.'} ${name}` : name
+  if (state === 'decision_agnostic') return `${head}\n결정 단위 아님`
+  if (state === 'rule_based') return `${head}\n규칙 기반 실행`
+  if (state === 'recorded' && eventCount) return `${head}\n${eventCount}건`
+  return head
 }
 
 /**
@@ -218,6 +233,13 @@ export function buildElements(
   for (const n of graph.nodes.values()) {
     leaves.set(n.id, classify(n, stateLookup))
   }
+
+  // 이벤트 시각 순으로 번호를 매긴다 — 그래프만 보고 순서를 읽을 수 있어야 한다.
+  const seqOf = new Map<number, number>()
+  ;[...leaves.values()]
+    .filter((l) => l.firstTs)
+    .sort((a, b) => String(a.firstTs).localeCompare(String(b.firstTs)))
+    .forEach((l, i) => seqOf.set(l.structId, i + 1))
 
   const anchorOf = (id: number): string => {
     const leaf = leaves.get(id)
@@ -244,7 +266,8 @@ export function buildElements(
     if (id === String(leaf.structId)) {
       const parent = leaf.kind !== 'entry' && expanded.has(leaf.module) ? `g:${leaf.module}` : undefined
       nodesOut.set(id, {
-        id, label: labelFor(leaf.name, leaf.state, leaf.eventCount), file: leaf.file,
+        id, label: labelFor(leaf.name, leaf.state, leaf.eventCount, seqOf.get(leaf.structId)),
+        seq: seqOf.get(leaf.structId), file: leaf.file,
         module: leaf.module, kind: leaf.kind, state: leaf.state, parent,
       })
       continue
@@ -272,7 +295,11 @@ export function buildElements(
     const sepIdx = key.indexOf('|')
     const source = key.slice(0, sepIdx)
     const target = key.slice(sepIdx + 1)
-    const pathHot = nodesOut.get(source)?.state === 'recorded' && nodesOut.get(target)?.state === 'recorded'
+    const lit = (id: string) => {
+      const d = nodesOut.get(id)
+      return !!d && (d.kind === 'entry' || d.state !== 'not_involved')
+    }
+    const pathHot = lit(source) && lit(target)
     return { data: { id: `e:${key}`, source, target, pathHot } }
   })
 
@@ -292,4 +319,26 @@ export const ELK_LAYOUT = {
     'elk.padding': '[top=42,left=20,bottom=20,right=20]',
     'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
   },
+}
+
+/**
+ * REQ-064-C2 후속 — "관여한 것만 보기" 필터.
+ *
+ * 한 결정에 의미 있는 노드는 77개 중 1~7개뿐이다(실측: 결정 2925 → recorded 1,
+ * decision_agnostic 6, not_involved 70). 전부 그리면 화면의 90%가 무관한 노드라
+ * 의미 있는 블록을 확대해 가며 찾아야 한다. 진입점은 흐름의 기준점이라 남기고
+ * not_involved 만 걷어낸다. 끊긴 엣지도 함께 제거한다.
+ */
+export function filterToInvolved(els: CyElement[]): CyElement[] {
+  const isEdge = (e: CyElement): e is { data: CyEdgeData } => 'source' in e.data
+  const nodes = els.filter((e): e is { data: CyNodeData } => !isEdge(e))
+  const edges = els.filter(isEdge)
+  const kept = new Set<string>()
+  for (const n of nodes) {
+    if (n.data.kind === 'entry' || n.data.state !== 'not_involved') kept.add(n.data.id)
+  }
+  return [
+    ...nodes.filter((n) => kept.has(n.data.id)),
+    ...edges.filter((e) => kept.has(e.data.source) && kept.has(e.data.target)),
+  ]
 }

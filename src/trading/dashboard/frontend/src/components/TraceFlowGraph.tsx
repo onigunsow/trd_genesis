@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import cytoscape from 'cytoscape'
 import elk from 'cytoscape-elk'
 import {
-  buildElements, colorFor, uniqueModules, GLYPH_URI, ELK_LAYOUT,
+  buildElements, filterToInvolved, colorFor, uniqueModules, GLYPH_URI, ELK_LAYOUT,
   type GraphModel, type TraceStateLookup, type NodeKind,
 } from '../trace/graph'
 import type { TraceNodeState } from '../api/types'
@@ -36,6 +36,8 @@ interface Props {
   onToggleModule: (module: string) => void
   stateLookup: TraceStateLookup
   onSelect: (sel: SelectedNode | null) => void
+  /** true 면 not_involved 노드를 감춘다(진입점은 흐름 기준점이라 유지). */
+  onlyInvolved: boolean
 }
 
 const s = {
@@ -67,7 +69,7 @@ const s = {
 
 // REQ-064-C7: 편집 어포던스(추가/삭제/드래그 재배선) 없음. 노드 드래그는 시각 정렬용일 뿐
 // 좌표는 레이아웃 재실행 시마다 버려지고, 엣지/토폴로지는 절대 바뀌지 않는다.
-export default function TraceFlowGraph({ graph, expanded, onToggleModule, stateLookup, onSelect }: Props) {
+export default function TraceFlowGraph({ graph, expanded, onToggleModule, stateLookup, onSelect, onlyInvolved }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const cyRef = useRef<cytoscape.Core | null>(null)
   const [buttons, setButtons] = useState<OverlayButton[]>([])
@@ -131,7 +133,8 @@ export default function TraceFlowGraph({ graph, expanded, onToggleModule, stateL
     const cy = cyRef.current
     if (!cy) return
     cy.elements().remove()
-    cy.add(buildElements(graph, expanded, stateLookup))
+    const built = buildElements(graph, expanded, stateLookup)
+    cy.add(onlyInvolved ? filterToInvolved(built) : built)
     const placeButtons = (cy as unknown as { __placeButtons?: () => void }).__placeButtons
     // ELK 는 비동기다 — layoutstop 을 기다리지 않고 fit 하면 좌표가 아직 0 이다.
     const lay = cy.layout(ELK_LAYOUT as unknown as cytoscape.LayoutOptions)
@@ -140,7 +143,7 @@ export default function TraceFlowGraph({ graph, expanded, onToggleModule, stateL
       placeButtons?.()
     })
     lay.run()
-  }, [graph, expanded, stateLookup])
+  }, [graph, expanded, stateLookup, onlyInvolved])
 
   const zoomBy = (factor: number) => {
     const cy = cyRef.current

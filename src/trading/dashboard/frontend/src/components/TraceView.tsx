@@ -125,6 +125,12 @@ export default function TraceView() {
   const [traceError, setTraceError] = useState<string | null>(null)
   const [traceLoading, setTraceLoading] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // 기본 ON — 결정 2925 실측에서 77개 중 관여 7개였다. 전부 그리면 90%가 잡음이다.
+  const [onlyInvolved, setOnlyInvolved] = useState(true)
+  const involvedCount = useMemo(
+    () => (trace?.nodes ?? []).filter((n) => n.state !== 'not_involved').length,
+    [trace],
+  )
   const [selection, setSelection] = useState<SelectedNode | null>(null)
   const [selectedOrder, setSelectedOrder] = useState<TraceOrder | null>(null)
 
@@ -155,9 +161,14 @@ export default function TraceView() {
   }, [selectedId])
 
   const stateLookup = useMemo(() => {
-    const idx = new Map<string, { state: TraceNodeState; eventCount: number }>()
+    const idx = new Map<string, { state: TraceNodeState; eventCount: number; firstTs: string | null }>()
     for (const n of trace?.nodes ?? []) {
-      idx.set(`${n.file}::${n.function}`, { state: n.state, eventCount: n.events.length })
+      idx.set(`${n.file}::${n.function}`, {
+        state: n.state,
+        eventCount: n.events.length,
+        // 백엔드가 ts ASC 로 주므로 첫 이벤트가 이 블록이 관여한 시각이다.
+        firstTs: n.events[0]?.ts ?? null,
+      })
     }
     return (file: string, fn: string) => idx.get(`${file}::${fn}`) ?? { state: 'not_involved' as TraceNodeState, eventCount: 0 }
   }, [trace])
@@ -217,13 +228,34 @@ export default function TraceView() {
             </div>
           )}
           {trace && (
-            <TraceFlowGraph
-              graph={GRAPH}
-              expanded={expanded}
-              onToggleModule={toggleModule}
-              stateLookup={stateLookup}
-              onSelect={(sel) => { setSelection(sel); setSelectedOrder(null) }}
-            />
+            <>
+              {/* 한 결정에 의미 있는 노드는 77개 중 1~7개다. 기본값을 "관여한 것만"으로
+                  두어야 화면이 실제로 읽힌다 — 전체 보기는 필요할 때 켠다. */}
+              <label
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem',
+                  color: theme.textSecondary, cursor: 'pointer', userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={onlyInvolved}
+                  onChange={(e) => setOnlyInvolved(e.target.checked)}
+                />
+                관여한 블록만 보기
+                <span style={{ color: theme.textSecondary, opacity: 0.7 }}>
+                  ({involvedCount} / {trace?.nodes.length ?? 0})
+                </span>
+              </label>
+              <TraceFlowGraph
+                graph={GRAPH}
+                expanded={expanded}
+                onToggleModule={toggleModule}
+                stateLookup={stateLookup}
+                onSelect={(sel) => { setSelection(sel); setSelectedOrder(null) }}
+                onlyInvolved={onlyInvolved}
+              />
+            </>
           )}
         </div>
 

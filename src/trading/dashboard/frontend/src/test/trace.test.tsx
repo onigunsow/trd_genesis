@@ -4,7 +4,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { vi, describe, it, expect, afterEach } from 'vitest'
 import {
-  buildGraph, buildElements, moduleOf, isPredicate, uniqueModules,
+  buildGraph, buildElements, filterToInvolved, moduleOf, isPredicate, uniqueModules,
   type CyElement, type CyNodeData,
 } from '../trace/graph'
 import {
@@ -270,5 +270,30 @@ describe('TraceView', () => {
     fireEvent.click(orderRows[0].closest('tr')!)
     await waitFor(() => expect(screen.getByText('거부 사유')).toBeDefined())
     expect(screen.getAllByText('미기록').length).toBeGreaterThan(0)
+  })
+})
+
+describe('filterToInvolved — 관여한 블록만 보기', () => {
+  it('not_involved 는 걷어내고 진입점은 남긴다', () => {
+    const els = [
+      { data: { id: 'e1', kind: 'entry', state: 'not_involved', module: '?', label: 'entry', file: '' } },
+      { data: { id: 'n1', kind: 'function', state: 'recorded', module: 'risk', label: 'record_breach', file: 'f' } },
+      { data: { id: 'n2', kind: 'function', state: 'not_involved', module: 'kis', label: 'noop', file: 'f' } },
+      { data: { id: 'x1', source: 'e1', target: 'n1', pathHot: true } },
+      { data: { id: 'x2', source: 'e1', target: 'n2', pathHot: false } },
+    ] as unknown as Parameters<typeof filterToInvolved>[0]
+    const out = filterToInvolved(els)
+    const ids = out.map((e) => (e.data as { id: string }).id).sort()
+    // 진입점(e1)은 흐름 기준점이라 상태와 무관하게 유지, n2 와 그로 가는 엣지는 제거.
+    expect(ids).toEqual(['e1', 'n1', 'x1'])
+  })
+
+  it('양 끝이 살아남은 엣지만 남긴다', () => {
+    const els = [
+      { data: { id: 'a', kind: 'function', state: 'not_involved', module: 'm', label: 'a', file: 'f' } },
+      { data: { id: 'b', kind: 'function', state: 'not_involved', module: 'm', label: 'b', file: 'f' } },
+      { data: { id: 'ab', source: 'a', target: 'b', pathHot: false } },
+    ] as unknown as Parameters<typeof filterToInvolved>[0]
+    expect(filterToInvolved(els)).toHaveLength(0)
   })
 })
