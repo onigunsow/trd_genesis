@@ -392,6 +392,13 @@ button.col{{height:21px;border-radius:11px;border:1.5px solid var(--accent);
  background:#fff;color:var(--accent);font:inherit;font-size:11px;padding:0 9px;
  line-height:1;cursor:pointer;margin-left:5px}}
 button.col:hover{{background:var(--accent);color:#fff}}
+/* 우측 패널 접기 — 캔버스에 전체 폭을 준다 */
+aside.hide{{display:none}}
+#side{{position:absolute;right:0;top:50%;transform:translateY(-50%);z-index:6;
+ width:17px;height:48px;border:1px solid var(--line);border-right:0;
+ border-radius:6px 0 0 6px;background:#fff;color:#6b7280;cursor:pointer;
+ font:inherit;font-size:12px;padding:0}}
+#side:hover{{color:var(--accent);border-color:var(--accent)}}
 #zoom.hide{{display:none}}
 #zoom{{position:absolute;left:18px;bottom:18px;display:flex;gap:4px;z-index:5;
  background:#fff;border:1px solid var(--line);border-radius:8px;padding:3px;
@@ -457,6 +464,7 @@ code{{font:12px ui-monospace,monospace;color:#374151;word-break:break-all}}
   </div>
   <div id="cy" class="hide"></div>
   <div id="ovl" class="hide"></div>
+  <button id="side" title="의사결정 흐름도 패널 접기/펼치기">›</button>
   <div id="zoom" class="hide">
     <button data-z="out" title="축소">−</button>
     <button data-z="in" title="확대">+</button>
@@ -775,6 +783,14 @@ document.getElementById('legend').addEventListener('click', ev => {{
 
 cy.on('pan zoom resize', placeButtons);
 refresh();
+
+document.getElementById('side').onclick = () => {{
+  const a = document.querySelector('aside'), b = document.getElementById('side');
+  a.classList.toggle('hide');
+  b.textContent = a.classList.contains('hide') ? '‹' : '›';
+  // 패널이 접히면 캔버스 폭이 바뀐다 — 다시 재고 버튼 좌표도 다시 잡는다.
+  requestAnimationFrame(() => {{ cy.resize(); cy.fit(40); placeButtons(); }});
+}};
 
 document.getElementById('zoom').addEventListener('click', ev => {{
   const b = ev.target.closest('[data-z]');
