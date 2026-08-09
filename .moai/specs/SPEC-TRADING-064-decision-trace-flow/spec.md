@@ -1,6 +1,6 @@
 ---
 id: SPEC-TRADING-064
-version: 0.1.0
+version: 0.2.0
 status: draft
 created_at: 2026-08-09
 updated_at: 2026-08-09
@@ -333,10 +333,13 @@ LLM 결정 없음"**이다. UI는 이것을 "기록 없음"과 **구별해서** 
 - REQ-064-C5: THE 프런트엔드 SHALL 새 `View` union 멤버(예: `'trace'`)와 대응 `NAV_ITEMS`
   항목을 추가하고 `<ErrorBoundary>` 안에서 조건부 렌더한다. 그룹 C에서 `PipelineView.tsx`의
   6장 카드 스트립은 **건드리지 않는다**(ADR-004).
-- REQ-064-C6: THE 흐름도 SHALL cytoscape + cytoscape-dagre로 좌→우 레이어 DAG를 렌더하며,
+- REQ-064-C6: THE 흐름도 SHALL cytoscape + cytoscape-elk로 좌→우 레이어 DAG를 렌더하며,
   `codemap.py`가 이미 검증한 시각/상호작용 규약(흰 카드 노드 + 모듈 픽토그램, 술어 함수
   다이아몬드, 소스 포트 점 베지어 엣지, 모듈 접기/제자리 펼침, 레벨 인지 우측 패널)을 그대로
-  재사용한다.
+  재사용한다(ADR-002).
+- REQ-064-C6a: WHEN 모듈 블록이 펼쳐질 때, THE 흐름도 SHALL 그 모듈을 **compound 부모 상자**로
+  같은 자리에 유지하고 함수 블록을 그 상자 **안**에 배치한다. 함수가 다음 단(rank)으로 밀려나
+  모듈 자리를 벗어나서는 안 된다(ADR-002 실측 근거).
 - REQ-064-C7: [HARD] THE 흐름도 SHALL 토폴로지 편집(노드 추가/삭제/드래그 재배선/순서 변경)
   기능을 제공하지 않는다. 읽기 전용 실행 뷰만 제공한다.
 - REQ-064-C8: WHEN 노드가 선택될 때, THE 시스템 SHALL 그 단계가 **무엇을 판단했는지**를 블록
@@ -368,16 +371,30 @@ LLM 결정 없음"**이다. UI는 이것을 "기록 없음"과 **구별해서** 
 - 재도입 조건(후속 작업): Decision 페르소나 프롬프트 변경 + `persona_decisions.raw` 파서 변경 +
   채워짐 실측(>0행) 확인. 그때 별도 SPEC으로 다룬다.
 
-### ADR-002 — 그래프 렌더링 라이브러리: **cytoscape + cytoscape-dagre 신규 도입**
+### ADR-002 — 그래프 렌더링 라이브러리: **cytoscape + cytoscape-elk 신규 도입**
 
-- 선택: `cytoscape` + `cytoscape-dagre`를 프런트 의존성으로 추가하고, `codemap.py`가 이미
-  동작 검증한 스타일/상호작용 코드를 이식한다.
+- 개정 이력: v0.1.0 초안은 `cytoscape-dagre`를 선택했다. **2026-08-09 라이브에서 뒤집혔다.**
+  초안의 dagre 선택은 compound 지원 여부를 확인하지 않은 실수다.
+- 선택: `cytoscape` + `elkjs` + `cytoscape-elk`를 프런트 의존성으로 추가하고, `codemap.py`가
+  이미 동작 검증한 스타일/상호작용 코드를 이식한다.
+- 왜 dagre가 아닌가(실측 결함): **dagre는 compound(부모 상자) 레이아웃을 지원하지 않는다.**
+  모듈을 펼칠 때 부모 상자 없이 함수를 낱개 노드로 풀면, dagre가 각 노드의 단(rank)을
+  진입점으로부터의 호출 깊이로 다시 매긴다. 한 모듈의 함수는 호출 깊이가 제각각이므로
+  (`check_pre_order` 2단 → 그 호출 대상 `daily_pnl_pct` 3단) 모듈이 있던 자리에 머물지 못하고
+  오른쪽 단으로 흩어진다. 운영자 지적: "블럭을 +로 확장하면 동일 레벨의 블럭 내부 펑션이
+  확장 되야하는데 왜 다음 레벨의 표시되는거지?"
+- ELK가 해결하는 방식: `algorithm: layered` + `elk.direction: RIGHT` +
+  `elk.hierarchyHandling: INCLUDE_CHILDREN`이 계층형 좌→우 배치와 compound 상자를 동시에
+  지원한다. 펼친 모듈은 자기 자리에 상자로 남고 함수는 그 안에서 배치된다.
+  실측(2026-08-09, `codemap.py`): `risk` 14개·`kis` 27개 동시 펼침에서 **상자 밖 이탈 자식 0개**.
+- 부수 제약: ELK는 **비동기**다. dagre처럼 `layout.run()` 직후 `fit()`을 호출하면 좌표가 아직
+  0이다. `layoutstop` 이벤트를 기다린 뒤 `fit`과 오버레이 버튼 좌표 계산을 해야 한다.
 - 기각(기존 echarts 재사용): echarts는 이미 있지만 `graph` 시리즈의 레이아웃은 force/circular/
-  none뿐이라 **계층형 DAG 레이아웃이 없다**. 좌→우 흐름을 만들려면 어차피 dagre로 좌표를 직접
-  계산해 주입해야 하고, 그러면 "기존 의존성 재사용"의 이점이 사라지면서 `codemap.py`의 검증된
-  렌더링 코드를 버리고 다시 쓰는 비용만 남는다.
-- 번들 크기 우려는 해당 없음: 대시보드는 127.0.0.1(Tailscale 내부)에 바인딩된 단일 운영자용
-  도구이며 공개 트래픽이 없다.
+  none뿐이라 **계층형 DAG 레이아웃이 없다**. 좌→우 흐름을 만들려면 어차피 외부 레이아웃 엔진으로
+  좌표를 계산해 주입해야 하고, 그러면 "기존 의존성 재사용"의 이점이 사라지면서 `codemap.py`의
+  검증된 렌더링 코드를 버리고 다시 쓰는 비용만 남는다. compound 상자는 더더욱 못 그린다.
+- 번들 크기 우려는 해당 없음: 대시보드는 127.0.0.1에 바인딩된 단일 운영자용 도구이며
+  공개 트래픽이 없다.
 
 ### ADR-003 — 구조 데이터 공급: **커밋된 산출물 (a)**, 장기적으로 (c)
 

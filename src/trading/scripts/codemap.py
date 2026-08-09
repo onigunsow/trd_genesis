@@ -357,8 +357,10 @@ def render(
 <html lang="ko"><head><meta charset="utf-8">
 <title>trading — 의사결정 흐름도</title>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+<!-- dagre 가 아니라 ELK 를 쓴다. dagre 는 compound(부모 상자) 레이아웃을 지원하지 않아
+     모듈을 펼치면 함수들이 모듈 자리에 머물지 못하고 호출 깊이대로 흩어진다. -->
+<script src="https://cdn.jsdelivr.net/npm/elkjs@0.9.3/lib/elk.bundled.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-elk@2.2.0/dist/cytoscape-elk.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
 /* n8n 계열 — 밝은 캔버스, 흰 카드, 얇은 회색 경계 */
@@ -508,10 +510,26 @@ const anchor = d => d.kind === '진입점' ? d.id
 
 function buildElements() {{
   const nodes = {{}};
+  // 펼친 모듈은 compound 부모 상자가 되고, 그 함수들은 상자 '안'의 자식이 된다.
+  // 이래야 펼침이 모듈이 있던 자리에서 일어난다(다음 단으로 밀려나지 않는다).
+  for (const m of expanded) {{
+    const own = FN.filter(e => e.data.module === m);
+    if (!own.length) continue;
+    nodes['g:' + m] = {{data: {{
+      id: 'g:' + m, label: m, module: m, kind: '그룹', path: m,
+      file: '', events: [], total: own.reduce((a, e) => a + e.data.total, 0),
+      fns: own.length
+    }}}};
+  }}
   for (const e of FN) {{
     const d = e.data;
     const id = anchor(d);
-    if (id === d.id) {{ nodes[id] = {{data: d}}; continue; }}
+    if (id === d.id) {{
+      // 펼친 모듈의 함수면 그 상자를 부모로 붙인다.
+      const p = (d.kind !== '진입점' && expanded.has(d.module)) ? 'g:' + d.module : undefined;
+      nodes[id] = {{data: p ? Object.assign({{}}, d, {{parent: p}}) : d}};
+      continue;
+    }}
     if (!nodes[id]) nodes[id] = {{data: {{
       id: id, label: d.module, module: d.module, kind: '모듈', path: d.module,
       file: '', events: [], total: 0, fns: 0
@@ -539,14 +557,27 @@ function buildElements() {{
   return Object.values(nodes).concat(edges);
 }}
 
-const LAYOUT = {{name: 'dagre', rankDir: 'LR', nodeSep: 34, rankSep: 150, edgeSep: 14}};
+// ELK layered — INCLUDE_CHILDREN 이 부모 상자 안팎을 한 번에 계층 배치한다.
+const LAYOUT = {{
+  name: 'elk',
+  elk: {{
+    algorithm: 'layered',
+    'elk.direction': 'RIGHT',
+    'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+    'elk.layered.spacing.nodeNodeBetweenLayers': 95,
+    'elk.spacing.nodeNode': 34,
+    'elk.padding': '[top=42,left=20,bottom=20,right=20]',
+    'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES'
+  }}
+}};
 
 function refresh() {{
   cy.elements().remove();
   cy.add(buildElements());
-  cy.layout(LAYOUT).run();
-  cy.fit(40);
-  placeButtons();
+  // ELK 는 비동기다 — dagre 처럼 run() 직후 fit 하면 좌표가 아직 0 이다.
+  const lay = cy.layout(LAYOUT);
+  lay.one('layoutstop', () => {{ cy.fit(40); placeButtons(); }});
+  lay.run();
   const crumb = document.getElementById('crumb');
   crumb.innerHTML = expanded.size
     ? '펼침 ' + [...expanded].map(m =>
@@ -583,9 +614,13 @@ function placeButtons() {{
        oy + p.y + n.renderedHeight() / 2 - 10,
        () => toggle(n.data('module')));
   }});
+  // 부모 상자가 생기면서 접기 버튼이 붙을 자리가 정확해졌다 — 상자 우상단.
+  cy.nodes(':parent').forEach(n => {{
+    const bb = n.renderedBoundingBox();
+    mk('col', '−', n.data('module') + ' 접기', ox + bb.x2 - 24, oy + bb.y1 + 4,
+       () => toggle(n.data('module')));
+  }});
 }}
-// 접기 버튼은 캔버스에 두지 않는다 — dagre 가 펼친 함수를 여러 단에 흩어 놓아
-// 그룹 경계상자가 엉뚱한 곳을 가리킨다. 항상 맞는 자리인 상단 빵부스러기에 둔다.
 
 const cy = cytoscape({{
   container: document.getElementById('cy'),
@@ -619,6 +654,19 @@ const cy = cytoscape({{
       'background-color': '#fff6f4', 'border-width': 2.5, 'border-color': '#ff6d5a',
       'background-image': GLYPH['__entry__'],
       'font-size': 11.5, 'font-weight': 'bold'
+    }}}},
+    // 펼친 모듈 = 부모 상자. 크기는 자식 묶음이 정하므로 width/height 를 주지 않는다.
+    {{selector: ':parent', style: {{
+      'shape': 'round-rectangle',
+      'background-color': e => color(e.data('module')),
+      'background-opacity': 0.06,
+      'background-image': 'none',
+      'border-width': 2, 'border-color': e => color(e.data('module')), 'border-opacity': .55,
+      'label': e => e.data('label') + '  ' + e.data('fns') + '개 함수'
+        + (e.data('total') ? ' · ' + e.data('total') + '건' : ''),
+      'text-valign': 'top', 'text-halign': 'center', 'text-margin-y': 4,
+      'font-size': 12, 'font-weight': 'bold', 'color': '#4b5563',
+      'shadow-blur': 0, 'padding': '18px'
     }}}},
     {{selector: 'node[kind = "모듈"]', style: {{
       'width': 84, 'height': 84, 'font-size': 12.5, 'font-weight': 'bold',
@@ -748,7 +796,10 @@ function focusFn(label) {{
 
 cy.on('tap', 'node', e => {{
   const n = e.target;
-  if (n.data('kind') === '모듈') {{ panelModule(n.data('module')); return; }}
+  if (n.data('kind') === '모듈' || n.data('kind') === '그룹') {{
+    panelModule(n.data('module'));
+    return;
+  }}
   const hood = n.predecessors().union(n.successors()).union(n);
   cy.elements().addClass('faded');
   hood.removeClass('faded');
