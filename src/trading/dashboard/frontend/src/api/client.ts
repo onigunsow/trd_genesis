@@ -16,6 +16,7 @@ import type {
   RoundTrip,
   PortfolioData,
   PnlDailyResponse,
+  DecisionTrace,
 } from './types'
 
 // same-origin 요청 — FastAPI 가 /static/ 과 /api/ 를 모두 서빙
@@ -81,6 +82,11 @@ export const api = {
 
   // ── 파이프라인 ────────────────────────────────────────────────────────────
   fetchPipeline: () => get<PipelineData>('/api/pipeline'),
+
+  // ── 결정 추적 흐름도 (SPEC-TRADING-064 REQ-064-C1) ───────────────────────
+  // 읽기 전용. 결정 하나가 지나간 경로(노드 상태·연결 주문)를 반환한다.
+  fetchTrace: (decisionId: number) =>
+    get<DecisionTrace>(`/api/decisions/${decisionId}/trace`),
 
   // ── 라운드트립 원장 (REQ-054-A1, D1) ─────────────────────────────────────
   // days: 기간 필터, limit: 최대 행 수

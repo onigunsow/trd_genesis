@@ -1056,3 +1056,378 @@ class TestRedaction:
         assert row["rationale"] == "상승 모멘텀 확인"
         assert row["risk_verdict"] == "APPROVE"
         assert row["risk_rationale"] == "집중도 허용 범위"
+
+
+# ---------------------------------------------------------------------------
+# fetch_decision_trace (SPEC-TRADING-064 그룹 C)
+# ---------------------------------------------------------------------------
+
+
+class _MultiCursor:
+    """execute() 호출마다 다음 rows 배치로 전진하는 커서 더블.
+
+    tests/kis/test_ghost_convergence.py 의 MultiCursor 와 달리 인덱스를
+    execute() 시점에 전진시킨다 — fetchone()/fetchall() 어느 쪽을 먼저 호출해도
+    같은 실행 결과를 본다(fetch_decision_trace 는 한 요청 안에서 fetchone 1회 +
+    fetchall 2회를 섞어 쓴다). 거짓그린 방지: dict 직접 주입이 아니라 SQL 실행
+    경로를 탄다(REQ-064-C1 인수기준, 과제 지시 사항).
+    """
+
+    def __init__(self, rows_sequence: list[list[dict[str, Any]]]) -> None:
+        self._seq = list(rows_sequence)
+        self._idx = -1
+        self.executed_sqls: list[str] = []
+        self.executed_params: list[Any] = []
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        self.executed_sqls.append(sql)
+        self.executed_params.append(params)
+        self._idx += 1
+
+    def _rows(self) -> list[dict[str, Any]]:
+        if 0 <= self._idx < len(self._seq):
+            return self._seq[self._idx]
+        return []
+
+    def fetchone(self) -> dict[str, Any] | None:
+        rows = self._rows()
+        return rows[0] if rows else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._rows()
+
+    def __enter__(self) -> _MultiCursor:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        pass
+
+
+class _MultiConn:
+    def __init__(self, cursor: _MultiCursor) -> None:
+        self._cur = cursor
+
+    def cursor(self) -> _MultiCursor:
+        return self._cur
+
+    def __enter__(self) -> _MultiConn:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        pass
+
+
+def _make_trace_patch(rows_sequence: list[list[dict[str, Any]]]):
+    """ro_connection 을 MultiCursor 더블로 교체하고 (patcher, cursor) 반환."""
+    cursor = _MultiCursor(rows_sequence)
+    conn = _MultiConn(cursor)
+
+    @contextmanager
+    def _conn(autocommit: bool = False):
+        yield conn
+
+    return patch("trading.dashboard.queries.ro_connection", side_effect=_conn), cursor
+
+
+_SAMPLE_DECISION_ROW = {
+    "id": 2814,
+    "ts": datetime(2026, 8, 7, 15, 10, tzinfo=UTC),
+    "persona_name": "decision",
+    "cycle_kind": "intraday",
+    "ticker": "005930",
+    "side": "buy",
+    "qty": 10,
+    "confidence": 0.82,
+    "rationale": "모멘텀 확인",
+    "risk_verdict": "APPROVE",
+    "risk_rationale": None,
+    "regime_at_decision": "bull",
+    "trigger_context": "RSI 과매도",
+    "response_json": '{"signals": []}',
+}
+
+
+class TestFetchDecisionTrace:
+    """REQ-064-C1/C2/C3/C9/C10/C11."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_bridge_cache(self):
+        from trading.dashboard import queries
+
+        queries._audit_bridge.cache_clear()
+        yield
+        queries._audit_bridge.cache_clear()
+
+    def test_unknown_decision_returns_none(self) -> None:
+        """REQ-064-C1: 없는 id → None(엔드포인트가 404 로 변환)."""
+        from trading.dashboard import queries
+
+        patcher, _cursor = _make_trace_patch([[], [], []])
+        with patcher:
+            result = queries.fetch_decision_trace(999_999)
+
+        assert result is None
+
+    def test_returns_decision_with_group_a_fields(self) -> None:
+        """REQ-064-C1: decision 은 그룹 A 15키(14 SELECT + ticker_name)와 동일."""
+        from trading.dashboard import queries
+
+        patcher, _cursor = _make_trace_patch([[_SAMPLE_DECISION_ROW], [], []])
+        with patcher, patch(
+            "trading.dashboard.queries.lookup_names_from_db", return_value={}
+        ):
+            result = queries.fetch_decision_trace(2814)
+
+        assert result is not None
+        decision = result["decision"]
+        assert decision["id"] == 2814
+        assert decision["regime_at_decision"] == "bull"
+        assert "ticker_name" in decision
+        assert set(result.keys()) == {"decision", "nodes", "orders", "unmatched_events"}
+
+    def test_events_sql_covers_scalar_and_batch_predicates(self) -> None:
+        """REQ-064-C1/B3a/B5: SQL 문자열에 배치 상관(decision_ids/adjusted/rejected/
+        sells) 예측이 전부 있는지 검사 — 실행된 SQL 텍스트 자체를 본다(dict 직접
+        주입으로는 이 회귀를 못 잡는다)."""
+        from trading.dashboard import queries
+
+        patcher, cursor = _make_trace_patch([[_SAMPLE_DECISION_ROW], [], []])
+        with patcher, patch(
+            "trading.dashboard.queries.lookup_names_from_db", return_value={}
+        ):
+            queries.fetch_decision_trace(2814)
+
+        events_sql = cursor.executed_sqls[1].lower()
+        assert "decision_ids" in events_sql
+        assert "adjusted" in events_sql
+        assert "rejected" in events_sql
+        assert "sells" in events_sql
+
+    def test_orders_sql_is_exact_match_only(self) -> None:
+        """REQ-064-C1: 주문 상관은 persona_decision_id 정확 매칭만 — 종목/시간창
+        근사 매칭을 하지 않는다(과제 지시: 부정확한 연결 금지)."""
+        from trading.dashboard import queries
+
+        patcher, cursor = _make_trace_patch([[_SAMPLE_DECISION_ROW], [], []])
+        with patcher, patch(
+            "trading.dashboard.queries.lookup_names_from_db", return_value={}
+        ):
+            queries.fetch_decision_trace(2814)
+
+        orders_sql = cursor.executed_sqls[2].lower()
+        assert "persona_decision_id = %s" in orders_sql
+        assert "interval" not in orders_sql  # 시간창 근사 없음
+
+    def test_order_origin_decision_vs_rule_based(self) -> None:
+        """REQ-064-C10: persona_decision_id 유무로 origin 판정."""
+        from trading.dashboard import queries
+
+        row_decision = {
+            "id": 1, "ts": datetime(2026, 8, 7, 15, 11, tzinfo=UTC),
+            "side": "buy", "ticker": "005930", "qty": 10, "status": "filled",
+            "rejected_reason": None, "fill_price": 70000, "fill_qty": 10,
+            "synthetic": False, "correction": False, "persona_decision_id": 2814,
+        }
+        patcher, _cursor = _make_trace_patch([[_SAMPLE_DECISION_ROW], [], [row_decision]])
+        with patcher, patch(
+            "trading.dashboard.queries.lookup_names_from_db", return_value={}
+        ):
+            result = queries.fetch_decision_trace(2814)
+
+        assert result["orders"][0]["origin"] == "decision"
+        # 규칙 기반 행 직접 단위 검증(_serialize_trace_order 는 범용 매핑)
+        rule_based_row = dict(row_decision, persona_decision_id=None)
+        assert queries._serialize_trace_order(rule_based_row)["origin"] == "rule_based"
+
+    def test_unmatched_events_not_dropped(self) -> None:
+        """REQ-064-C9/계약: ast 브릿지가 못 찾는 event_type 도 침묵 없이 반환."""
+        from trading.dashboard import queries
+
+        with patch("trading.dashboard.queries.scan_audit_calls", return_value=({}, set())):
+            queries._audit_bridge.cache_clear()
+            mystery_event = {
+                "ts": datetime(2026, 8, 7, 15, 12, tzinfo=UTC),
+                "event_type": "MYSTERY_EVENT",
+                "actor": "unknown",
+                "details": {"decision_id": 2814},
+            }
+            patcher, _cursor = _make_trace_patch(
+                [[_SAMPLE_DECISION_ROW], [mystery_event], []]
+            )
+            with patcher, patch(
+                "trading.dashboard.queries.lookup_names_from_db", return_value={}
+            ):
+                result = queries.fetch_decision_trace(2814)
+
+        assert len(result["unmatched_events"]) == 1
+        assert result["unmatched_events"][0]["event_type"] == "MYSTERY_EVENT"
+        assert result["nodes"] == []  # 빈 audit_map — 노드도 없음, 조용히 사라진 게 아님
+
+    def test_node_state_domain_and_recorded(self) -> None:
+        """REQ-064-C2: recorded — decision_scope 없는(진짜 결정 단위) 상관 행."""
+        from trading.dashboard import queries
+
+        audit_map = {("src/trading/risk/limits.py", "record_breach"): ["LIMIT_BREACH"]}
+        breach_event = {
+            "ts": datetime(2026, 8, 7, 15, 10, tzinfo=UTC),
+            "event_type": "LIMIT_BREACH",
+            "actor": "risk",
+            "details": {"decision_id": 2814, "context": {"limit": "daily_loss"}},
+        }
+        with patch(
+            "trading.dashboard.queries.scan_audit_calls",
+            return_value=(audit_map, {"record_breach"}),
+        ):
+            queries._audit_bridge.cache_clear()
+            patcher, _cursor = _make_trace_patch(
+                [[_SAMPLE_DECISION_ROW], [breach_event], []]
+            )
+            with patcher, patch(
+                "trading.dashboard.queries.lookup_names_from_db", return_value={}
+            ):
+                result = queries.fetch_decision_trace(2814)
+
+        assert len(result["nodes"]) == 1
+        node = result["nodes"][0]
+        assert node["file"] == "src/trading/risk/limits.py"
+        assert node["function"] == "record_breach"
+        assert node["module"] == "risk"
+        assert node["state"] == "recorded"
+        assert node["events"][0]["details"] == breach_event["details"]
+        for allowed in (node["state"],):
+            assert allowed in {"recorded", "decision_agnostic", "not_involved", "rule_based"}
+
+    def test_node_state_not_involved(self) -> None:
+        """REQ-064-C2: 이 결정에 대한 상관 행이 없으면 not_involved(빈칸이 아니다)."""
+        from trading.dashboard import queries
+
+        audit_map = {("src/trading/risk/limits.py", "record_breach"): ["LIMIT_BREACH"]}
+        with patch(
+            "trading.dashboard.queries.scan_audit_calls",
+            return_value=(audit_map, {"record_breach"}),
+        ):
+            queries._audit_bridge.cache_clear()
+            patcher, _cursor = _make_trace_patch([[_SAMPLE_DECISION_ROW], [], []])
+            with patcher, patch(
+                "trading.dashboard.queries.lookup_names_from_db", return_value={}
+            ):
+                result = queries.fetch_decision_trace(2814)
+
+        assert result["nodes"][0]["state"] == "not_involved"
+        assert result["nodes"][0]["events"] == []
+
+    def test_node_state_decision_agnostic_via_exempt_event(self) -> None:
+        """REQ-064-C2/B8: TIER 5/6 면제 이벤트만 내는 노드는 상관 행이 0건이어도
+        decision_agnostic(면제는 SSOT DECISION_SCOPE_EXEMPT_EVENTS 참조)."""
+        from trading.dashboard import queries
+
+        audit_map = {
+            ("src/trading/alerts/telegram.py", "system_error"): ["SYSTEM_ERROR"],
+        }
+        with patch(
+            "trading.dashboard.queries.scan_audit_calls",
+            return_value=(audit_map, {"system_error"}),
+        ):
+            queries._audit_bridge.cache_clear()
+            patcher, _cursor = _make_trace_patch([[_SAMPLE_DECISION_ROW], [], []])
+            with patcher, patch(
+                "trading.dashboard.queries.lookup_names_from_db", return_value={}
+            ):
+                result = queries.fetch_decision_trace(2814)
+
+        assert result["nodes"][0]["state"] == "decision_agnostic"
+
+    def test_node_state_decision_agnostic_via_batch_scope(self) -> None:
+        """REQ-064-C2/B5: 상관 행은 있으나 decision_scope="batch" 뿐이면
+        decision_agnostic(관여했으나 결정 단위 기록이 아님)."""
+        from trading.dashboard import queries
+
+        audit_map = {
+            ("src/trading/personas/portfolio_gate.py", "_emit_transparency"): [
+                "PORTFOLIO_ADJUSTMENT"
+            ],
+        }
+        batch_event = {
+            "ts": datetime(2026, 8, 7, 15, 13, tzinfo=UTC),
+            "event_type": "PORTFOLIO_ADJUSTMENT",
+            "actor": "portfolio_gate",
+            "details": {
+                "adjusted": [{"ticker": "005930", "decision_id": 2814}],
+                "rejected": [],
+                "decision_run_id": 1,
+                "decision_scope": "batch",
+            },
+        }
+        with patch(
+            "trading.dashboard.queries.scan_audit_calls",
+            return_value=(audit_map, {"_emit_transparency"}),
+        ):
+            queries._audit_bridge.cache_clear()
+            patcher, _cursor = _make_trace_patch(
+                [[_SAMPLE_DECISION_ROW], [batch_event], []]
+            )
+            with patcher, patch(
+                "trading.dashboard.queries.lookup_names_from_db", return_value={}
+            ):
+                result = queries.fetch_decision_trace(2814)
+
+        assert result["nodes"][0]["state"] == "decision_agnostic"
+
+    def test_node_state_rule_based(self) -> None:
+        """REQ-064-C2/B6: 상관 행의 decision_scope="rule_based" 면 rule_based —
+        진짜 결정 단위 행이 하나도 없을 때만. 네 상태 도메인 완결성 검증
+        (실 운영 데이터에서 이 분기가 안 걸리는 이유는 함수 docstring 참조)."""
+        from trading.dashboard import queries
+
+        audit_map = {
+            ("src/trading/kis/broker_truth.py", "_emit_fill_audit"): ["ORDER_FILLED"],
+        }
+        fill_event = {
+            "ts": datetime(2026, 8, 7, 15, 14, tzinfo=UTC),
+            "event_type": "ORDER_FILLED",
+            "actor": "broker_truth",
+            "details": {"decision_id": None, "decision_scope": "rule_based"},
+        }
+        with patch(
+            "trading.dashboard.queries.scan_audit_calls",
+            return_value=(audit_map, {"_emit_fill_audit"}),
+        ):
+            queries._audit_bridge.cache_clear()
+            # 직접 분류 함수를 검증 — SQL 정확매칭 경로로는 이 행이 안 잡히므로
+            # (details.decision_id 가 null) 순수 함수 단위로 도메인 완결성만 확인.
+            state = queries._classify_node_state(["ORDER_FILLED"], [fill_event])
+
+        assert state == "rule_based"
+
+    def test_audit_bridge_reuses_real_scan_audit_calls(self) -> None:
+        """REQ-064-C3: 별도 스캐너를 새로 만들지 않고 codemap.scan_audit_calls 를
+        그대로 재사용한다 — risk/limits.py 의 LIMIT_BREACH 를 실제로 찾아야 한다
+        (codemap.py selftest() 와 동일한 최소 점검)."""
+        from trading.dashboard import queries
+
+        audit_map, _funcs = queries._audit_bridge()
+        hits = {k: v for k, v in audit_map.items() if "LIMIT_BREACH" in v}
+        assert hits, "역인덱스가 risk/limits.py 의 LIMIT_BREACH 를 못 찾음"
+
+
+class TestTraceLegacyNestedDecisionId:
+    """REQ-064-C1 — 과거 중첩 decision_id 행도 읽는다.
+
+    배선(870f5fe) 배포 이전 행은 `details.context.decision_id` 에만 id 가 있다.
+    최근 30일 LIMIT_BREACH 166건 중 최상위 보유 0건 / 중첩 166건이 실측이었다.
+    최상위만 읽으면 지난 결정 추적에서 차단 사유가 통째로 사라진다.
+    """
+
+    def test_events_sql_reads_both_top_level_and_nested(self) -> None:
+        from trading.dashboard.queries import _TRACE_EVENTS_SQL
+
+        assert "details->>'decision_id'" in _TRACE_EVENTS_SQL
+        assert "details->'context'->>'decision_id'" in _TRACE_EVENTS_SQL, (
+            "과거 중첩 경로를 빠뜨리면 배포 이전 결정의 LIMIT_BREACH 가 안 보인다"
+        )
+
+    def test_placeholder_count_matches_bound_params(self) -> None:
+        from trading.dashboard.queries import _TRACE_EVENTS_SQL
+
+        # 술어를 늘리면서 파라미터 튜플을 안 맞추면 psycopg 가 런타임에만 터진다.
+        assert _TRACE_EVENTS_SQL.count("%s") == 6

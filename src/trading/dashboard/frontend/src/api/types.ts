@@ -240,6 +240,50 @@ export interface PortfolioData {
   snapshot_date: string | null
 }
 
+// ── /api/decisions/{id}/trace ──────────────────────────────────────────────
+// SPEC-TRADING-064 REQ-064-C1: 결정 하나의 추적 페이로드.
+// state 는 REQ-064-C2 의 네 상태만 허용한다 — 빈칸이 "통과"로 읽혀선 안 된다.
+export type TraceNodeState = 'recorded' | 'decision_agnostic' | 'rule_based' | 'not_involved'
+
+export interface TraceEvent {
+  event_type: string
+  ts: string
+  actor: string
+  // jsonb 컬럼 — Decision.trigger_context 와 같은 이유로 객체로 선언한다(React error #31 회피).
+  details: Record<string, unknown>
+}
+
+export interface TraceNode {
+  file: string
+  function: string
+  module: string
+  state: TraceNodeState
+  events: TraceEvent[]
+}
+
+// REQ-064-C10: origin==='rule_based' 는 "규칙 기반 실행(LLM 결정 없음)" — "기록 없음"과 다르다.
+export interface TraceOrder {
+  id: number
+  ts: string
+  side: 'buy' | 'sell'
+  ticker: string
+  qty: number
+  status: string
+  rejected_reason: string | null
+  fill_price: number | null
+  fill_qty: number | null
+  synthetic: boolean
+  correction: boolean
+  origin: 'decision' | 'rule_based'
+}
+
+export interface DecisionTrace {
+  decision: Decision
+  nodes: TraceNode[]
+  orders: TraceOrder[]
+  unmatched_events: TraceEvent[]
+}
+
 // ── /api/pnl-daily ─────────────────────────────────────────────────────────
 // REQ-054-A3: 기간별 실현손익 + 누적 + KOSPI 상대
 // 주의: alpha_pct 는 백엔드 한계로 현재 null 반환 — UI 는 null 을 그대로 표시 (가짜 데이터 금지)

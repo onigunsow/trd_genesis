@@ -16,12 +16,16 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict
+from functools import lru_cache
 
 import psycopg
 from typing import Any
 
 from trading.dashboard.db import ro_connection
+from trading.db.session import DECISION_SCOPE_EXEMPT_EVENTS
 from trading.kis.kis_ticker_info import lookup_names_from_db, resolve_ticker_name
+from trading.scripts.codemap import scan_audit_calls
 
 LOG = logging.getLogger(__name__)
 
@@ -1395,4 +1399,245 @@ def fetch_scorecard_with_sortino() -> dict[str, Any]:
         "mdd": tw.mdd if tw.available else None,
         "sharpe": tw.sharpe if tw.available else None,
         "sortino": analytics.sortino,  # REQ-054-A4: 노출만, 재계산 없음
+    }
+
+
+# ---------------------------------------------------------------------------
+# SPEC-TRADING-064 그룹 C: 결정 추적 흐름도 (REQ-064-C1/C3/C9/C10/C11)
+# ---------------------------------------------------------------------------
+
+# REQ-064-C1: 단일 결정 상세 — fetch_recent_decisions 와 동일한 15키(그룹 A 계약).
+# 의도적 중복(코드 재사용 대신): fetch_recent_decisions 는 이미 배포된 계약이라
+# 리팩터로 공유 상수화하면 그 회귀 표면을 건드리게 된다 — 여기서는 새 WHERE 절만
+# 추가한 독립 SQL 을 둔다.
+_DECISION_BY_ID_SQL = """
+    SELECT
+        pd.id,
+        pd.ts,
+        pr.persona_name,
+        pd.cycle_kind,
+        pd.ticker,
+        pd.side,
+        pd.qty,
+        pd.confidence,
+        pd.rationale,
+        rr.verdict   AS risk_verdict,
+        rr.rationale AS risk_rationale,
+        pr.regime_at_decision,
+        pr.trigger_context,
+        pr.response_json
+    FROM persona_decisions pd
+    JOIN persona_runs pr ON pr.id = pd.persona_run_id
+    LEFT JOIN risk_reviews rr ON rr.decision_id = pd.id
+    WHERE pd.id = %s
+"""
+
+# REQ-064-C1/그룹 B: 단일 결정은 details 최상위 decision_id(스칼라, TIER 1~4/7).
+# 배치 이벤트는 스칼라 키를 안 쓴다(B3a/B5) — decision_ids 배열 또는
+# adjusted/rejected/sells 각 항목의 decision_id 다. 셋을 OR 로 안 묶으면
+# COUNT_HALT_BYPASS_SELL/PORTFOLIO_ADJUSTMENT 만 조용히 추적에서 빠진다
+# (이 SPEC 이 없애려는 침묵을 새로 만드는 셈).
+_TRACE_EVENTS_SQL = """
+    SELECT ts, event_type, actor, details
+    FROM audit_log
+    WHERE details->>'decision_id' = %s
+       OR details->'context'->>'decision_id' = %s
+       OR details->'decision_ids' @> to_jsonb(%s::int)
+       OR details->'adjusted' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
+       OR details->'rejected' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
+       OR details->'sells' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
+    ORDER BY ts ASC
+"""
+
+# REQ-064-C1: 정확 매칭만. 규칙 기반 주문(persona_decision_id IS NULL — 워치독
+# 손절/익절, forced_deleverage, ghost-buy 교정행)은 이 스칼라 조회로 원천적으로
+# 안 걸린다. 같은 종목·같은 사이클 창을 근사로 엮는 것은 하지 않는다 — 부정확한
+# 연결은 누락보다 나쁘다(과제 지시 사항).
+_TRACE_ORDERS_SQL = """
+    SELECT
+        id, ts, side, ticker, qty, status, rejected_reason,
+        fill_price, fill_qty, synthetic, correction, persona_decision_id
+    FROM orders
+    WHERE persona_decision_id = %s
+    ORDER BY ts ASC
+"""
+
+
+@lru_cache(maxsize=1)
+def _audit_bridge() -> tuple[dict[tuple[str, str], list[str]], set[str]]:
+    """REQ-064-C3: ast 브릿지((file,function) -> [event_type]) 를 프로세스 생애주기당
+    1회만 스캔한다 — 요청마다 `src/trading/**/*.py` 전체를 재파싱하지 않는다.
+    별도 이벤트→노드 하드코딩 맵을 두지 않고 `scan_audit_calls` 결과만 단일원천으로 쓴다.
+    """
+    return scan_audit_calls()
+
+
+def _classify_node_state(
+    event_types: list[str], matched_events: list[dict[str, Any]]
+) -> str:
+    """REQ-064-C2 [HARD] 4-상태 판정.
+
+    matched_events: 이 노드(함수)의 event_types 중 하나이며 이 결정과 상관된
+    audit_log 행. 상태:
+      - "not_involved": 상관 행 0건 + 이 노드가 결정 비종속 이벤트만 내지는 않음.
+      - "decision_agnostic": 상관 행 0건이지만 이 노드가 내는 이벤트가 전부
+        DECISION_SCOPE_EXEMPT_EVENTS(TIER 5/6, 영구 면제) 뿐이거나, 상관 행은
+        있지만 전부 decision_scope="batch"(또는 그 외 비-결정 스코프) 뿐임.
+      - "recorded": 상관 행 중 decision_scope 가 비어 있는(=진짜 결정 단위) 행이
+        하나라도 있음.
+      - "rule_based": 상관 행 중 decision_scope="rule_based" 인 행이 있음(진짜
+        결정 단위 행은 없음). 참고: `_TRACE_ORDERS_SQL`/`_TRACE_EVENTS_SQL` 이
+        스칼라 decision_id 정확 매칭만 쓰므로(REQ-064-C1 docstring 참조),
+        rule_based 행은 decision_id 가 애초에 null 이라 실 운영 데이터에서는 이
+        분기가 안 걸린다 — 그래도 REQ-064-C2 가 요구하는 네 상태 도메인을 완전하게
+        지키기 위해 분류 로직 자체는 남겨 둔다.
+    """
+    if not matched_events:
+        if event_types and all(et in DECISION_SCOPE_EXEMPT_EVENTS for et in event_types):
+            return "decision_agnostic"
+        return "not_involved"
+    scopes = {(e.get("details") or {}).get("decision_scope") for e in matched_events}
+    if None in scopes:
+        return "recorded"
+    if "rule_based" in scopes:
+        return "rule_based"
+    return "decision_agnostic"
+
+
+def _serialize_trace_event(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_type": row["event_type"],
+        "ts": row["ts"],
+        "actor": row["actor"],
+        "details": row["details"],
+    }
+
+
+def _build_trace_nodes(
+    event_rows: list[dict[str, Any]],
+    audit_map: dict[tuple[str, str], list[str]],
+) -> list[dict[str, Any]]:
+    """REQ-064-C3: audit_map((file,function)->[event_type]) 전체를 순회해 노드
+    하나당 항목 하나를 만든다 — 강조 대상만 거르지 않고 `not_involved` 노드도 포함해
+    "관여 안 함"과 "기록 없음"을 구별한다(REQ-064-C2)."""
+    events_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in event_rows:
+        events_by_type[row["event_type"]].append(row)
+
+    nodes = []
+    for (file, func), event_types in sorted(audit_map.items()):
+        matched = [e for et in event_types for e in events_by_type.get(et, [])]
+        module = file.removeprefix("src/trading/").removesuffix(".py").split("/")[0]
+        nodes.append(
+            {
+                "file": file,
+                "function": func,
+                "module": module,
+                "state": _classify_node_state(event_types, matched),
+                "events": [_serialize_trace_event(e) for e in matched],
+            }
+        )
+    return nodes
+
+
+def _serialize_trace_order(row: dict[str, Any]) -> dict[str, Any]:
+    """REQ-064-C10/그룹 B6: persona_decision_id 유무로 origin 을 밝힌다.
+
+    `_TRACE_ORDERS_SQL` 이 정확 매칭(`persona_decision_id = %s`)만 반환하므로
+    실사용 결과의 origin 은 항상 "decision" 이다. 그래도 매핑을 범용으로 두는
+    이유는 계약(origin 필드)이 규칙 기반 실행(NULL)까지 표현해야 하고, 향후 더
+    정밀한 상관 경로가 생기면 이 함수 하나로 충분해서다.
+    """
+    origin = "decision" if row.get("persona_decision_id") is not None else "rule_based"
+    return {
+        "id": row["id"],
+        "ts": row["ts"],
+        "side": row["side"],
+        "ticker": row["ticker"],
+        "qty": row["qty"],
+        "status": row["status"],
+        "rejected_reason": row.get("rejected_reason"),
+        "fill_price": row.get("fill_price"),
+        "fill_qty": row.get("fill_qty"),
+        "synthetic": row.get("synthetic"),
+        "correction": row.get("correction"),
+        "origin": origin,
+    }
+
+
+# @MX:ANCHOR: [AUTO] SPEC-TRADING-064 REQ-064-C1 — 결정 추적 응답 계약.
+# @MX:REASON: 프런트가 이 응답 키를 1:1로 그대로 그린다(cytoscape 노드/엣지 강조).
+#   키 이름이나 nodes[].state 도메인이 어긋나면 예외가 아니라 빈 화면으로 조용히
+#   실패한다 — 계약을 바꿀 때 반드시 프런트 타입도 함께 갱신할 것.
+# @MX:SPEC: SPEC-TRADING-064
+def fetch_decision_trace(decision_id: int) -> dict[str, Any] | None:
+    """결정 하나의 추적 페이로드: 본문 + 관여 audit_log 이벤트 + 연결 주문 + 노드 강조.
+
+    REQ-064-C1: {"decision": 그룹 A 15키, "nodes": REQ-064-C3 역인덱스로 계산된
+    (file,function) 단위 강조(REQ-064-C2 4상태), "orders": 정확 매칭만(위 SQL
+    docstring 참조), "unmatched_events": ast 브릿지가 매핑 못한 이벤트(침묵 금지,
+    REQ-064-C9 정신 — 값이 없으면 없다고 보여준다)}.
+
+    REQ-064-C11: 읽기 전용. ro_connection(dashboard_ro 역할, SELECT 전용)만
+    쓰고 매매 테이블에 쓰지 않으며, 페르소나 재실행이나 LLM 호출을 하지 않는다.
+
+    낡은 행(870f5fe 이전, `details.context.decision_id` 중첩) 처리: **같이 읽는다.**
+
+    초안은 최상위 키만 읽고 레거시 경로를 기각했으나, 배포 직후 실측으로 뒤집혔다:
+    최근 30일 `LIMIT_BREACH` 166건 중 **최상위 `decision_id` 보유 0건, 중첩 166건**
+    (배선이 870f5fe 로 오늘 배포됐으니 과거 데이터는 전부 중첩이다). 최상위만 읽으면
+    지난 결정을 추적할 때 주문을 막은 이유인 `LIMIT_BREACH` 가 한 건도 안 보인다 —
+    "왜 이 결정이 주문으로 안 이어졌나"가 이 기능의 핵심 용도인데 몇 주치 새 데이터가
+    쌓일 때까지 빈 화면이 된다. 정본 규약이 최상위 단일 키라는 점은 변함없고, 이
+    OR 절은 과거 데이터를 위한 읽기 전용 호환이다(쓰기 경로는 최상위만 쓴다).
+    라이브 검증: 결정 2324 추적에서 `risk.record_breach` 가 `recorded` 로 잡힌다.
+
+    Args:
+        decision_id: persona_decisions.id.
+
+    Returns:
+        None: 해당 id 의 결정이 없음(엔드포인트가 404 로 변환).
+        dict: {"decision", "nodes", "orders", "unmatched_events"}.
+    """
+    with ro_connection() as conn, conn.cursor() as cur:
+        cur.execute(_DECISION_BY_ID_SQL, (decision_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        decision = dict(row)
+
+        cur.execute(
+            _TRACE_EVENTS_SQL,
+            # 최상위 / 과거 중첩(context) / 배치 3종 — 순서는 SQL 술어 순서와 일치.
+            (
+                str(decision_id),
+                str(decision_id),
+                decision_id,
+                decision_id,
+                decision_id,
+                decision_id,
+            ),
+        )
+        event_rows = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(_TRACE_ORDERS_SQL, (decision_id,))
+        order_rows = [dict(r) for r in cur.fetchall()]
+
+    ticker = decision.get("ticker") or ""
+    db_names = lookup_names_from_db([ticker]) if ticker else {}
+    decision["ticker_name"] = resolve_ticker_name(ticker, db_names=db_names)
+
+    audit_map, _all_funcs = _audit_bridge()
+    known_event_types = {et for ets in audit_map.values() for et in ets}
+    unmatched_events = [
+        _serialize_trace_event(e)
+        for e in event_rows
+        if e["event_type"] not in known_event_types
+    ]
+
+    return {
+        "decision": decision,
+        "nodes": _build_trace_nodes(event_rows, audit_map),
+        "orders": [_serialize_trace_order(r) for r in order_rows],
+        "unmatched_events": unmatched_events,
     }

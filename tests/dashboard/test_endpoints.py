@@ -132,6 +132,146 @@ class TestDecisionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/decisions/{decision_id}/trace (SPEC-TRADING-064 그룹 C)
+# ---------------------------------------------------------------------------
+
+_TRACE_STATE_DOMAIN = {"recorded", "decision_agnostic", "not_involved", "rule_based"}
+
+
+def _sample_trace() -> dict:
+    return {
+        "decision": {
+            "id": 2814,
+            "ts": datetime(2026, 8, 7, 15, 10, tzinfo=UTC),
+            "persona_name": "decision",
+            "cycle_kind": "intraday",
+            "ticker": "005930",
+            "side": "buy",
+            "qty": 10,
+            "confidence": 0.82,
+            "rationale": "모멘텀 확인",
+            "risk_verdict": "APPROVE",
+            "risk_rationale": None,
+            "regime_at_decision": "bull",
+            "trigger_context": "RSI 과매도",
+            "response_json": '{"signals": []}',
+            "ticker_name": "삼성전자",
+        },
+        "nodes": [
+            {
+                "file": "src/trading/risk/limits.py",
+                "function": "record_breach",
+                "module": "risk",
+                "state": "recorded",
+                "events": [
+                    {
+                        "event_type": "LIMIT_BREACH",
+                        "ts": datetime(2026, 8, 7, 15, 10, tzinfo=UTC),
+                        "actor": "risk",
+                        "details": {"decision_id": 2814, "context": {"limit": "daily_loss"}},
+                    }
+                ],
+            },
+            {
+                "file": "src/trading/kis/broker_truth.py",
+                "function": "intraday_reconcile",
+                "module": "kis",
+                "state": "decision_agnostic",
+                "events": [],
+            },
+            {
+                "file": "src/trading/scripts/paper_buy_one.py",
+                "function": "main",
+                "module": "scripts",
+                "state": "not_involved",
+                "events": [],
+            },
+            {
+                "file": "src/trading/watchers/position_watchdog.py",
+                "function": "_execute_trim",
+                "module": "watchers",
+                "state": "rule_based",
+                "events": [],
+            },
+        ],
+        "orders": [
+            {
+                "id": 1,
+                "ts": datetime(2026, 8, 7, 15, 11, tzinfo=UTC),
+                "side": "buy",
+                "ticker": "005930",
+                "qty": 10,
+                "status": "filled",
+                "rejected_reason": None,
+                "fill_price": 70000,
+                "fill_qty": 10,
+                "synthetic": False,
+                "correction": False,
+                "origin": "decision",
+            }
+        ],
+        "unmatched_events": [],
+    }
+
+
+class TestDecisionTraceEndpoint:
+    """REQ-064-C1/C2/C9/C11: 응답 키 집합 + nodes[].state 도메인 검증."""
+
+    def test_returns_200_and_expected_key_set(self, client) -> None:
+        with patch(
+            "trading.dashboard.queries.fetch_decision_trace", return_value=_sample_trace()
+        ):
+            resp = client.get("/api/decisions/2814/trace")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data.keys()) == {"decision", "nodes", "orders", "unmatched_events"}
+        assert data["decision"]["id"] == 2814
+
+    def test_node_state_is_exactly_four_literals(self, client) -> None:
+        """REQ-064-C2 [HARD]: state 는 정확히 이 네 값 중 하나여야 한다."""
+        with patch(
+            "trading.dashboard.queries.fetch_decision_trace", return_value=_sample_trace()
+        ):
+            resp = client.get("/api/decisions/2814/trace")
+
+        nodes = resp.json()["nodes"]
+        assert len(nodes) >= 4
+        seen_states = {n["state"] for n in nodes}
+        assert seen_states <= _TRACE_STATE_DOMAIN
+        # 샘플이 네 상태를 전부 커버해 도메인이 정확히 이 네 값임을 함께 증명한다.
+        assert seen_states == _TRACE_STATE_DOMAIN
+
+    def test_unknown_decision_returns_404(self, client) -> None:
+        """REQ-064-C1: 없는 id → 404, 빈 200 이 아니다(빈 200 은 '아무 관여 없음'과
+        구별 불가하다)."""
+        with patch("trading.dashboard.queries.fetch_decision_trace", return_value=None):
+            resp = client.get("/api/decisions/999999/trace")
+
+        assert resp.status_code == 404
+
+    def test_db_error_returns_503(self, client) -> None:
+        with patch(
+            "trading.dashboard.queries.fetch_decision_trace",
+            side_effect=RuntimeError("DB down"),
+        ):
+            resp = client.get("/api/decisions/2814/trace")
+
+        assert resp.status_code == 503
+
+    def test_details_is_object_not_string(self, client) -> None:
+        """계약 회귀 방지: Group A 는 details 를 문자열로 내보내 React #31 을
+        일으켰다. nodes[].events[].details 는 항상 객체여야 한다."""
+        with patch(
+            "trading.dashboard.queries.fetch_decision_trace", return_value=_sample_trace()
+        ):
+            resp = client.get("/api/decisions/2814/trace")
+
+        recorded = next(n for n in resp.json()["nodes"] if n["state"] == "recorded")
+        assert isinstance(recorded["events"][0]["details"], dict)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/orders
 # ---------------------------------------------------------------------------
 

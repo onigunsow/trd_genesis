@@ -102,6 +102,24 @@ def get_decisions(limit: int = 50) -> list[dict[str, Any]]:
         raise HTTPException(status_code=503, detail="DB 조회 실패") from exc
 
 
+@app.get("/api/decisions/{decision_id}/trace", tags=["decisions"])
+def get_decision_trace(decision_id: int) -> dict[str, Any]:
+    """SPEC-TRADING-064 그룹 C: 결정 하나의 추적 페이로드(REQ-064-C1).
+
+    결정 본문 + 관여 audit_log 이벤트 → codemap ast 브릿지 역인덱스로 계산한
+    노드별 4-상태 강조(REQ-064-C2/C3) + 연결 주문(정확 매칭만) + 매핑 안 된
+    이벤트(침묵 금지). 읽기 전용, 비용 0(REQ-064-C11).
+    """
+    try:
+        trace = queries.fetch_decision_trace(decision_id)
+    except Exception as exc:
+        LOG.error("fetch_decision_trace failed: %s", exc)
+        raise HTTPException(status_code=503, detail="DB 조회 실패") from exc
+    if trace is None:
+        raise HTTPException(status_code=404, detail=f"decision {decision_id} 없음")
+    return trace
+
+
 @app.get("/api/orders", tags=["orders"])
 def get_orders(limit: int = 50) -> list[dict[str, Any]]:
     """최근 주문 목록 (민감 컬럼 제외)."""

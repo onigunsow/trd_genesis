@@ -477,6 +477,76 @@ class TestDashboardQueries:
 
 
 # ---------------------------------------------------------------------------
+# 5b. dashboard/queries.fetch_decision_trace (SPEC-TRADING-064 그룹 C)
+# ---------------------------------------------------------------------------
+
+class TestDecisionTrace:
+    """fetch_decision_trace 실 SQL 검증(REQ-064-C1).
+
+    mock 은 못 잡는 것: jsonb `@>` 컨테인먼트 연산자의 실제 의미(배치 이벤트
+    항목별 decision_id 매칭, REQ-064-B3a/B5), text=text 타입 캐스팅
+    (`details->>'decision_id' = %s`).
+    """
+
+    def test_exact_match_decision_and_order(self, seeded: dict[str, Any]) -> None:
+        """seed_minimal 이 심은 persona_decision_id 로 결정·주문이 정확히 붙는지."""
+        from trading.dashboard.queries import fetch_decision_trace
+
+        trace = fetch_decision_trace(seeded["persona_decision_id"])
+
+        assert trace is not None
+        assert set(trace.keys()) == {"decision", "nodes", "orders", "unmatched_events"}
+        assert trace["decision"]["id"] == seeded["persona_decision_id"]
+        assert len(trace["orders"]) == 1
+        assert trace["orders"][0]["id"] == seeded["buy_order_id"]
+        assert trace["orders"][0]["origin"] == "decision"
+        assert isinstance(trace["nodes"], list)
+        assert trace["nodes"]
+        for node in trace["nodes"]:
+            assert node["state"] in {
+                "recorded", "decision_agnostic", "not_involved", "rule_based",
+            }
+
+    def test_unknown_decision_id_returns_none(self, seeded: dict[str, Any]) -> None:
+        from trading.dashboard.queries import fetch_decision_trace
+
+        assert fetch_decision_trace(999_999_999) is None
+
+    def test_batch_event_per_item_decision_id_containment(
+        self, seeded: dict[str, Any], migrated_db
+    ) -> None:
+        """REQ-064-B5/C1: PORTFOLIO_ADJUSTMENT 의 adjusted[].decision_id 를
+        jsonb `@>` 로 찾는 경로 — mock 으로는 이 연산자 의미를 검증 못한다."""
+        import json
+
+        from trading.dashboard.queries import fetch_decision_trace
+
+        did = seeded["persona_decision_id"]
+        with migrated_db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO audit_log (event_type, actor, details) "
+                "VALUES ('PORTFOLIO_ADJUSTMENT', 'portfolio_gate', %s::jsonb)",
+                (json.dumps({
+                    "cycle": "intraday",
+                    "adjusted": [{"ticker": "005930", "decision_id": did}],
+                    "rejected": [],
+                    "decision_run_id": 1,
+                    "decision_scope": "batch",
+                }),),
+            )
+        migrated_db.commit()
+
+        trace = fetch_decision_trace(did)
+
+        matched = [
+            n for n in trace["nodes"]
+            if any(e["event_type"] == "PORTFOLIO_ADJUSTMENT" for e in n["events"])
+        ]
+        assert matched, "adjusted[].decision_id 컨테인먼트 매칭 실패"
+        assert all(n["state"] == "decision_agnostic" for n in matched)
+
+
+# ---------------------------------------------------------------------------
 # 6. ops/resolver_health — positions.mode 컬럼 부재가 터진 경로
 # ---------------------------------------------------------------------------
 

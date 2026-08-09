@@ -14,8 +14,11 @@ import KpiCards from './components/KpiCards'
 import PortfolioView from './components/PortfolioView'
 import RoundtripLedger from './components/RoundtripLedger'
 import PnlTrendView from './components/PnlTrendView'
+import TraceView from './components/TraceView'
 
-type View = 'overview' | 'portfolio' | 'roundtrips' | 'pnl' | 'pipeline' | 'news' | 'positions'
+// REQ-064-C5: 'trace' 추가. ADR-004 에 따라 PipelineView 는 그룹 C 에서 건드리지 않는다 —
+// 운영자가 두 뷰를 나란히 비교한 뒤 대체 여부를 판단한다.
+type View = 'overview' | 'portfolio' | 'roundtrips' | 'pnl' | 'pipeline' | 'trace' | 'news' | 'positions'
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: string }> = [
   { id: 'overview',   label: '개요',        icon: '◈' },
@@ -23,6 +26,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: string }> = [
   { id: 'roundtrips', label: '거래원장',     icon: '◎' },
   { id: 'pnl',        label: '손익 추이',    icon: '◆' },
   { id: 'pipeline',   label: '파이프라인',   icon: '▶' },
+  { id: 'trace',      label: '결정 추적',    icon: '⑃' },
   { id: 'news',       label: '뉴스',         icon: '◐' },
   { id: 'positions',  label: '포지션/주문',  icon: '☰' },
 ]
@@ -169,6 +173,11 @@ export default function App() {
             overflowX: 'hidden',
             padding: '20px',
             minWidth: 0,
+            // flex 자식은 기본 min-height:auto 라 내용만큼 늘어난다. 부모가
+            // overflow:hidden 이므로 늘어난 만큼이 잘려 스크롤로도 못 간다
+            // (실측: main 1749px, 가시 873px → 876px 도달 불가). 0 으로 눌러야
+            // overflowY:auto 가 실제로 동작한다.
+            minHeight: 0,
           }}
         >
           {activeView === 'overview' && (
@@ -214,6 +223,12 @@ export default function App() {
           {activeView === 'pipeline' && (
             <ErrorBoundary label="파이프라인">
               <PipelineView status={status} />
+            </ErrorBoundary>
+          )}
+
+          {activeView === 'trace' && (
+            <ErrorBoundary label="결정 추적">
+              <TraceView />
             </ErrorBoundary>
           )}
 
