@@ -29,6 +29,14 @@ from trading.db.session import connection
 
 WINDOW_DAYS = 30
 
+# 커밋된 구조 산출물(ADR-003 (a)). code-graph-mcp CLI 는 컨테이너에 없으므로
+# 호출그래프는 호스트에서 뽑아 여기에 커밋해 두고, 컨테이너는 이 파일만 읽는다.
+# 재생성:
+#   for s in run_pre_market_cycle run_intraday_cycle; do
+#       code-graph-mcp callgraph "$s" --direction callees --depth 3 --json
+#   done | python -m trading.scripts.codemap --write-structure
+ARTIFACT = Path(trading.__file__).resolve().parent / "dashboard" / "data" / "callgraph.json"
+
 # 사람이 읽는 설명. 여기 적힌 심볼이 실제 호출그래프에 없으면 화면에 경고가 뜬다 —
 # 손으로 쓴 설명이 조용히 낡는 것을 막는 장치다(verify_overview 참조).
 STAGES = [
@@ -93,6 +101,29 @@ def read_callgraphs(text: str) -> list[dict[str, Any]]:
         obj, i = dec.raw_decode(text, i)
         out.append(obj)
     return out
+
+
+def load_structure() -> tuple[list[dict[str, Any]], list[str]]:
+    """커밋된 구조 산출물을 읽는다. (runs, entry_names) 반환."""
+    doc = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+    return doc["runs"], doc.get("entries", [])
+
+
+def artifact_stale(all_funcs: set[str]) -> list[str]:
+    """산출물에 있으나 소스에서 사라진 심볼을 돌려준다.
+
+    빈 리스트면 산출물이 소스와 맞는다. ADR-003 은 이 점검 없이 커밋된 산출물을
+    쓰는 것을 금지한다 — 구조가 조용히 낡으면 그래프가 없는 코드를 그린다.
+    """
+    if not ARTIFACT.exists():
+        return []
+    runs, _ = load_structure()
+    missing = set()
+    for run in runs:
+        for r in run.get("results", []):
+            if r["file_path"].startswith("src/trading/") and r["name"] not in all_funcs:
+                missing.add(f'{r["file_path"]}::{r["name"]}')
+    return sorted(missing)
 
 
 def build_graph(
@@ -908,6 +939,14 @@ def selftest() -> None:
     missing = {s for _, _, syms in STAGES for s in syms if s not in funcs}
     assert not missing, f"STAGES 설명이 낡았다 — 소스에 없는 심볼: {sorted(missing)}"
 
+    # ADR-003: 커밋된 구조 산출물이 소스와 어긋나면 실패한다.
+    stale = artifact_stale(funcs)
+    assert not stale, (
+        f"구조 산출물이 낡았다 — 소스에 없는 심볼 {len(stale)}개: {stale[:5]}\n"
+        "재생성: for s in run_pre_market_cycle run_intraday_cycle; do "
+        'code-graph-mcp callgraph "$s" --direction callees --depth 3 --json; done '
+        "| python -m trading.scripts.codemap --write-structure"
+    )
     nodes, edges = build_graph(
         read_callgraphs(
             '{"results":[{"depth":1,"direction":"callees","file_path":"a.py",'
@@ -915,7 +954,11 @@ def selftest() -> None:
         )
     )
     assert set(nodes) == {1, 2} and edges == {(1, 2)}, (nodes, edges)
-    print(f"selftest ok: {len(m)}개 블록이 audit 기록을 남긴다", file=sys.stderr)
+    print(
+        f"selftest ok: {len(m)}개 블록이 audit 기록을 남긴다"
+        + (f" · 구조 산출물 {ARTIFACT.name} 최신" if ARTIFACT.exists() else " · 산출물 없음"),
+        file=sys.stderr,
+    )
 
 
 def main() -> None:
@@ -923,9 +966,30 @@ def main() -> None:
         selftest()
         return
     entry_names = [a for a in sys.argv[1:] if not a.startswith("-")]
-    runs = read_callgraphs(sys.stdin.read())
+
+    if "--write-structure" in sys.argv:
+        runs = read_callgraphs(sys.stdin.read())
+        if not runs:
+            sys.exit("호출그래프 JSON 이 stdin 으로 들어오지 않았다")
+        ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
+        ARTIFACT.write_text(
+            json.dumps(
+                {"entries": entry_names, "depth": 3, "runs": runs},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        print(f"구조 산출물 기록: {ARTIFACT}", file=sys.stderr)
+        return
+
+    runs = read_callgraphs("" if sys.stdin.isatty() else sys.stdin.read())
     if not runs:
-        sys.exit("호출그래프 JSON 이 stdin 으로 들어오지 않았다")
+        # stdin 이 비었으면 커밋된 산출물을 쓴다 — 컨테이너에는 code-graph-mcp 가 없다.
+        if not ARTIFACT.exists():
+            sys.exit(f"호출그래프도 없고 산출물도 없다: {ARTIFACT}")
+        runs, artifact_entries = load_structure()
+        entry_names = entry_names or artifact_entries
     nodes, edges = build_graph(runs, entry_names)
     audit_map, all_funcs = scan_audit_calls()
     event_counts, orders = fetch_outcomes()
