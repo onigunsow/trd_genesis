@@ -196,6 +196,59 @@ class TestFetchRecentDecisions:
         assert result[1]["risk_verdict"] is None
         assert result[1]["risk_rationale"] is None
 
+    def test_select_includes_group_a_fields(self) -> None:
+        """REQ-064-A1/A8: SELECT 문자열에 세 필드 포함 — dict 직접 주입이 아니라
+        FakeConnection 경유로 실제 실행된 SQL 문자열(cur.last_sql)을 검사한다.
+
+        SPEC-054 pd.persona 503(단위 그린·라이브 503) 선례처럼, 반환 dict 만
+        확인하면 SELECT 목록 누락을 놓친다 — 반드시 SQL 텍스트 자체를 본다.
+        """
+        from tests.conftest import FakeConnection, FakeCursor
+        from trading.dashboard import queries
+
+        cursor = FakeCursor([])
+
+        @contextmanager
+        def _conn(autocommit: bool = False):
+            yield FakeConnection(cursor)
+
+        with patch("trading.dashboard.queries.ro_connection", side_effect=_conn):
+            queries.fetch_recent_decisions(limit=5)
+
+        sql = cursor.last_sql.lower()
+        for col in ("regime_at_decision", "trigger_context", "response_json"):
+            assert col in sql, f"SELECT 목록에 {col} 없음 — REQ-064-A1 위반"
+
+    def test_group_a_fields_present_in_result(self) -> None:
+        """REQ-064-A1: regime_at_decision/trigger_context/response_json 이 실제로
+        반환 dict 에 실린다(신규 JOIN 없이 이미 JOIN 된 persona_runs 에서)."""
+        from trading.dashboard import queries
+
+        rows = [
+            {
+                "id": 1,
+                "ts": datetime(2026, 6, 14, 9, 30, tzinfo=UTC),
+                "persona_name": "decision",
+                "cycle_kind": "intraday",
+                "ticker": "005930",
+                "side": "buy",
+                "qty": 10,
+                "confidence": 0.82,
+                "rationale": "모멘텀 확인",
+                "risk_verdict": None,
+                "risk_rationale": None,
+                "regime_at_decision": "bull",
+                "trigger_context": "RSI 과매도",
+                "response_json": '{"signals": []}',
+            }
+        ]
+        with _make_patch(rows):
+            result = queries.fetch_recent_decisions(limit=20)
+
+        assert result[0]["regime_at_decision"] == "bull"
+        assert result[0]["trigger_context"] == "RSI 과매도"
+        assert result[0]["response_json"] == '{"signals": []}'
+
 
 # ---------------------------------------------------------------------------
 # fetch_recent_orders (SPEC-047 기존)

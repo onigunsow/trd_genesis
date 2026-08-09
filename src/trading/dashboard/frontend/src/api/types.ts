@@ -16,7 +16,10 @@ export interface SystemStatus {
 }
 
 // ── /api/decisions ─────────────────────────────────────────────────────────
+// SPEC-TRADING-064 REQ-064-A2: 백엔드 fetch_recent_decisions 반환 키와 1:1 일치
+// (queries.py:127-169). 응답에 없는 키(prob_bull/base/bear 등)는 선언 금지 — ADR-001.
 export interface Decision {
+  id: number
   ts: string
   persona_name: string
   cycle_kind: string
@@ -29,13 +32,12 @@ export interface Decision {
   // REQ-050-3: risk_reviews LEFT JOIN
   risk_verdict: 'APPROVE' | 'HOLD' | 'REJECT' | null
   risk_rationale: string | null
-  prob_bull: number | null
-  prob_base: number | null
-  prob_bear: number | null
-  // 드릴다운용 추가 필드
+  // 드릴다운용 추가 필드 (persona_runs JOIN) — NULL 이면 UI 는 "미기록"으로 표기(REQ-064-A7)
   regime_at_decision: string | null
-  trigger_context: string | null
-  response_json: string | null
+  // trigger_context·response_json 은 persona_runs 의 jsonb 컬럼이라 문자열이 아니라 객체로 온다.
+  // 문자열로 선언하면 React 가 객체를 그대로 렌더하려다 터진다(라이브 재현: React error #31).
+  trigger_context: Record<string, unknown> | null
+  response_json: Record<string, unknown> | null
 }
 
 // ── /api/orders ────────────────────────────────────────────────────────────
@@ -163,23 +165,24 @@ export interface ConfidenceAnalysis {
 }
 
 // ── /api/pipeline ──────────────────────────────────────────────────────────
+// SPEC-TRADING-064 REQ-064-A3: fetch_pipeline 반환 키와 1:1 일치(queries.py:939-992).
+// status 는 백엔드가 실제로 내는 'error'|'completed' 만 포함한다.
+// halt 상태는 이 응답에 없다 — /api/status(SystemStatus)의 halt_state 를 사용할 것.
 export interface PipelineStep {
-  step: string
+  id: number
+  ts: string
   persona_name: string | null
   cycle_kind: string | null
-  status: 'completed' | 'running' | 'skipped' | 'pending'
+  input_tokens: number | null
+  output_tokens: number | null
   latency_ms: number | null
-  started_at: string | null
-  decisions: Decision[]
-  verdicts: Array<{ verdict: string; rationale: string | null }>
+  status: 'error' | 'completed'
+  regime_at_decision: string | null
 }
 
 export interface PipelineData {
-  cycle_id: string | null
-  cycle_started_at: string | null
+  cycle_ts: string | null
   steps: PipelineStep[]
-  halt_state: boolean
-  halt_reason: string | null
 }
 
 // ── /api/roundtrips ────────────────────────────────────────────────────────

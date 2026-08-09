@@ -124,11 +124,19 @@ def fetch_system_status() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# @MX:ANCHOR: response key set is a contract with the frontend Decision type.
+# @MX:REASON: SPEC-TRADING-064 결함 A — the TS type declared six fields the SELECT
+#   never returned; tsc passed and the UI rendered blank. Adding or removing a
+#   column here requires updating api/types.ts and the response-derived fixtures.
+# @MX:SPEC: SPEC-TRADING-064
 def fetch_recent_decisions(*, limit: int = 50) -> list[dict[str, Any]]:
     """persona_decisions + persona_runs + risk_reviews LEFT JOIN — 최신 N 건.
 
     REQ-050-3: risk_reviews(verdict/rationale)를 decision_id 로 LEFT JOIN.
     매칭 없는 결정은 risk_verdict/risk_rationale 가 null 이며 행 누락 없음.
+
+    SPEC-TRADING-064 REQ-064-A1: regime_at_decision/trigger_context/response_json 은
+    이미 JOIN 되어 있는 persona_runs 소유 컬럼이다 — 신규 JOIN·마이그레이션 없음.
 
     Args:
         limit: 최대 반환 행 수.
@@ -145,7 +153,10 @@ def fetch_recent_decisions(*, limit: int = 50) -> list[dict[str, Any]]:
             pd.confidence,
             pd.rationale,
             rr.verdict   AS risk_verdict,
-            rr.rationale AS risk_rationale
+            rr.rationale AS risk_rationale,
+            pr.regime_at_decision,
+            pr.trigger_context,
+            pr.response_json
         FROM persona_decisions pd
         JOIN persona_runs pr ON pr.id = pd.persona_run_id
         LEFT JOIN risk_reviews rr ON rr.decision_id = pd.id

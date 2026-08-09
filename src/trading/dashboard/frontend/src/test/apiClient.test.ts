@@ -50,21 +50,20 @@ describe('api/client 타입 형태 검증', () => {
   it('fetchDecisions — Decision[] 형태 반환 + risk_verdict 포함', async () => {
     const mock: Decision[] = [
       {
+        id: 1,
         ts: '2026-06-14T09:00:00',
         persona_name: 'micro',
         cycle_kind: 'intraday',
         ticker: '005930',
+        ticker_name: '삼성전자',
         side: 'buy',
         qty: 10,
         confidence: 0.72,
         rationale: '긍정 신호',
         risk_verdict: 'APPROVE',
         risk_rationale: '한도 내',
-        prob_bull: 0.6,
-        prob_base: 0.3,
-        prob_bear: 0.1,
         regime_at_decision: 'BULL',
-        trigger_context: 'intraday',
+        trigger_context: { cycle_kind: 'intraday', macro_run_id: 2524, micro_run_id: 2525 },
         response_json: null,
       },
     ]
@@ -72,7 +71,7 @@ describe('api/client 타입 형태 검증', () => {
     const result = await api.fetchDecisions(10)
     expect(result).toHaveLength(1)
     expect(result[0].risk_verdict).toBe('APPROVE')
-    expect(result[0].prob_bull).toBe(0.6)
+    expect(result[0].regime_at_decision).toBe('BULL')
   })
 
   it('fetchOrders — Order[] 형태 반환', async () => {
@@ -161,19 +160,16 @@ describe('api/client 타입 형태 검증', () => {
 
   it('fetchPipeline — PipelineData steps 포함', async () => {
     const mock: PipelineData = {
-      cycle_id: 'cycle-001',
-      cycle_started_at: '2026-06-14T09:00:00',
+      cycle_ts: '2026-06-14T09:00:00',
       steps: [
-        { step: 'macro', persona_name: 'macro', cycle_kind: 'pre_market', status: 'completed', latency_ms: 1200, started_at: '2026-06-14T09:00:00', decisions: [], verdicts: [] },
+        { id: 1, ts: '2026-06-14T09:00:00', persona_name: 'macro', cycle_kind: 'pre_market', input_tokens: 1000, output_tokens: 200, latency_ms: 1200, status: 'completed', regime_at_decision: 'BULL' },
       ],
-      halt_state: false,
-      halt_reason: null,
     }
     mockFetch(mock)
     const result = await api.fetchPipeline()
     expect(result.steps).toHaveLength(1)
-    expect(result.steps[0].step).toBe('macro')
-    expect(result.halt_state).toBe(false)
+    expect(result.steps[0].persona_name).toBe('macro')
+    expect(result.cycle_ts).toBe('2026-06-14T09:00:00')
   })
 
   it('HTTP 오류 시 Error 를 던진다', async () => {

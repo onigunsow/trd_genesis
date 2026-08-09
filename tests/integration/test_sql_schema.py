@@ -275,12 +275,18 @@ class TestDashboardQueries:
 
         pd.persona 컬럼 부재가 이전에 터진 경로.
         실제로는 pr.persona_name 이지만 쿼리 작성 오류 시 이 경로에서 잡힌다.
+
+        SPEC-TRADING-064 REQ-064-A1/A8: regime_at_decision/trigger_context/
+        response_json 이 실 Postgres 스키마에서 예외 없이 SELECT 되는지 검증.
         """
         from trading.dashboard.queries import fetch_recent_decisions
 
         result = fetch_recent_decisions(limit=10)
 
         assert isinstance(result, list)
+        assert len(result) >= 1
+        for col in ("regime_at_decision", "trigger_context", "response_json"):
+            assert col in result[0], f"{col} 컬럼 없음 — REQ-064-A1 위반"
 
     def test_fetch_roundtrips(self, seeded: dict[str, Any]) -> None:
         """fetch_roundtrips() — orders 체결 집계 + correction 필터."""

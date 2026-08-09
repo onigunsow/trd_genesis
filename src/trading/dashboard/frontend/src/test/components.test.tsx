@@ -28,23 +28,34 @@ const MOCK_STATUS: SystemStatus = {
   updated_at: '2026-06-14T10:00:00',
 }
 
+// SPEC-TRADING-064 REQ-064-A5: 선언된 TS 타입이 아니라 백엔드 실측 응답에서 파생한 픽스처.
+// 계약 키 목록을 단일 소스로 두고, 아래 자기점검 테스트가 픽스처 키 집합과 대조한다.
+// (그룹 A 실측: GET /api/decisions?limit=1 → 15키, GET /api/pipeline → step 9키)
+const DECISION_CONTRACT_KEYS = [
+  'id', 'ts', 'persona_name', 'cycle_kind', 'ticker', 'ticker_name', 'side', 'qty',
+  'confidence', 'rationale', 'risk_verdict', 'risk_rationale',
+  'regime_at_decision', 'trigger_context', 'response_json',
+].sort()
+
+const PIPELINE_STEP_CONTRACT_KEYS = [
+  'id', 'ts', 'persona_name', 'cycle_kind', 'input_tokens', 'output_tokens',
+  'latency_ms', 'status', 'regime_at_decision',
+].sort()
+
 const MOCK_PIPELINE: PipelineData = {
-  cycle_id: 'cycle-001',
-  cycle_started_at: '2026-06-14T09:00:00',
+  cycle_ts: '2026-06-14T09:00:04',
   steps: [
-    { step: 'macro', persona_name: 'macro', cycle_kind: 'pre_market', status: 'completed', latency_ms: 800, started_at: '2026-06-14T09:00:00', decisions: [], verdicts: [] },
-    { step: 'micro', persona_name: 'micro', cycle_kind: 'pre_market', status: 'completed', latency_ms: 1200, started_at: '2026-06-14T09:00:01', decisions: [], verdicts: [] },
-    { step: 'decision', persona_name: 'decision', cycle_kind: 'pre_market', status: 'completed', latency_ms: 900, started_at: '2026-06-14T09:00:02', decisions: [], verdicts: [] },
-    { step: 'risk', persona_name: 'risk', cycle_kind: 'pre_market', status: 'completed', latency_ms: 300, started_at: '2026-06-14T09:00:03', decisions: [], verdicts: [] },
-    { step: 'portfolio', persona_name: 'portfolio', cycle_kind: 'pre_market', status: 'completed', latency_ms: 200, started_at: '2026-06-14T09:00:04', decisions: [], verdicts: [] },
-    { step: 'sizing', persona_name: null, cycle_kind: null, status: 'pending', latency_ms: null, started_at: null, decisions: [], verdicts: [] },
+    { id: 1, ts: '2026-06-14T09:00:00', persona_name: 'macro', cycle_kind: 'pre_market', input_tokens: 1200, output_tokens: 300, latency_ms: 800, status: 'completed', regime_at_decision: 'BULL' },
+    { id: 2, ts: '2026-06-14T09:00:01', persona_name: 'micro', cycle_kind: 'pre_market', input_tokens: 1500, output_tokens: 400, latency_ms: 1200, status: 'completed', regime_at_decision: 'BULL' },
+    { id: 3, ts: '2026-06-14T09:00:02', persona_name: 'decision', cycle_kind: 'pre_market', input_tokens: 1800, output_tokens: 500, latency_ms: 900, status: 'completed', regime_at_decision: 'BULL' },
+    { id: 4, ts: '2026-06-14T09:00:03', persona_name: 'risk', cycle_kind: 'pre_market', input_tokens: 900, output_tokens: 150, latency_ms: 300, status: 'completed', regime_at_decision: 'BULL' },
+    { id: 5, ts: '2026-06-14T09:00:04', persona_name: 'portfolio', cycle_kind: 'pre_market', input_tokens: 700, output_tokens: 120, latency_ms: 200, status: 'completed', regime_at_decision: 'BULL' },
   ],
-  halt_state: true,
-  halt_reason: 'CIRCUIT_BREAKER_TRIP',
 }
 
 const MOCK_DECISIONS: Decision[] = [
   {
+    id: 101,
     ts: '2026-06-14T09:00:00',
     persona_name: 'micro',
     cycle_kind: 'pre_market',
@@ -56,14 +67,13 @@ const MOCK_DECISIONS: Decision[] = [
     rationale: '반도체 업황 개선 기대',
     risk_verdict: 'APPROVE',
     risk_rationale: '한도 내 허용',
-    prob_bull: 0.6,
-    prob_base: 0.3,
-    prob_bear: 0.1,
     regime_at_decision: 'BULL',
-    trigger_context: 'pre_market_scan',
-    response_json: '{"action":"BUY"}',
+    // 실 응답 형태: persona_runs 의 jsonb 두 컬럼은 문자열이 아니라 객체다(라이브 curl 실측).
+    trigger_context: { cycle_kind: 'pre_market', macro_run_id: 2524, micro_run_id: 2525 },
+    response_json: { signals: [{ ticker: '005930', side: 'buy', qty: 10 }], summary: '반도체 업황 개선' },
   },
   {
+    id: 102,
     ts: '2026-06-14T09:01:00',
     persona_name: 'micro',
     cycle_kind: 'pre_market',
@@ -75,10 +85,8 @@ const MOCK_DECISIONS: Decision[] = [
     rationale: null,
     risk_verdict: 'REJECT',
     risk_rationale: '한도 초과',
-    prob_bull: 0.4,
-    prob_base: 0.4,
-    prob_bear: 0.2,
-    regime_at_decision: 'BEAR',
+    // REQ-064-A7: persona_runs 미기록 케이스(NULL) — 이 셋은 "미기록"으로 렌더돼야 한다
+    regime_at_decision: null,
     trigger_context: null,
     response_json: null,
   },
@@ -214,9 +222,52 @@ describe('PipelineView 드릴다운 상세', () => {
     )
     fireEvent.click(screen.getAllByRole('button')[0])
 
+    // jsonb 객체를 pretty-print 한 결과가 pre 블록에 들어간다. 객체를 그대로 넘기면
+    // React 가 터지므로(error #31), 문자열화됐는지까지 확인한다.
     await waitFor(() => {
-      expect(screen.getByText('{"action":"BUY"}')).toBeDefined()
+      const pre = document.querySelector('pre')
+      expect(pre).not.toBeNull()
+      expect(pre!.textContent).toContain('"signals"')
+      expect(pre!.textContent).toContain('005930')
     })
+  })
+
+  // REQ-064-A4: prob_bull/base/bear 는 백엔드가 산출하지 않는다(ADR-001) — 드릴다운에서 완전 제거
+  it('REQ-064-A4: 드릴다운에 확률(prob_*) 표시가 없다', async () => {
+    render(<PipelineView status={MOCK_STATUS} />)
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button').length).toBeGreaterThan(0)
+    )
+    fireEvent.click(screen.getAllByRole('button')[0])
+
+    await waitFor(() => expect(screen.getByText('BULL')).toBeDefined())
+    expect(screen.queryByText(/확률/)).toBeNull()
+  })
+
+  // REQ-064-A7: NULL 인 regime_at_decision/trigger_context/response_json 은 "미기록"으로 명시 표기
+  it('REQ-064-A7: NULL 필드는 "미기록"으로 표기되고 빈칸/0/-으로 렌더되지 않는다', async () => {
+    render(<PipelineView status={MOCK_STATUS} />)
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button').length).toBeGreaterThan(1)
+    )
+    // 두 번째 결정(SK하이닉스) — regime/trigger_context/response_json 전부 NULL
+    fireEvent.click(screen.getAllByRole('button')[1])
+
+    await waitFor(() => {
+      const markers = screen.getAllByText('미기록')
+      // Regime + 트리거 컨텍스트 + response_json(raw) = 3곳
+      expect(markers.length).toBe(3)
+    })
+  })
+
+  // REQ-064-A5: 픽스처가 계약 키 집합과 정확히 일치하는지 자가 검증한다.
+  // 백엔드가 내지 않는 키가 픽스처에 섞여 들어오면(예: prob_bull 재추가) 이 테스트가 실패한다.
+  it('REQ-064-A5: 픽스처 키 집합이 백엔드 실측 계약과 정확히 일치한다(자기점검)', () => {
+    expect(Object.keys(MOCK_DECISIONS[0]).sort()).toEqual(DECISION_CONTRACT_KEYS)
+    expect(Object.keys(MOCK_DECISIONS[1]).sort()).toEqual(DECISION_CONTRACT_KEYS)
+    expect(Object.keys(MOCK_PIPELINE.steps[0]).sort()).toEqual(PIPELINE_STEP_CONTRACT_KEYS)
   })
 })
 

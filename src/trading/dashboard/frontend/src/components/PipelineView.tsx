@@ -141,6 +141,23 @@ const s = {
     whiteSpace: 'pre-wrap' as const,
     wordBreak: 'break-all' as const,
   },
+  // REQ-064-A7: NULL 값은 "미기록"으로 명시 표기 (빈 문자열/0/-/공백과 구별)
+  drillValueUnrecorded: {
+    color: theme.textMuted,
+    fontStyle: 'italic' as const,
+    fontSize: '0.75rem',
+  },
+}
+
+// 파이프라인 6장 카드 스트립 표시용 로컬 뷰모델.
+// 백엔드 PipelineStep(9키, status: 'error'|'completed')엔 'step'/'pending' 개념이 없다 —
+// 6단계 스켈레톤을 위해 프런트에서만 파생한다(ADR-004: PipelineView 6장 카드는 그룹 C 미변경).
+interface DisplayStep {
+  step: string
+  persona_name: string | null
+  cycle_kind: string | null
+  status: 'completed' | 'error' | 'pending'
+  latency_ms: number | null
 }
 
 function fmtTs(ts: string | null): string {
@@ -168,16 +185,16 @@ export default function PipelineView({ status }: Props) {
   const { data: decisions, error: decisionsError } = usePolling(decisionsFetcher, 10_000)
 
   // 파이프라인 스텝을 정해진 순서로 정렬
-  const orderedSteps = pipeline
+  const orderedSteps: DisplayStep[] = pipeline
     ? STEP_ORDER.map((key) => {
         // 백엔드 /api/pipeline 은 단계를 persona_name 으로 반환한다(step 필드 없음).
         // null-safe 로 매칭하고, 찾은 항목엔 표준 키(step)를 부여한다.
         const found = pipeline.steps.find((st) =>
-          (st.persona_name ?? st.step ?? '').toLowerCase().includes(key),
+          (st.persona_name ?? '').toLowerCase().includes(key),
         )
         return found
-          ? { ...found, step: key }
-          : { step: key, persona_name: null, cycle_kind: null, status: 'pending' as const, latency_ms: null, started_at: null, decisions: [], verdicts: [] }
+          ? { step: key, persona_name: found.persona_name, cycle_kind: found.cycle_kind, status: found.status, latency_ms: found.latency_ms }
+          : { step: key, persona_name: null, cycle_kind: null, status: 'pending', latency_ms: null }
       })
     : []
 
@@ -198,9 +215,9 @@ export default function PipelineView({ status }: Props) {
       <section>
         <div style={s.sectionTitle}>
           최신 사이클 파이프라인
-          {pipeline?.cycle_started_at && (
+          {pipeline?.cycle_ts && (
             <span style={{ fontWeight: 400, marginLeft: 8 }}>
-              ({fmtTs(pipeline.cycle_started_at)})
+              ({fmtTs(pipeline.cycle_ts)})
             </span>
           )}
         </div>
@@ -294,24 +311,24 @@ export default function PipelineView({ status }: Props) {
                   <div style={s.drilldown} role="region" aria-label="결정 상세">
                     <DrilldownRow label="근거 (rationale)" value={d.rationale} />
                     <DrilldownRow label="신뢰도" value={d.confidence != null ? d.confidence.toFixed(3) : null} />
-                    <DrilldownRow label="Regime" value={d.regime_at_decision} />
-                    <DrilldownRow
-                      label="확률 (Bull/Base/Bear)"
-                      value={
-                        d.prob_bull != null
-                          ? `${(d.prob_bull * 100).toFixed(0)}% / ${(d.prob_base ?? 0) * 100 | 0}% / ${(d.prob_bear ?? 0) * 100 | 0}%`
-                          : null
-                      }
-                    />
+                    {/* ADR-001: prob_bull/base/bear 는 723/723 NULL — Decision 페르소나가 산출하지 않아 제거(REQ-064-A4) */}
+                    <DrilldownRow label="Regime" value={d.regime_at_decision} emptyAsUnrecorded />
                     <DrilldownRow label="리스크 판정" value={d.risk_verdict} badge={d.risk_verdict} />
                     <DrilldownRow label="리스크 근거" value={d.risk_rationale} />
-                    <DrilldownRow label="트리거 컨텍스트" value={d.trigger_context} />
-                    {d.response_json && (
-                      <div style={{ marginTop: 8 }}>
-                        <div style={{ color: theme.textSecondary, fontSize: '0.7rem', marginBottom: 4 }}>response_json (raw)</div>
-                        <pre style={s.raw}>{d.response_json}</pre>
-                      </div>
-                    )}
+                    <DrilldownRow
+                      label="트리거 컨텍스트"
+                      value={d.trigger_context != null ? JSON.stringify(d.trigger_context) : null}
+                      emptyAsUnrecorded
+                    />
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ color: theme.textSecondary, fontSize: '0.7rem', marginBottom: 4 }}>response_json (raw)</div>
+                      {/* REQ-064-A7: NULL 이면 빈 <pre> 로 침묵하지 말고 "미기록"으로 명시 */}
+                      {d.response_json != null ? (
+                        <pre style={s.raw}>{JSON.stringify(d.response_json, null, 2)}</pre>
+                      ) : (
+                        <div style={s.drillValueUnrecorded}>미기록</div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -327,12 +344,23 @@ function DrilldownRow({
   label,
   value,
   badge,
+  emptyAsUnrecorded = false,
 }: {
   label: string
   value: string | number | null | undefined
   badge?: string | null
+  // REQ-064-A7: NULL(≠빈 문자열)을 "미기록"으로 명시. 빈 문자열은 그대로 통과시켜 구별한다.
+  emptyAsUnrecorded?: boolean
 }) {
-  if (value == null) return null
+  if (value == null) {
+    if (!emptyAsUnrecorded) return null
+    return (
+      <div style={s.drillRow}>
+        <div style={s.drillLabel}>{label}</div>
+        <div style={s.drillValueUnrecorded}>미기록</div>
+      </div>
+    )
+  }
   return (
     <div style={s.drillRow}>
       <div style={s.drillLabel}>{label}</div>

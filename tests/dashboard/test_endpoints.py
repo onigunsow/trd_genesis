@@ -7,6 +7,7 @@ All DB calls are mocked; no live Postgres required.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -252,6 +253,89 @@ class TestEquityEndpoint:
         ) as mock_fn:
             client.get("/api/equity?days=60")
             mock_fn.assert_called_once_with(days=60)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/pipeline (REQ-064-A6)
+# ---------------------------------------------------------------------------
+
+class TestPipelineEndpoint:
+    """REQ-064-A6: /api/pipeline 응답 키 집합과 status 값 도메인 검증.
+
+    개정 전에는 엔드포인트 레벨 테스트가 전무했다(SPEC-TRADING-064 결함 A).
+    """
+
+    _EXPECTED_STEP_KEYS: ClassVar[set[str]] = {
+        "cycle_kind",
+        "id",
+        "input_tokens",
+        "latency_ms",
+        "output_tokens",
+        "persona_name",
+        "regime_at_decision",
+        "status",
+        "ts",
+    }
+
+    def test_returns_expected_key_set(self, client) -> None:
+        payload = {
+            "cycle_ts": datetime(2026, 6, 14, 9, 30, tzinfo=UTC),
+            "steps": [
+                {
+                    "id": 1,
+                    "ts": datetime(2026, 6, 14, 9, 30, tzinfo=UTC),
+                    "persona_name": "macro",
+                    "cycle_kind": "intraday",
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "latency_ms": 1200,
+                    "status": "completed",
+                    "regime_at_decision": "bull",
+                }
+            ],
+        }
+        with patch("trading.dashboard.queries.fetch_pipeline", return_value=payload):
+            resp = client.get("/api/pipeline")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data.keys()) == {"cycle_ts", "steps"}
+        assert set(data["steps"][0].keys()) == self._EXPECTED_STEP_KEYS
+
+    def test_status_domain_is_error_or_completed(self, client) -> None:
+        payload = {
+            "cycle_ts": None,
+            "steps": [
+                {
+                    "id": 1, "ts": None, "persona_name": "macro",
+                    "cycle_kind": "intraday", "input_tokens": None,
+                    "output_tokens": None, "latency_ms": None,
+                    "status": "error", "regime_at_decision": None,
+                },
+                {
+                    "id": 2, "ts": None, "persona_name": "micro",
+                    "cycle_kind": "intraday", "input_tokens": None,
+                    "output_tokens": None, "latency_ms": None,
+                    "status": "completed", "regime_at_decision": None,
+                },
+            ],
+        }
+        with patch("trading.dashboard.queries.fetch_pipeline", return_value=payload):
+            resp = client.get("/api/pipeline")
+
+        data = resp.json()
+        assert {s["status"] for s in data["steps"]} <= {"error", "completed"}
+
+    def test_empty_db_returns_empty_steps_not_500(self, client) -> None:
+        """빈 DB에서도 500이 아니라 {steps: [], cycle_ts: null}."""
+        with patch(
+            "trading.dashboard.queries.fetch_pipeline",
+            return_value={"steps": [], "cycle_ts": None},
+        ):
+            resp = client.get("/api/pipeline")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"steps": [], "cycle_ts": None}
 
 
 # ---------------------------------------------------------------------------
