@@ -333,6 +333,7 @@ def render(
 ) -> str:
     payload = json.dumps(elements, ensure_ascii=False)
     glyphs = json.dumps(glyph_uris(), ensure_ascii=False)
+    roles = json.dumps(MODULE_ROLE, ensure_ascii=False)
     order_rows = (
         "".join(
             "<tr><td>{}</td><td>{}</td><td class=num>{}</td></tr>".format(
@@ -369,6 +370,9 @@ nav{{display:flex;gap:4px;padding:10px 14px 0;border-bottom:1px solid var(--line
 nav button{{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
  font:inherit;font-size:13px;padding:8px 14px;cursor:pointer}}
 nav button.on{{color:var(--fg);border-bottom-color:#7aa2f7}}
+#crumb{{margin-left:16px;align-self:center;font-size:12px;color:var(--dim)}}
+#crumb a{{color:#7aa2f7;text-decoration:none}}
+#crumb b{{color:var(--fg);margin-left:4px}}
 #ov{{flex:1;overflow-y:auto;padding:24px 28px 60px}}
 #ov.hide,#cy.hide{{display:none}}
 #cy{{flex:1;min-height:0;background:#f6f7f9}}
@@ -410,7 +414,8 @@ code{{font:12px ui-monospace,monospace;color:#c0caf5;word-break:break-all}}
 <main>
   <nav>
     <button id="tab-ov" class="on">개요 — 판단은 이렇게 흐른다</button>
-    <button id="tab-gr">상세 그래프 — {n_nodes}개 블록 전부</button>
+    <button id="tab-gr">상세 그래프 — {n_nodes}개 블록</button>
+    <span id="crumb"></span>
   </nav>
   <div id="ov">
     {stale_banner}
@@ -435,6 +440,7 @@ code{{font:12px ui-monospace,monospace;color:#c0caf5;word-break:break-all}}
 const WIN = {WINDOW_DAYS};
 const els = {payload};
 const GLYPH = {glyphs};
+const ROLE = {roles};
 const mods = [...new Set(els.filter(e => e.data.module).map(e => e.data.module))].sort();
 const palette = ['#2f6df6','#e8453c','#2aa84a','#f5a623','#8b53d4','#00a9c4','#ff7043',
                  '#12a594','#5c6bc0','#e0518f','#66a83a','#b07a2e'];
@@ -443,10 +449,71 @@ document.getElementById('legend').innerHTML = mods.map(m =>
   '<span data-m="' + m + '"><i class="dot" style="background:' + color(m) + '"></i>' +
   m + '</span>').join('');
 
+const FN = els.filter(e => !e.data.source);
+const ED = els.filter(e => e.data.source);
+const BY_ID = Object.fromEntries(FN.map(e => [e.data.id, e.data]));
+
+// 1단계 — 모듈 뷰. 진입점은 모듈로 접지 않고 그대로 둔다(흐름의 시작점이라서).
+function moduleView() {{
+  const nodes = {{}};
+  for (const e of FN) {{
+    const d = e.data;
+    if (d.kind === '진입점') {{ nodes[d.id] = {{data: d}}; continue; }}
+    const k = 'm:' + d.module;
+    if (!nodes[k]) nodes[k] = {{data: {{
+      id: k, label: d.module, module: d.module, kind: '모듈', path: d.module,
+      file: '', events: [], total: 0, fns: 0
+    }}}};
+    nodes[k].data.fns++;
+    nodes[k].data.total += d.total;
+  }}
+  const key = d => d.kind === '진입점' ? d.id : 'm:' + d.module;
+  const cnt = {{}};
+  for (const e of ED) {{
+    const s = BY_ID[e.data.source], t = BY_ID[e.data.target];
+    if (!s || !t) continue;
+    const a = key(s), b = key(t);
+    if (a === b) continue;
+    cnt[a + '>' + b] = (cnt[a + '>' + b] || 0) + 1;
+  }}
+  const edges = Object.entries(cnt).map(([k, n]) => {{
+    const p = k.split('>');
+    return {{data: {{id: 'me' + k, source: p[0], target: p[1], label: n + '개 호출'}}}};
+  }});
+  return Object.values(nodes).concat(edges);
+}}
+
+// 2단계 — 한 모듈의 함수들 + 그 함수들과 직접 이어진 바깥 블록.
+function drillView(m) {{
+  const own = new Set(FN.filter(e => e.data.module === m).map(e => e.data.id));
+  const keep = new Set(own);
+  for (const e of ED) {{
+    if (own.has(e.data.source)) keep.add(e.data.target);
+    if (own.has(e.data.target)) keep.add(e.data.source);
+  }}
+  return FN.filter(e => keep.has(e.data.id))
+    .concat(ED.filter(e => keep.has(e.data.source) && keep.has(e.data.target)));
+}}
+
+const LAYOUT = {{name: 'dagre', rankDir: 'LR', nodeSep: 34, rankSep: 150, edgeSep: 14}};
+let view = null;   // null = 모듈 뷰, 문자열 = 그 모듈의 함수 뷰
+
+function setView(m) {{
+  view = m;
+  cy.elements().remove();
+  cy.add(m ? drillView(m) : moduleView());
+  cy.layout(LAYOUT).run();
+  cy.fit(40);
+  document.getElementById('crumb').innerHTML = m
+    ? '<a href="#" id="back">← 모듈 전체</a> <b>' + m + '</b>'
+    : '모듈을 클릭하면 그 안의 함수 블록이 열립니다';
+  const b = document.getElementById('back');
+  if (b) b.onclick = ev => {{ ev.preventDefault(); setView(null); }};
+}}
+
 const cy = cytoscape({{
   container: document.getElementById('cy'),
-  elements: els,
-  layout: {{name: 'dagre', rankDir: 'LR', nodeSep: 34, rankSep: 150, edgeSep: 14}},
+  elements: [],
   style: [
     // 노코드 캔버스 — 색 타일 안에 픽토그램, 이름은 타일 아래.
     {{selector: 'node', style: {{
@@ -471,6 +538,15 @@ const cy = cytoscape({{
       'shape': 'ellipse', 'width': 56, 'height': 56, 'background-color': '#2f6df6',
       'background-image': GLYPH['__entry__'],
       'font-size': 12, 'font-weight': 'bold', 'color': '#1b2534'
+    }}}},
+    // 모듈 타일은 함수 타일보다 크고, 라벨에 함수 수와 기록 건수를 함께 적는다.
+    {{selector: 'node[kind = "모듈"]', style: {{
+      'width': 78, 'height': 78, 'font-size': 13, 'font-weight': 'bold',
+      'text-margin-y': 9, 'color': '#1b2534',
+      'label': e => e.data('label') + '\\n' + e.data('fns') + '개 함수'
+        + (e.data('total') ? ' · ' + e.data('total') + '건' : ''),
+      'background-image': e => GLYPH[e.data('module')] || 'none',
+      'border-width': e => e.data('total') ? 4 : 0
     }}}},
     {{selector: 'edge', style: {{
       'width': 1.2, 'line-color': '#c3cad6', 'target-arrow-color': '#c3cad6',
@@ -509,6 +585,7 @@ function show(n) {{
 
 cy.on('tap', 'node', e => {{
   const n = e.target;
+  if (n.data('kind') === '모듈') {{ setView(n.data('module')); showModule(n); return; }}
   const hood = n.predecessors().union(n.successors()).union(n);
   cy.elements().addClass('faded');
   hood.removeClass('faded');
@@ -519,24 +596,24 @@ cy.on('tap', e => {{
   if (e.target === cy) cy.elements().removeClass('faded').removeClass('hot');
 }});
 
-// 모듈 범례 클릭 = 그 모듈이 관여하는 경로만 남긴다.
-let picked = null;
+function showModule(n) {{
+  const d = n.data();
+  document.getElementById('sel').innerHTML =
+    '<div><b>' + d.label + '</b> <span class="chip">모듈</span></div>' +
+    '<div class="cw">' + (ROLE[d.label] || '') + '</div>' +
+    '<div class="dim" style="font-size:12px">함수 ' + d.fns + '개 · 30일 기록 '
+    + d.total + '건</div>';
+}}
+
+// 범례 클릭 = 그 모듈의 함수 뷰로 내려간다.
 document.getElementById('legend').addEventListener('click', ev => {{
   const chip = ev.target.closest('[data-m]');
   if (!chip) return;
-  const m = chip.dataset.m;
-  cy.elements().removeClass('faded').removeClass('hot');
-  document.querySelectorAll('#legend [data-m]').forEach(c => c.style.opacity = 1);
-  if (picked === m) {{ picked = null; return; }}
-  picked = m;
-  const own = cy.nodes().filter(n => n.data('module') === m);
-  const hood = own.union(own.predecessors()).union(own.successors());
-  cy.elements().addClass('faded');
-  hood.removeClass('faded');
-  own.predecessors('edge').addClass('hot');
-  document.querySelectorAll('#legend [data-m]').forEach(
-    c => c.style.opacity = c.dataset.m === m ? 1 : .35);
+  tab(true);
+  setView(view === chip.dataset.m ? null : chip.dataset.m);
 }});
+
+setView(null);
 
 mermaid.initialize({{startOnLoad: true, theme: 'dark',
   themeVariables: {{fontSize: '13px', fontFamily: 'Noto Sans KR, sans-serif'}},
@@ -558,9 +635,12 @@ document.getElementById('tab-gr').onclick = () => tab(true);
 document.getElementById('ov').addEventListener('click', ev => {{
   const chip = ev.target.closest('[data-go]');
   if (!chip) return;
+  const src = FN.find(e => e.data.label === chip.dataset.go);
+  if (!src) return;
+  tab(true);
+  if (view !== src.data.module) setView(src.data.module);
   const n = cy.nodes().filter(x => x.data('label') === chip.dataset.go);
   if (!n.length) return;
-  tab(true);
   cy.elements().addClass('faded');
   n.union(n.predecessors()).union(n.successors()).removeClass('faded');
   n.predecessors('edge').addClass('hot');
