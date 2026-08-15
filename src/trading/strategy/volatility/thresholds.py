@@ -21,8 +21,22 @@ from trading.strategy.volatility.regime import classify_regime
 LOG = logging.getLogger(__name__)
 
 # REQ-DYNTH-05-3: Configurable ATR multipliers
-STOP_ATR_MULTIPLIER: float = float(os.environ.get("STOP_ATR_MULTIPLIER", "2.0"))
-TAKE_ATR_MULTIPLIER: float = float(os.environ.get("TAKE_ATR_MULTIPLIER", "3.0"))
+#
+# 2026-08-15 재튜닝 (stop 2.0→4.0, take 3.0→4.0, floor -10→-15). 근거는 두 개의
+# exit-backtest 스윕이 같은 답을 낸 것이다:
+#   실거래 19종목 · 2021~2026 (n=5,238):  기대값 +0.60% → +3.16%, 승률 56→62%
+#   KOSPI200 전체 · 2016~2026 (n=92,423): 기대값 +0.39% → +1.23%, 승률 42→52%
+# 종전 조합(2.0/-10/3.0)은 두 우주 모두에서 격자 최하위권이었다. 종전 주석의
+# "넓은 floor 는 기대값을 해친다"는 결론은 이 격자에서 성립하지 않는다.
+#
+# 실측 65건 왕복도 같은 방향을 가리킨다: 2~15일 보유가 승률 17~20%로 -35만원,
+# 16~30일 보유가 승률 83%로 +5만원. 좁은 stop 이 오를 종목을 바닥에서 내보냈다.
+# 평균 보유가 14일 → 49일로 길어지는 것이 이 재튜닝의 본질이다.
+#
+# 대가: 종목당 최대 손실이 -10% → -15% 로 커진다. 계좌 전체 위험을 같게 두려면
+# 포지션 사이즈/종목 수로 상쇄해야 한다(별도 확인). 진입 엣지는 검증 밖이다.
+STOP_ATR_MULTIPLIER: float = float(os.environ.get("STOP_ATR_MULTIPLIER", "4.0"))
+TAKE_ATR_MULTIPLIER: float = float(os.environ.get("TAKE_ATR_MULTIPLIER", "4.0"))
 TRAIL_ATR_MULTIPLIER: float = float(os.environ.get("TRAIL_ATR_MULTIPLIER", "1.5"))
 
 # REQ-DYNTH-05-4: Hard guardrail limits
@@ -30,12 +44,12 @@ MAX_STOP_LOSS_PCT: float = float(os.environ.get("MAX_STOP_LOSS_PCT", "15.0"))
 MAX_TAKE_PROFIT_PCT: float = float(os.environ.get("MAX_TAKE_PROFIT_PCT", "30.0"))
 
 # SPEC-TRADING-037 REQ-037-3: hard stop FLOOR. Caps how WIDE the stop can be so a
-# single position can never lose more than this before exit. Backtest-derived:
-# the 10y KOSPI200 exit-rule sweep found best per-trade expectancy at
-# stop=2.0xATR / FLOOR=-10% / take=3.0xATR (wider floors hurt expectancy, so we
-# do NOT tighten beyond -10%). Applied via ``max(atr_stop, STOP_FLOOR_PCT)``:
-# only the wide side is clamped; a narrow ATR stop is left untouched.
-STOP_FLOOR_PCT: float = float(os.environ.get("STOP_FLOOR_PCT", "-10.0"))
+# single position can never lose more than this before exit. Applied via
+# ``max(atr_stop, STOP_FLOOR_PCT)``: only the wide side is clamped; a narrow ATR
+# stop is left untouched.
+# 2026-08-15: -10 → -15 (근거는 위 ATR 승수 주석). MAX_STOP_LOSS_PCT(15.0)와
+# 일치하므로 캡 충돌 없음.
+STOP_FLOOR_PCT: float = float(os.environ.get("STOP_FLOOR_PCT", "-15.0"))
 
 
 def get_dynamic_thresholds(ticker: str) -> dict[str, Any]:

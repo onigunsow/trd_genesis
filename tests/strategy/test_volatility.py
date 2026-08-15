@@ -12,6 +12,7 @@ import pytest
 from trading.strategy.volatility.atr import MIN_DAYS_FOR_ATR, _ema, compute_atr
 from trading.strategy.volatility.regime import _classify_by_absolute, classify_regime
 from trading.strategy.volatility.thresholds import (
+    MAX_STOP_LOSS_PCT,
     MAX_TAKE_PROFIT_PCT,
     STOP_ATR_MULTIPLIER,
     STOP_FLOOR_PCT,
@@ -205,8 +206,8 @@ class TestGetDynamicThresholds:
         assert result["stop_loss_pct"] == round(-STOP_ATR_MULTIPLIER * 1.8, 2)  # -3.6
         assert result["take_profit_pct"] == round(TAKE_ATR_MULTIPLIER * 1.8, 2)  # 5.4
         assert result["trailing_stop_pct"] == round(-TRAIL_ATR_MULTIPLIER * 1.8, 2)  # -2.7
-        assert result["effective_stop"] == -3.6  # within guardrail
-        assert result["effective_take"] == 5.4  # within guardrail
+        assert result["effective_stop"] == round(-STOP_ATR_MULTIPLIER * 1.8, 2)  # 가드레일 안
+        assert result["effective_take"] == round(TAKE_ATR_MULTIPLIER * 1.8, 2)  # 가드레일 안
         assert result["source"] == "dynamic"
 
     @patch("trading.strategy.volatility.thresholds.audit")
@@ -224,14 +225,16 @@ class TestGetDynamicThresholds:
         result = get_dynamic_thresholds("BIOTECH")
 
         assert result["ticker"] == "BIOTECH"
-        # Raw stop = -2 * 8.0 = -16.0, MAX_STOP_LOSS_PCT cap -15.0, then the
-        # SPEC-TRADING-037 REQ-037-3 hard FLOOR (-10%) clamps the wide side:
-        # effective_stop = max(-15.0, STOP_FLOOR_PCT=-10.0) = -10.0.
-        assert result["stop_loss_pct"] == -16.0
-        assert result["effective_stop"] == STOP_FLOOR_PCT  # -10.0 (floor governs)
-        # Raw take = 3 * 8.0 = 24.0, within 30.0 cap (take unaffected by floor)
-        assert result["take_profit_pct"] == 24.0
-        assert result["effective_take"] == 24.0
+        # Raw stop = -STOP_ATR_MULTIPLIER * 8.0 (승수는 튜닝 값이라 상수 참조).
+        # 그 다음 MAX_STOP_LOSS_PCT 캡, 그 다음 SPEC-037 FLOOR 가 넓은 쪽을 자른다.
+        assert result["stop_loss_pct"] == round(-STOP_ATR_MULTIPLIER * 8.0, 2)
+        assert result["effective_stop"] == max(
+            max(-STOP_ATR_MULTIPLIER * 8.0, -MAX_STOP_LOSS_PCT), STOP_FLOOR_PCT
+        )
+        # Raw take = TAKE_ATR_MULTIPLIER * 8.0, 30.0 캡 (take 는 floor 무관)
+        raw_take = round(TAKE_ATR_MULTIPLIER * 8.0, 2)
+        assert result["take_profit_pct"] == raw_take
+        assert result["effective_take"] == min(raw_take, 30.0)
         assert result["source"] == "dynamic"
 
     @patch("trading.strategy.volatility.thresholds.audit")
@@ -246,7 +249,12 @@ class TestGetDynamicThresholds:
 
         assert result["ticker"] == "NEW_IPO"
         assert result["source"] == "fixed_fallback"
-        assert result["fixed_fallback_stop"] == -7.0
+        # 폴백 stop 은 DynamicThresholds 모델의 튜닝 기본값 — 숫자를 박지 않는다.
+        from trading.strategy.volatility.models import DynamicThresholds
+
+        assert result["fixed_fallback_stop"] == DynamicThresholds.model_fields[
+            "fixed_fallback_stop"
+        ].default
         assert result["atr_pct"] is None
         assert result["volatility_regime"] is None
 
@@ -264,6 +272,7 @@ class TestGetDynamicThresholds:
 
         result = get_dynamic_thresholds("VOLATILE")
 
-        # Raw take = 3 * 11.0 = 33.0, capped to 30.0
-        assert result["take_profit_pct"] == 33.0
+        # Raw take = TAKE_ATR_MULTIPLIER * 11.0 (> 30 캡). 승수는 튜닝 값이라 상수 참조.
+        assert result["take_profit_pct"] == round(TAKE_ATR_MULTIPLIER * 11.0, 2)
+        assert result["take_profit_pct"] > MAX_TAKE_PROFIT_PCT
         assert result["effective_take"] == MAX_TAKE_PROFIT_PCT  # 30.0

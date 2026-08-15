@@ -43,10 +43,13 @@ def _restore_thresholds():
 class TestStopFloorConstant:
     """REQ-037-3 (b) — FLOOR is a named, configurable, backtest-derived constant."""
 
-    def test_floor_default_is_minus_ten(self):
+    def test_floor_default_matches_backtest_pick(self):
+        """2026-08-15 재튜닝: -10 → -15 (두 exit-backtest 스윕 일치). 튜닝 값이라
+        숫자를 못 박지 않고 '음수이고 MAX_STOP_LOSS_PCT 를 넘지 않는다'만 본다."""
         import trading.strategy.volatility.thresholds as th
 
-        assert th.STOP_FLOOR_PCT == -10.0
+        assert th.STOP_FLOOR_PCT < 0
+        assert th.STOP_FLOOR_PCT >= -th.MAX_STOP_LOSS_PCT
 
     def test_floor_env_override(self, monkeypatch):
         th = _reload_thresholds(monkeypatch, STOP_FLOOR_PCT="-8.0")
@@ -67,11 +70,14 @@ class TestStopFloorClamping:
     def test_wide_atr_stop_is_clamped_to_floor(
         self, mock_atr, mock_cached, mock_regime, mock_audit
     ):
-        # STOP_ATR_MULTIPLIER default 2.0; atr_pct 7.0 -> atr_stop -14% (wide).
-        mock_atr.return_value = _atr_data(7.0)
+        import trading.strategy.volatility.thresholds as th
+
+        # ATR 이 충분히 커서 raw stop 이 floor 보다 넓어지게 만든다(승수 무관).
+        wide_atr = abs(th.STOP_FLOOR_PCT) / th.STOP_ATR_MULTIPLIER * 2.0
+        mock_atr.return_value = _atr_data(wide_atr)
         res = get_dynamic_thresholds("005930")
-        # FLOOR -10% caps the -14% wide stop.
-        assert res["effective_stop"] == -10.0
+        # FLOOR 가 넓은 쪽을 자른다.
+        assert res["effective_stop"] == th.STOP_FLOOR_PCT
 
     @patch("trading.strategy.volatility.thresholds.audit")
     @patch("trading.strategy.volatility.thresholds.classify_regime", return_value="low")
@@ -80,11 +86,14 @@ class TestStopFloorClamping:
     def test_narrow_atr_stop_is_unchanged(
         self, mock_atr, mock_cached, mock_regime, mock_audit
     ):
-        # atr_pct 3.0 -> atr_stop -6% (narrower than -10% floor).
-        mock_atr.return_value = _atr_data(3.0)
+        import trading.strategy.volatility.thresholds as th
+
+        # ATR 이 작아서 raw stop 이 floor 보다 좁은 경우(승수·floor 값 무관하게 구성).
+        narrow_atr = abs(th.STOP_FLOOR_PCT) / th.STOP_ATR_MULTIPLIER * 0.5
+        mock_atr.return_value = _atr_data(narrow_atr)
         res = get_dynamic_thresholds("005930")
-        # floor only caps the WIDE side -> narrow stop untouched.
-        assert res["effective_stop"] == -6.0
+        # floor 는 넓은 쪽만 자른다 -> 좁은 stop 은 그대로.
+        assert res["effective_stop"] == round(-th.STOP_ATR_MULTIPLIER * narrow_atr, 2)
 
     @patch("trading.strategy.volatility.thresholds.audit")
     @patch("trading.strategy.volatility.thresholds.classify_regime", return_value="extreme")
@@ -95,8 +104,11 @@ class TestStopFloorClamping:
     ):
         # atr_pct 20.0 -> stop_loss_pct -40%, MAX_STOP_LOSS_PCT cap -15%, then
         # FLOOR -10% takes over: effective_stop must be -10% (not -40/-15).
+        import trading.strategy.volatility.thresholds as th
+
         mock_atr.return_value = _atr_data(20.0)
         res = get_dynamic_thresholds("005930")
-        assert res["effective_stop"] == -10.0
+        # 캡(-MAX_STOP_LOSS_PCT)과 floor 중 얕은 쪽이 최종.
+        assert res["effective_stop"] == max(-th.MAX_STOP_LOSS_PCT, th.STOP_FLOOR_PCT)
         # take side unaffected by the stop floor.
         assert res["effective_take"] is not None

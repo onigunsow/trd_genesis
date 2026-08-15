@@ -38,16 +38,27 @@ class TradingMode(str, Enum):
 # loss still trips and stays NON-auto-resumable (SPEC-032, keyed on the
 # "daily_loss" breach prefix, independent of this value).
 RISK_DAILY_MAX_LOSS: Final[float] = float(os.getenv("RISK_DAILY_MAX_LOSS", "-0.025"))  # -2.5%
-RISK_PER_TICKER_MAX_POSITION: Final[float] = 0.20    # 20.0%
-RISK_TOTAL_INVESTED_MAX: Final[float] = 0.80         # 80.0%
-RISK_SINGLE_ORDER_MAX: Final[float] = 0.10           # 10.0%
-RISK_DAILY_ORDER_COUNT_MAX: Final[int] = 10
+# 2026-08-15: 종목당 상한 20% → 15%. 손절 floor 를 -10 → -15% 로 넓히면서
+# (strategy/volatility/thresholds.py) 종목 하나의 최악 손실이 20% x 15% = 계좌
+# -3.0% 가 되어 일일 한도(-2.5%)를 넘긴다. 15% x 15% = -2.25% 로 한도 안에 둔다.
+# 실측 비중은 0.4~2.8% 라 당장의 영향은 없고, 한도끼리의 정합성 문제다.
+# 같은 커밋에서 env 오버라이드를 열었다(종전엔 코드 리터럴만 있었다).
+RISK_PER_TICKER_MAX_POSITION: Final[float] = float(
+    os.getenv("RISK_PER_TICKER_MAX_POSITION", "0.15")
+)  # 15.0%
+RISK_TOTAL_INVESTED_MAX: Final[float] = float(
+    os.getenv("RISK_TOTAL_INVESTED_MAX", "0.80")
+)  # 80.0%
+RISK_SINGLE_ORDER_MAX: Final[float] = float(
+    os.getenv("RISK_SINGLE_ORDER_MAX", "0.10")
+)  # 10.0%
+RISK_DAILY_ORDER_COUNT_MAX: Final[int] = int(os.getenv("RISK_DAILY_ORDER_COUNT_MAX", "10"))
 
 # SPEC-TRADING-040 M2 (REQ-040-2): single-ticker concentration cap. When a held
 # ticker exceeds this fraction of the total portfolio value the position watchdog
 # auto-trims (code-enforced — the decision persona effectively never sells). The
 # normal cap is wider than RISK_PER_TICKER_MAX_POSITION (the buy-side entry cap,
-# 20%): the buy cap stops a *new* over-weight entry while this cap *unwinds* an
+# 15% since 2026-08-15): the buy cap stops a *new* over-weight entry while this cap *unwinds* an
 # already-accumulated over-weight. Under late-cycle defence the cap tightens to
 # RISK_CONCENTRATION_CAP_LATE_CYCLE so trims align with the defence (synergy).
 RISK_CONCENTRATION_CAP_PCT: Final[float] = float(
