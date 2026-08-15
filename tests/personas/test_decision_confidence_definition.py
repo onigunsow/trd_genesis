@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-_PROMPTS = Path(__file__).resolve().parent.parent.parent / "src" / "trading" / "personas" / "prompts"
+_PROMPTS = (
+    Path(__file__).resolve().parent.parent.parent / "src" / "trading" / "personas" / "prompts"
+)
 
 
 @pytest.fixture
