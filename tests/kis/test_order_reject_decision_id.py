@@ -92,6 +92,7 @@ class TestSubmitOrderPassesDecisionIdToRejectAlert:
         with (
             patch.object(order, "connection", _conn_factory),
             patch.object(order, "audit", MagicMock()),
+            patch("trading.data.market_session.is_session_open", return_value=True),
             patch("trading.alerts.telegram.order_rejected") as m_reject,
             pytest.raises(KisError),
         ):
@@ -118,6 +119,7 @@ class TestSubmitOrderPassesDecisionIdToRejectAlert:
         with (
             patch.object(order, "connection", _conn_factory),
             patch.object(order, "audit", MagicMock()),
+            patch("trading.data.market_session.is_session_open", return_value=True),
             patch("trading.alerts.telegram.order_rejected") as m_reject,
             pytest.raises(KisError),
         ):

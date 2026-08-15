@@ -29,6 +29,56 @@ class LiveLockedError(RuntimeError):
     """Live order rejected because live_unlocked=false (REQ-MODE-02-6, REQ-FUTURE-08-2)."""
 
 
+class MarketSessionClosedError(RuntimeError):
+    """정규장 밖이라 주문을 보내지 않았다 (2026-08-15).
+
+    KIS 가 어차피 거부하지만(장시작전/장종료/영업일아님), 여기서 먼저 끊어
+    무의미한 KIS 왕복과 거부 알림을 없앤다. 라이브에서는 안전장치이기도 하다.
+    """
+
+
+# @MX:ANCHOR: 주문 시각 가드. submit_order 단일 관문에 걸려 모든 매매 경로
+#   (orchestrator / pre_market·intraday 사이클 / watchdog / late_cycle) 를 덮는다.
+# @MX:REASON: 장 밖 주문이 반복 발생했다 — 개장 전 07:32~07:36 매수 12건+
+#   (pre_market 사이클이 신호를 만들어 주문까지 냄, 2026-06-05~08-04),
+#   마감 후 15:33 매수 1건(intraday 크론 hour="9-15" 가 15:30·15:45 발사),
+#   토요일 매수(영업일 아님). 발생원이 서로 달라 크론 창 조정만으로는 못 막고,
+#   세 경우가 공통으로 지나는 지점이 submit_order 뿐이다.
+# @MX:WARN: money path — 여기서 raise 하면 주문이 나가지 않는다.
+# @MX:REASON: 판정 불가 시 is_session_open 이 True 로 폴백하므로(fail-open)
+#   설정 사고가 손절까지 막는 일은 없다. 차단은 세션이 확실히 닫혔을 때만.
+def _check_market_session(
+    client: KisClient,
+    *,
+    ticker: str,
+    side: Side,
+    qty: int,
+    persona_decision_id: int | None,
+) -> None:
+    """정규장 밖이면 감사 남기고 raise. 안이면 no-op."""
+    from trading.data.market_session import is_session_open
+
+    if is_session_open():
+        return
+
+    audit(
+        "ORDER_BLOCKED_OUTSIDE_SESSION",
+        actor="system",
+        details={
+            "ticker": ticker,
+            "side": side,
+            "qty": qty,
+            "mode": getattr(client.mode, "value", str(client.mode)),
+            "reason": "정규장 밖 — KIS 왕복 없이 차단",
+            "decision_id": persona_decision_id,
+            "decision_scope": None if persona_decision_id is not None else "rule_based",
+        },
+    )
+    raise MarketSessionClosedError(
+        f"정규장 밖이라 주문을 보내지 않았다: {side} {ticker} x{qty}"
+    )
+
+
 def _check_live_gate(client: KisClient) -> None:
     """REQ-MODE-02-6: While TRADING_MODE=live AND live_unlocked=false, reject all orders."""
     if client.mode != TradingMode.LIVE:
@@ -257,6 +307,15 @@ def submit_order(
     # order side effects (DB persist + audit + fill) routed through it preserves
     # the invariant that no order bypasses the mode gate.
     _check_live_gate(client)
+    # 세션 가드는 orders 행을 만들기 *전* 에 둔다 — 장 밖 시도로 고아 행이
+    # 쌓이지 않게. 기록은 ORDER_BLOCKED_OUTSIDE_SESSION 감사가 담당한다.
+    _check_market_session(
+        client,
+        ticker=ticker,
+        side=side,
+        qty=qty,
+        persona_decision_id=persona_decision_id,
+    )
 
     if order_type == "limit" and limit_price is None:
         raise ValueError("limit_price required for limit orders")

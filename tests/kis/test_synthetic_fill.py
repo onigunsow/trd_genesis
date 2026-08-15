@@ -106,12 +106,18 @@ class _AuditSink:
 @contextmanager
 def _patched(order_mod, cursor: ScriptedCursor, *,
              current_price=None, balance=None):
-    """Patch order.connection + order.audit (+ optional current_price/balance)."""
+    """Patch order.connection + order.audit (+ optional current_price/balance).
+
+    정규장 세션도 함께 연다 — 이 파일의 관심사는 합성 체결 로직이지 시각이
+    아니므로, 테스트가 실행 시각(주말·휴일·야간)에 좌우되면 안 된다.
+    세션 가드 자체는 tests/kis/test_order_session_guard.py 가 검증한다.
+    """
     sink = _AuditSink()
     patches = [
         patch.object(order_mod, "connection",
                      side_effect=lambda *a, **k: _conn_factory(cursor)),
         patch.object(order_mod, "audit", sink),
+        patch("trading.data.market_session.is_session_open", return_value=True),
     ]
     if current_price is not None:
         patches.append(patch.object(order_mod, "current_price", current_price))
@@ -497,6 +503,7 @@ class TestSyntheticFillContained:
             patch.object(order, "current_price", MagicMock(return_value=_quote(50_000))),
             patch.object(order, "balance",
                          MagicMock(return_value=_bal([_held("005930", 1, 50000)]))),
+            patch("trading.data.market_session.is_session_open", return_value=True),
         ):
             result = order.submit_order(client, ticker="005930", qty=1, side="buy")
 

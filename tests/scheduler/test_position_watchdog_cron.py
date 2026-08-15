@@ -46,15 +46,56 @@ class TestPositionWatchdogCronRegistration:
         ids = {j["id"] for j in captured}
         assert "position_watchdog" in ids
 
-    def test_position_watchdog_trigger_is_5min_09_15_kst_weekdays(self):
+    def test_position_watchdog_fires_every_5min_inside_session_only(self):
+        """정규장 안에서만 5분 주기로 발사한다.
+
+        2026-08-15 변경: 기존 hour="9-15" + minute="*/5" 는 hour×minute 곱이라
+        15:30~15:55 에도 발사됐다. 마감이 15:30 이므로 그 구간의 워치독 매도는
+        KIS 가 '장종료' 로 거부한다. 트리거 내부 필드가 아니라 실제 발사 시각을
+        검증한다 — 필드 모양을 못 박으면 이 버그를 테스트가 다시 고착시킨다.
+        """
+        from datetime import datetime, timedelta
+
+        import pytz
+
         captured = self._run_main()
         job = next(j for j in captured if j["id"] == "position_watchdog")
-        fields = {f.name: str(f) for f in job["trigger"].fields}
-        assert fields["day_of_week"] == "mon-fri"
-        assert fields["hour"] == "9-15"
-        assert fields["minute"] == "*/5"
-        # KST timezone
-        assert "Asia/Seoul" in repr(job["trigger"])
+        trigger = job["trigger"]
+
+        kst = pytz.timezone("Asia/Seoul")
+        # 2026-08-14 (금) 하루치 발사 시각 열거
+        cur = kst.localize(datetime(2026, 8, 14, 0, 0))
+        end = kst.localize(datetime(2026, 8, 15, 0, 0))
+        fires = []
+        for _ in range(500):
+            nxt = trigger.get_next_fire_time(None, cur)
+            if nxt is None or nxt >= end:
+                break
+            fires.append(nxt)
+            cur = nxt + timedelta(seconds=1)
+
+        hhmm = [f.strftime("%H:%M") for f in fires]
+        assert hhmm[0] == "09:00"
+        assert hhmm[-1] == "15:25", "마감(15:30) 이후로는 발사하지 않아야 한다"
+        assert "15:30" not in hhmm
+        assert "15:55" not in hhmm
+        # 5분 간격 유지
+        assert "09:05" in hhmm and "12:35" in hhmm
+        assert all(f.tzinfo is not None for f in fires)
+        assert "Asia/Seoul" in str(fires[0].tzinfo)
+
+    def test_position_watchdog_does_not_fire_on_weekend(self):
+        """주말에는 발사하지 않는다 (2026-08-16 은 일요일)."""
+        from datetime import datetime
+
+        import pytz
+
+        captured = self._run_main()
+        job = next(j for j in captured if j["id"] == "position_watchdog")
+        kst = pytz.timezone("Asia/Seoul")
+        sunday = kst.localize(datetime(2026, 8, 16, 0, 0))
+        nxt = job["trigger"].get_next_fire_time(None, sunday)
+        assert nxt is None or nxt.weekday() < 5
 
     def test_callback_invokes_poll_via_wrap(self):
         """The job callback routes through _wrap, which calls poll_position_watchdog."""

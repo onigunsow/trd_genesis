@@ -10,6 +10,7 @@ import signal
 
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from trading.contexts import (
@@ -34,6 +35,49 @@ from trading.watchers import volume_anomaly as _watcher_volume_anomaly
 
 LOG = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
+
+
+# @MX:NOTE: 주문을 낼 수 있는 잡의 크론 창은 정규장 세션에서 파생한다.
+# @MX:REASON: 기존 hour="9-15" + minute="*/N" 은 hour/minute 조합이 곱으로 풀려
+#   15:30·15:45·15:55 까지 발사됐다. 마감이 15:30 이므로 그 사이클은 통째로
+#   낭비이고, 실제로 2026-08-14 15:30 발사분이 15:33 매수 주문을 내 KIS 가
+#   '장종료' 로 거부했다. 시각을 코드 리터럴로 두면 미국장 전환 시 또 틀어지므로
+#   market_session.yaml 이 단일 진실 원천이다.
+def _session_cron(interval_minutes: int) -> OrTrigger | CronTrigger:
+    """정규장 슬롯에서 파생한 mon-fri 크론 트리거.
+
+    시간대별 분 목록을 각각 CronTrigger 로 만들고 OrTrigger 로 합친다 —
+    단일 CronTrigger 의 hour x minute 곱으로는 "마지막 시간만 일부 분" 을
+    표현할 수 없기 때문(KR/15분이면 15시는 0,15분만 필요).
+
+    세션 설정을 읽지 못하면 기존 동작(hour="9-15")으로 폴백한다.
+    """
+    from trading.data.market_session import intraday_cron_slots
+
+    slots = intraday_cron_slots(interval_minutes)
+    if not slots:
+        LOG.warning(
+            "_session_cron: 세션 설정 없음 — hour='9-15' 폴백 (interval=%dm)",
+            interval_minutes,
+        )
+        return CronTrigger(
+            day_of_week="mon-fri", hour="9-15",
+            minute=f"*/{interval_minutes}", timezone=KST,
+        )
+
+    by_hour: dict[int, list[int]] = {}
+    for slot in slots:
+        by_hour.setdefault(slot.hour, []).append(slot.minute)
+
+    return OrTrigger([
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=str(hour),
+            minute=",".join(str(m) for m in minutes),
+            timezone=KST,
+        )
+        for hour, minutes in sorted(by_hour.items())
+    ])
 
 
 def _run_news_crawl() -> None:
@@ -393,14 +437,11 @@ def main() -> None:
     # @MX:SPEC: SPEC-TRADING-024
     sched.add_job(
         lambda: _wrap("intraday_adaptive", orchestrator.run_intraday_cycle),
-        CronTrigger(
-            day_of_week="mon-fri",
-            hour="9-15",
-            minute="*/15",
-            timezone=KST,
-        ),
+        # 2026-08-15: hour="9-15" 는 15:30·15:45 에도 발사돼 마감 후 사이클이
+        # 돌았다(8/14 15:33 매수 거부). 세션 파생 창으로 교체 — 마지막 슬롯 15:15.
+        _session_cron(15),
         id="intraday_adaptive",
-        name="intraday_adaptive */15 (09-15 KST)",
+        name="intraday_adaptive */15 (정규장 세션)",
     )
 
     # SPEC-TRADING-024 REQ-024-2/3/4 — 5-min watcher pollers (mon-fri 09-15 KST).
@@ -409,27 +450,27 @@ def main() -> None:
             "watcher_price_threshold",
             _watcher_price_threshold.poll_price_threshold,
         ),
-        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        _session_cron(5),  # 2026-08-15: 마감 후 발사 제거 (마지막 슬롯 15:25)
         id="watcher_price_threshold",
-        name="watcher_price_threshold */5 (09-15 KST)",
+        name="watcher_price_threshold */5 (정규장 세션)",
     )
     sched.add_job(
         lambda: _wrap(
             "watcher_volume_anomaly",
             _watcher_volume_anomaly.poll_volume_anomaly,
         ),
-        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        _session_cron(5),  # 2026-08-15: 마감 후 발사 제거 (마지막 슬롯 15:25)
         id="watcher_volume_anomaly",
-        name="watcher_volume_anomaly */5 (09-15 KST)",
+        name="watcher_volume_anomaly */5 (정규장 세션)",
     )
     sched.add_job(
         lambda: _wrap(
             "watcher_blocked_release",
             _watcher_blocked_release.poll_blocked_release,
         ),
-        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        _session_cron(5),  # 2026-08-15: 마감 후 발사 제거 (마지막 슬롯 15:25)
         id="watcher_blocked_release",
-        name="watcher_blocked_release */5 (09-15 KST)",
+        name="watcher_blocked_release */5 (정규장 세션)",
     )
 
     # SPEC-TRADING-033 REQ-033-1 — auto stop-loss / take-profit position watchdog.
@@ -438,9 +479,9 @@ def main() -> None:
             "watcher_position_watchdog",
             _watcher_position_watchdog.poll_position_watchdog,
         ),
-        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", timezone=KST),
+        _session_cron(5),  # 2026-08-15: 마감 후 발사 제거 (마지막 슬롯 15:25)
         id="position_watchdog",
-        name="position_watchdog */5 (09-15 KST)",
+        name="position_watchdog */5 (정규장 세션)",
     )
 
     # SPEC-TRADING-042 D3 REQ-042-B1 — submitted 주문 5분 주기 resolver.

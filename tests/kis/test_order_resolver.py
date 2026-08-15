@@ -203,6 +203,7 @@ class TestStuckSubmittedReproduction:
         with (
             patch.object(order, "connection", _flaky),
             patch.object(order, "audit", MagicMock()),
+            patch("trading.data.market_session.is_session_open", return_value=True),
             patch.object(order, "current_price",
                          MagicMock(return_value={"price": 10_000})),
             patch.object(order, "balance",
