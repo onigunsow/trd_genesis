@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from trading.dashboard import queries
+from trading.dashboard import gate_queries, queries
 
 LOG = logging.getLogger(__name__)
 
@@ -278,6 +278,50 @@ def get_pipeline() -> dict[str, Any]:
 # 손익/KPI 수식을 재구현하지 않고 edge 모듈 / position_eval_snapshot 만 읽는다.
 # 모든 DB 접근은 ro_connection 경유 (REQ-054-A7).
 # @MX:SPEC: SPEC-TRADING-054 M1
+
+
+# ── SPEC-TRADING-065 그룹 3: 검증 게이트 뷰 ─────────────────────────────────
+@app.get("/api/gate/holding-period", tags=["gate"])
+def get_gate_holding_period(since: str | None = _SINCE_Q) -> dict[str, Any]:
+    """REQ-065-3a 보유기간별 손익(FIFO 왕복, since=진입일)."""
+    try:
+        return gate_queries.fetch_holding_period_pnl(since=since)
+    except Exception as exc:
+        LOG.error("fetch_holding_period_pnl failed: %s", exc)
+        raise HTTPException(status_code=503, detail="보유기간 집계 실패") from exc
+
+
+@app.get("/api/gate/entry-quality", tags=["gate"])
+def get_gate_entry_quality(since: str | None = _SINCE_Q) -> dict[str, Any]:
+    """REQ-065-3b 진입 품질 매트릭스 — confidence x entry_freshness, 결정 전체 반사실."""
+    try:
+        return gate_queries.fetch_entry_quality_matrix(since=since)
+    except Exception as exc:
+        LOG.error("fetch_entry_quality_matrix failed: %s", exc)
+        raise HTTPException(status_code=503, detail="진입 품질 집계 실패") from exc
+
+
+@app.get("/api/gate/risk", tags=["gate"])
+def get_gate_risk(since: str | None = _SINCE_Q) -> dict[str, Any]:
+    """REQ-065-3c 리스크 판정 분포 + HOLD 사유 + HOLD 반사실 + code_rules_passed."""
+    try:
+        return gate_queries.fetch_risk_verdicts(since=since)
+    except Exception as exc:
+        LOG.error("fetch_risk_verdicts failed: %s", exc)
+        raise HTTPException(status_code=503, detail="리스크 판정 집계 실패") from exc
+
+
+@app.get("/api/gate/sizing", tags=["gate"])
+def get_gate_sizing(
+    since: str | None = _SINCE_Q,
+    top_n: int = Query(default=gate_queries.TOP_N_DEFAULT, le=200),
+) -> dict[str, Any]:
+    """REQ-065-3d 매수 축소·차단 게이트별 건수·삭감률 + 최근 사유 표."""
+    try:
+        return gate_queries.fetch_sizing_gates(since=since, top_n=top_n)
+    except Exception as exc:
+        LOG.error("fetch_sizing_gates failed: %s", exc)
+        raise HTTPException(status_code=503, detail="사이징 게이트 집계 실패") from exc
 
 
 @app.get("/api/roundtrips", tags=["analytics"])

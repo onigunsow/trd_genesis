@@ -1705,9 +1705,34 @@ def fetch_decision_trace(decision_id: int) -> dict[str, Any] | None:
         if e["event_type"] not in known_event_types
     ]
 
+    # SPEC-065 REQ-065-4a: response_json 은 사이클 전체(시그널 7개 rationale 전문,
+    # ~8KB)다. 이 결정의 시그널 1개 + 사이클 summary 만 남긴다 — 프런트는 그것만 쓴다.
+    # 같은 김에 새 필드(entry_freshness, REQ-065-3e)를 최상위로 올려 드릴다운이 읽게 한다.
+    _slim_trace_decision(decision)
+
     return {
         "decision": decision,
         "nodes": _build_trace_nodes(event_rows, audit_map),
         "orders": [_serialize_trace_order(r) for r in order_rows],
         "unmatched_events": unmatched_events,
     }
+
+
+def _slim_trace_decision(decision: dict[str, Any]) -> None:
+    """response_json → 이 decision 의 시그널 1개 + summary. 제자리 수정.
+
+    매칭 키는 (ticker, side). 같은 사이클에 같은 종목·같은 방향 시그널이 둘 이상이면
+    첫 번째를 쓴다(결정 페르소나 규약상 1일 1회라 실무상 없음). 못 찾으면
+    signal=None 으로 두고 원본은 버린다 — 8KB 를 통째로 다시 내려보내지 않는다.
+    """
+    rj = decision.get("response_json")
+    if not isinstance(rj, dict):
+        return
+    ticker, side = decision.get("ticker"), decision.get("side")
+    mine = None
+    for sig in rj.get("signals") or []:
+        if isinstance(sig, dict) and sig.get("ticker") == ticker and sig.get("side") == side:
+            mine = sig
+            break
+    decision["response_json"] = {"signal": mine, "summary": rj.get("summary")}
+    decision["entry_freshness"] = (mine or {}).get("entry_freshness")

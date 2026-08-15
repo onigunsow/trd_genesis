@@ -158,7 +158,7 @@ scorecard·confidence·postmortem 전부 전기간 또는 `days=N` 뿐이다. �
   (오늘 실측 재현) — 8/17 이후 비율 변화가 이 패널에서 읽혀야 한다.
 - **AC-5** 매수 축소 패널이 8/14 `PORTFOLIO_ADJUSTMENT`(316140 6→3) 을 rationale 없음으로,
   8/17 이후 건은 rationale 채워진 채로 구분 표시한다.
-- **AC-6** trace 응답 크기가 3036 기준 8KB → 2KB 이하.
+- **AC-6** trace 응답의 `decision.response_json` 이 사이클 전체(시그널 7개)가 아니라 해당 시그널 1개 + summary 만 담는다. 3036 기준 decision 부분 8.1KB → 5KB 이하(남는 것은 결정·리스크 rationale 2개 — 프런트가 씀). nodes(SPEC-064 산출물)는 범위 밖.
 - **AC-7** 하드코딩 0: 게이트 기준일·표본 N·PF 임계가 설정에서 오고, 테스트는 상수 상대값.
 - **AC-8** `npx vite build` 통과, 기존 dashboard 단위 테스트(148) 회귀 0.
 
