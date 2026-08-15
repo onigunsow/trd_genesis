@@ -147,9 +147,36 @@ def run(
             decision_id,
             verdict,
             rationale,
-            False,                                # code rules check happens externally
+            False,  # 코드룰은 이 뒤 orchestrator 에서 돈다 → record_code_rules_result 로 갱신
             json.dumps(res.response_json or {}),
         ))
         row = cur.fetchone()
         review_id = row["id"]
     return res, review_id, verdict
+
+
+def record_code_rules_result(review_id: int | None, *, passed: bool, breaches: list[str]) -> None:
+    """risk_reviews.code_rules_passed 를 실제 check_pre_order 결과로 갱신한다.
+
+    2026-08-15: 이 컬럼이 482행 전부 False 였다 — INSERT 시점엔 코드룰이 아직
+    안 돌아서 False 를 박고, 그 뒤 아무도 갱신하지 않았다(죽은 컬럼). 리스크
+    페르소나(verdict) → 코드룰(check_pre_order) 순서이므로 코드룰 결과가 나온
+    뒤 여기서 써넣는다. breaches 는 raw 에 병합해 사후 집계가 가능하게 한다.
+
+    실패해도 raise 하지 않는다 — 관측성 갱신이 주문 경로를 막으면 안 된다.
+    """
+    if review_id is None:
+        return
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE risk_reviews
+                   SET code_rules_passed = %s,
+                       raw = raw || %s::jsonb
+                 WHERE id = %s
+                """,
+                (bool(passed), json.dumps({"code_rules_breaches": list(breaches)}), int(review_id)),
+            )
+    except Exception:
+        LOG.warning("record_code_rules_result failed (review_id=%s)", review_id, exc_info=True)

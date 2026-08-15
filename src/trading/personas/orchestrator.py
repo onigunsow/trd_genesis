@@ -1395,6 +1395,10 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             overheated=bool(getattr(safety, "overheated", False)),
             held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
         )
+        # risk_reviews.code_rules_passed 를 실제 결과로 갱신 (종전엔 항상 False).
+        risk_persona.record_code_rules_result(
+            review_id, passed=chk.passed, breaches=list(chk.breaches),
+        )
         if not chk.passed:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
             tg.system_briefing(
@@ -1868,6 +1872,10 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
             market="KOSPI",
             overheated=bool(getattr(safety, "overheated", False)),
             held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
+        )
+        # risk_reviews.code_rules_passed 를 실제 결과로 갱신 (종전엔 항상 False).
+        risk_persona.record_code_rules_result(
+            review_id, passed=chk.passed, breaches=list(chk.breaches),
         )
         if not chk.passed:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
