@@ -71,9 +71,24 @@ RISK_SELL_BUDGET_RESERVE: Final[int] = int(
 # holding parked for STAGNATION_DAYS+ with a flat P&L (|pnl| < band) and a
 # neutral RSI is rotated out (partial trim). Risk/rebalance-motivated → EV-exempt
 # (SPEC ADR-1). Distinct from the extreme stop/take rules.
-STAGNATION_DAYS: Final[int] = int(os.getenv("STAGNATION_DAYS", "20"))
+# 2026-08-15 조정 (20 → 40일, 밴드 3.0 → 2.0%). 근거는 반사실 실측이다:
+# rotate 청산 25건을 청산일 종가 기준으로 추적하니 5일 -0.80%, 10일 +2.66%,
+# 20일 +7.91% (10일 기준 16/25 상승). 즉 rotate 가 아직 오를 포지션을 내보내고
+# 있었다. 실제로 워치독 청산 35건 중 29건(83%)이 rotate 였고 평균 손익은
+# +0.20% — 손절도 익절도 아닌 자리에서 수수료만 쓰며 나가고 있었다.
+# 극단 사례: 055550 을 2026-08-14 12:32 에 107,500 에 사고 12:35 에 107,300 에
+# 팔았다(3분, -200원). 그 건의 직접 원인인 보유일 오판은 별도 수정했으나
+# (position_watchdog._holding_days 재진입 리셋), 레인지 자체도 좁았다.
+#
+# 20일 → 40일: 반사실이 말하는 "20일 더" 를 그대로 확보한다.
+# 밴드 3.0 → 2.0%: ±3% 안에서 나간 건들이 이후 상승했으므로 판정을 좁힌다.
+#
+# 한계: 표본 25건, 관측 구간이 상승장에 치우쳤을 수 있다. 하락장에서는 오래
+# 버티는 쪽이 불리하므로 8/17~ 재실측으로 검증할 것. 두 값 모두 env 로 즉시
+# 되돌릴 수 있다(STAGNATION_DAYS / STAGNATION_PNL_BAND_PCT).
+STAGNATION_DAYS: Final[int] = int(os.getenv("STAGNATION_DAYS", "40"))
 STAGNATION_PNL_BAND_PCT: Final[float] = float(
-    os.getenv("STAGNATION_PNL_BAND_PCT", "3.0")
+    os.getenv("STAGNATION_PNL_BAND_PCT", "2.0")
 )
 STAGNATION_RSI_LOW: Final[float] = float(os.getenv("STAGNATION_RSI_LOW", "40.0"))
 STAGNATION_RSI_HIGH: Final[float] = float(os.getenv("STAGNATION_RSI_HIGH", "60.0"))

@@ -177,26 +177,54 @@ class TestClassifyConcentration:
 # is_stagnant — pure helper (M1c)
 # --------------------------------------------------------------------------- #
 class TestIsStagnant:
+    """임계 상수를 숫자로 박지 않는다 — 2026-08-15 에 20일/3% 를 40일/2% 로
+    조정하자 하드코딩된 holding_days=25 가 깨졌다. 튜닝 값이 바뀌어도 로직
+    자체는 그대로여야 하므로 상수 기준 상대값으로 단언한다."""
+
     def test_long_hold_flat_neutral_rsi_is_stagnant(self):
+        from trading.config import STAGNATION_DAYS
         from trading.watchers.position_watchdog import is_stagnant
 
-        assert is_stagnant(holding_days=25, pnl_pct=0.5, rsi=50.0) is True
+        assert is_stagnant(
+            holding_days=STAGNATION_DAYS + 5, pnl_pct=0.5, rsi=50.0
+        ) is True
+
+    def test_at_threshold_day_is_stagnant(self):
+        """경계: 정확히 STAGNATION_DAYS 이면 포함(>= 비교)."""
+        from trading.config import STAGNATION_DAYS
+        from trading.watchers.position_watchdog import is_stagnant
+
+        assert is_stagnant(
+            holding_days=STAGNATION_DAYS, pnl_pct=0.5, rsi=50.0
+        ) is True
 
     def test_short_hold_not_stagnant(self):
+        from trading.config import STAGNATION_DAYS
         from trading.watchers.position_watchdog import is_stagnant
 
-        assert is_stagnant(holding_days=3, pnl_pct=0.5, rsi=50.0) is False
+        assert is_stagnant(
+            holding_days=STAGNATION_DAYS - 1, pnl_pct=0.5, rsi=50.0
+        ) is False
 
     def test_big_move_not_stagnant(self):
+        """밴드 밖으로 움직인 포지션은 정체가 아니다(손절/익절 규칙 담당)."""
+        from trading.config import STAGNATION_DAYS, STAGNATION_PNL_BAND_PCT
         from trading.watchers.position_watchdog import is_stagnant
 
-        assert is_stagnant(holding_days=25, pnl_pct=8.0, rsi=50.0) is False
+        assert is_stagnant(
+            holding_days=STAGNATION_DAYS + 5,
+            pnl_pct=STAGNATION_PNL_BAND_PCT + 0.1,
+            rsi=50.0,
+        ) is False
 
     def test_extreme_rsi_not_stagnant(self):
         """RSI outside the neutral band is handled by the extreme exit rules."""
+        from trading.config import STAGNATION_DAYS
         from trading.watchers.position_watchdog import is_stagnant
 
-        assert is_stagnant(holding_days=25, pnl_pct=0.5, rsi=88.0) is False
+        assert is_stagnant(
+            holding_days=STAGNATION_DAYS + 5, pnl_pct=0.5, rsi=88.0
+        ) is False
 
     def test_missing_data_not_stagnant(self):
         """Defensive: missing holding_days / rsi → not stagnant (never crash)."""
@@ -525,8 +553,14 @@ class TestStagnationTrimIntegration:
         BEFORE this wiring holding_days/rsi were never fed → is_stagnant always
         False → no rotation. This proves the wiring now fires the first exit.
         """
-        holdings = [_holding("064350", qty=10, pnl_pct=-2.37, eval_amount=500_000)]
-        metrics, sell, audit = self._run(holdings, holding_days=30, rsi=50.0)
+        from trading.config import STAGNATION_DAYS, STAGNATION_PNL_BAND_PCT
+
+        # 임계는 튜닝 값이라 숫자로 박지 않는다(2026-08-15 20일/3% → 40일/2%).
+        flat_pnl = -(STAGNATION_PNL_BAND_PCT / 2)  # 밴드 안쪽 = 평평
+        holdings = [_holding("064350", qty=10, pnl_pct=flat_pnl, eval_amount=500_000)]
+        metrics, sell, audit = self._run(
+            holdings, holding_days=STAGNATION_DAYS + 10, rsi=50.0
+        )
 
         assert sell.call_count == 1
         _, kwargs = sell.call_args
