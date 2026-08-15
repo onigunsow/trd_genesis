@@ -1434,8 +1434,8 @@ _DECISION_BY_ID_SQL = """
 
 # REQ-064-C1/그룹 B: 단일 결정은 details 최상위 decision_id(스칼라, TIER 1~4/7).
 # 배치 이벤트는 스칼라 키를 안 쓴다(B3a/B5) — decision_ids 배열 또는
-# adjusted/rejected/sells 각 항목의 decision_id 다. 셋을 OR 로 안 묶으면
-# COUNT_HALT_BYPASS_SELL/PORTFOLIO_ADJUSTMENT 만 조용히 추적에서 빠진다
+# adjusted/rejected/sells/dropped 각 항목의 decision_id 다. 넷을 OR 로 안 묶으면
+# COUNT_HALT_BYPASS_SELL/PORTFOLIO_ADJUSTMENT/PORTFOLIO_GATE_DROP 이 조용히 추적에서 빠진다
 # (이 SPEC 이 없애려는 침묵을 새로 만드는 셈).
 _TRACE_EVENTS_SQL = """
     SELECT ts, event_type, actor, details
@@ -1446,6 +1446,7 @@ _TRACE_EVENTS_SQL = """
        OR details->'adjusted' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
        OR details->'rejected' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
        OR details->'sells' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
+       OR details->'dropped' @> jsonb_build_array(jsonb_build_object('decision_id', %s::int))
     ORDER BY ts ASC
 """
 
@@ -1608,10 +1609,13 @@ def fetch_decision_trace(decision_id: int) -> dict[str, Any] | None:
 
         cur.execute(
             _TRACE_EVENTS_SQL,
-            # 최상위 / 과거 중첩(context) / 배치 3종 — 순서는 SQL 술어 순서와 일치.
+            # 최상위 / 과거 중첩(context) / 배치 4종 — 순서는 SQL 술어 순서와 일치.
+            # 2026-08-15: dropped[] 추가 — PORTFOLIO_GATE_DROP(섹터캡/현금바닥)이
+            # 이 키를 쓴다. 빠뜨리면 게이트 드롭이 추적에서 조용히 사라진다.
             (
                 str(decision_id),
                 str(decision_id),
+                decision_id,
                 decision_id,
                 decision_id,
                 decision_id,

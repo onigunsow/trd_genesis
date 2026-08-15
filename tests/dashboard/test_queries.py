@@ -1430,4 +1430,12 @@ class TestTraceLegacyNestedDecisionId:
         from trading.dashboard.queries import _TRACE_EVENTS_SQL
 
         # 술어를 늘리면서 파라미터 튜플을 안 맞추면 psycopg 가 런타임에만 터진다.
-        assert _TRACE_EVENTS_SQL.count("%s") == 6
+        assert _TRACE_EVENTS_SQL.count("%s") == 7
+
+    def test_events_sql_reads_gate_drop_batch_key(self) -> None:
+        """2026-08-15: PORTFOLIO_GATE_DROP(섹터캡/현금바닥)은 dropped[] 에
+        decision_id 를 담는다. adjusted/rejected/sells 만 보면 이 드롭이 결정
+        추적에서 조용히 사라진다 — SPEC-064 가 없애려던 침묵을 재생산한다."""
+        from trading.dashboard.queries import _TRACE_EVENTS_SQL
+
+        assert "details->'dropped' @>" in _TRACE_EVENTS_SQL
