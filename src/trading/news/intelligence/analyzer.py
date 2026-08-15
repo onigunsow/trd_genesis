@@ -80,6 +80,22 @@ ANCHOR_MISMATCH_MAX = 1
 # 길이는 10자라 정상 응답은 걸리지 않는다. 시장 종속 값 아님.
 ANCHOR_MIN_CHARS = 6
 
+# ── 관련성 우선 선별 (2026-08-15) ────────────────────────────────────────
+# 크롤 유입 1,800~2,000건/일 대비 분석 상한은 500~600건/일 이다. 즉 "무엇을
+# 먼저 분석하느냐"가 곧 "무엇을 영영 안 보느냐"다 — 뽑히지 못한 기사는 7일
+# 보존 정리(crawler.crawl_all)에 그대로 삭제되기 때문. 종전 정렬은
+# published_at DESC(최신순)뿐이라 유니버스와 무관한 기사가 앞자리를 먹었다.
+#
+# 섹터 등급은 코드에 적지 않고 실측에서 산출한다 — 사람이 정한 등급은 낡고,
+# 시장이 바뀌면 틀린다(미국장 대비). 2026-08-15 실측이 그 근거다:
+# 유니버스 핵심인 finance_banking 의 impact>=4 비율은 6.0% 인데
+# 유니버스 무관인 macro_economy 는 35.4% 였다. "유니버스 섹터 우선"이라는
+# 직관이 데이터로 반박된 것이라, 직관 대신 hit_rate 를 쓴다.
+RELEVANCE_HIGH_IMPACT_MIN = 4      # 이 이상을 '값어치 있는 분석'으로 본다
+RELEVANCE_MIN_SAMPLE = 20          # 섹터 hit_rate 를 믿기 위한 최소 표본
+RELEVANCE_DEFAULT_HIT_RATE = 0.15  # 표본 부족 섹터의 중립값(전체 평균 근처)
+RELEVANCE_LOOKBACK_DAYS = 30       # hit_rate 산출 창
+
 # Valid classifications
 VALID_CLASSIFICATIONS = frozenset({
     "macro_market_moving", "sector_specific", "company_specific", "noise",
@@ -146,29 +162,141 @@ def check_title_similarity(title: str, implication: str) -> float:
     return SequenceMatcher(None, title_clean, impl_clean).ratio()
 
 
+def _has_hangul(text: str) -> bool:
+    """한글 음절이 하나라도 있으면 True."""
+    return any("가" <= ch <= "힣" for ch in text)
+
+
+def _universe_title_patterns() -> tuple[list[str], str]:
+    """유니버스 종목명 매칭 재료 ``(ILIKE 패턴 목록, ASCII 단어경계 정규식)``.
+
+    제목에 유니버스 종목이 직접 언급된 기사를 최우선으로 올리기 위한 재료다.
+    유니버스/메타데이터 조회에 실패하면 ``([], "")`` — 호출자는 그 경우 종전처럼
+    섹터·최신순만으로 정렬한다(우선순위 미적용, 파이프라인은 계속 돈다).
+
+    한글명과 ASCII 명을 다르게 다룬다(2026-08-15 실측):
+
+    - 한글명은 조사가 붙어 나오므로 부분문자열(ILIKE)이 자연스럽고 오매칭이 적다.
+      '삼성전자가', '삼성전자의' 를 모두 잡아야 한다.
+    - ASCII 명은 부분문자열이면 치명적이다. 유니버스에 'SK'·'LG'·'HMM' 같은
+      짧은 이름이 있는데 ``ILIKE '%SK%'`` 는 대소문자를 무시해 task·risk·disk·
+      'G.Skill' 까지 전부 매칭한다(실측: PC 부품 기사가 최우선으로 올라옴).
+      그래서 Postgres 단어경계(``\\m``/``\\M``) 정규식으로 묶는다 —
+      'SK hynix' 는 잡고 'G.Skill' 은 거르기 위함.
+
+    한 글자 이름과 LIKE 와일드카드를 품은 이름은 제외한다(전수 매치 방지).
+    """
+    try:
+        from trading.data.universe import get_data_universe
+
+        tickers = list(get_data_universe())
+    except Exception:
+        LOG.warning("relevance-first: 유니버스 로드 실패 — 섹터·최신순만 적용")
+        return [], ""
+    if not tickers:
+        return [], ""
+
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT name FROM ticker_metadata WHERE ticker = ANY(%s)",
+                (tickers,),
+            )
+            names = [row.get("name") or "" for row in cur.fetchall()]
+    except Exception:
+        LOG.warning("relevance-first: ticker_metadata 조회 실패 — 섹터·최신순만 적용")
+        return [], ""
+
+    like_patterns: list[str] = []
+    ascii_names: list[str] = []
+    for name in names:
+        clean = name.strip()
+        if len(clean) < 2 or "%" in clean or "_" in clean:
+            continue
+        if _has_hangul(clean):
+            like_patterns.append(f"%{clean}%")
+        else:
+            ascii_names.append(re.escape(clean))
+
+    ascii_regex = r"\m(" + "|".join(ascii_names) + r")\M" if ascii_names else ""
+    return like_patterns, ascii_regex
+
+
+# @MX:ANCHOR: 분석 대상 선별의 단일 지점. export_pending_for_host 와
+#   analyze_articles 가 공유한다 — 여기서 뽑히지 못한 기사는 7일 보존 정리에
+#   삭제되므로, 이 ORDER BY 가 곧 "무엇을 영영 안 보는가" 를 정한다.
+# @MX:REASON: 2026-08-15 실측 — 유입 1,800~2,000/일 vs 분석 상한 500~600/일.
+#   종전 최신순 정렬은 유니버스 무관 기사에 앞자리를 줬다. 섹터 등급을 코드에
+#   박지 않고 news_analysis 실적(hit_rate)에서 산출해 시장 종속성을 없앤다.
+# @MX:SPEC: SPEC-TRADING-062
 def get_unanalyzed_articles(
     *,
     sector: str | None = None,
     limit: int = MAX_ARTICLES_PER_RUN,
 ) -> list[dict]:
-    """Fetch articles not yet analyzed, ordered by published_at DESC.
+    """분석 안 된 기사를 관련성 우선으로 뽑는다.
 
-    REQ-INTEL-01-6: Articles where id NOT IN (SELECT article_id FROM news_analysis).
+    REQ-INTEL-01-6: news_analysis 에 행이 없는 기사가 대상(analyzed_at 컬럼은
+    쓰지 않는다 — 정상 경로에서 채워지지 않는 흔적 컬럼이다).
+
+    정렬 우선순위:
+
+    1. 제목에 유니버스 종목명이 직접 등장 — 섹터와 무관하게 값어치가 확실하다.
+    2. 섹터의 과거 hit_rate (impact >= RELEVANCE_HIGH_IMPACT_MIN 비율).
+       표본이 RELEVANCE_MIN_SAMPLE 미만인 섹터는 중립값을 받아 신규·희소
+       섹터가 부당하게 밀리지 않는다.
+    3. published_at DESC — 같은 등급 안에서는 최신 우선(종전 동작).
+
+    알려진 한계: hit_rate 는 '분석해 본' 기사에서만 나오므로 후순위 섹터는
+    표본이 늘지 않아 등급이 굳을 수 있다(exploration 부재). 완화책은 중립값
+    폴백과 min-sample 게이트뿐이며, 상한에 계속 걸리면 저평가 섹터는 사실상
+    처리되지 않는다. 8/17~ 실측으로 재검토할 것.
     """
+    like_patterns, ascii_regex = _universe_title_patterns()
+
     sql = """
+        WITH sector_value AS (
+            SELECT a.sector AS sector,
+                   count(*) FILTER (WHERE na.impact_score >= %s)::float
+                       / NULLIF(count(*), 0) AS hit_rate
+              FROM news_analysis na
+              JOIN news_articles a ON a.id = na.article_id
+             WHERE na.analyzed_at >= now() - make_interval(days => %s)
+             GROUP BY a.sector
+            HAVING count(*) >= %s
+        )
         SELECT a.id, a.title, a.source_name, a.sector, a.body_text, a.summary,
                a.published_at
           FROM news_articles a
+          LEFT JOIN sector_value sv ON sv.sector = a.sector
          WHERE NOT EXISTS (
              SELECT 1 FROM news_analysis na WHERE na.article_id = a.id
          )
     """
-    params: list = []
+    params: list = [
+        RELEVANCE_HIGH_IMPACT_MIN,
+        RELEVANCE_LOOKBACK_DAYS,
+        RELEVANCE_MIN_SAMPLE,
+    ]
     if sector:
         sql += " AND a.sector = %s"
         params.append(sector)
-    sql += " ORDER BY a.published_at DESC LIMIT %s"
-    params.append(limit)
+
+    sql += """
+         ORDER BY (CASE
+                     WHEN a.title ILIKE ANY(%s) THEN 1
+                     WHEN %s <> '' AND a.title ~ %s THEN 1
+                     ELSE 0
+                   END) DESC,
+                  COALESCE(sv.hit_rate, %s) DESC,
+                  a.published_at DESC
+         LIMIT %s
+    """
+    # ASCII 정규식은 대소문자를 구분한다(~). 'SK'/'LG' 같은 약칭을 소문자
+    # 단어('sk','lg')까지 잡으면 오매칭이 되살아나기 때문.
+    params.extend(
+        [like_patterns, ascii_regex, ascii_regex, RELEVANCE_DEFAULT_HIT_RATE, limit]
+    )
 
     with connection() as conn, conn.cursor() as cur:
         cur.execute(sql, params)

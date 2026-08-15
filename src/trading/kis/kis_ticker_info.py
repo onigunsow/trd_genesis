@@ -229,7 +229,12 @@ def resolve_and_cache(client: Any, tickers: list[str]) -> dict[str, Any]:
 def _collect_backfill_tickers() -> list[str]:
     """백필 대상 종목 수집.
 
-    orders (paper, 최근 180일 체결) + positions (round-trip 원장 종목).
+    orders (paper, 최근 180일 체결) + positions (round-trip 원장 종목)
+    + 데이터 유니버스(매수 후보 — 거래 이력이 없어도 이름이 필요하다).
+
+    2026-08-15: 유니버스를 빠뜨리고 있었다. 54종목 중 거래 이력이 있는 18개만
+    이름이 채워져, 뉴스 관련성 우선 선별(analyzer._universe_title_patterns)이
+    삼성전자·SK하이닉스·현대차 같은 핵심 종목을 제목에서 못 알아봤다.
     """
     from trading.db.session import connection
 
@@ -247,10 +252,21 @@ def _collect_backfill_tickers() -> list[str]:
     try:
         with connection() as conn, conn.cursor() as cur:
             cur.execute(sql)
-            return [r["ticker"] for r in cur.fetchall()]
+            tickers = {r["ticker"] for r in cur.fetchall()}
     except Exception as exc:
         LOG.error("백필 대상 종목 조회 실패: %s", exc)
         return []
+
+    # 유니버스는 별도 소스(screened/dynamic/holdings/KOSPI200)라 위 DB 조회로는
+    # 안 잡힌다. 실패해도 거래 종목만으로 백필을 계속한다.
+    try:
+        from trading.data.universe import get_data_universe
+
+        tickers.update(get_data_universe())
+    except Exception as exc:
+        LOG.warning("백필 대상에 유니버스 추가 실패(거래 종목만 진행): %s", exc)
+
+    return sorted(tickers)
 
 
 def backfill(client: Any | None = None) -> dict[str, Any]:
