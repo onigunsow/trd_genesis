@@ -181,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_aggregate_pnl(rest)
     if cmd == "converge-ghost-buys":
         return _cmd_converge_ghost_buys(rest)
+    if cmd == "repair-expired-sells":
+        return _cmd_repair_expired_sells(rest)
     if cmd == "status":
         from trading.db.session import get_system_state
         state = get_system_state()
@@ -480,6 +482,50 @@ def _cmd_converge_ghost_buys(rest: list[str]) -> int:
         f"total_excess={result.get('total_excess', 0)} "
         f"dry_run={result.get('dry_run', dry_run)} "
         f"skipped_live={result.get('skipped_live', False)}"
+    )
+    return 0
+
+
+def _cmd_repair_expired_sells(rest: list[str]) -> int:
+    """오만료된 페이퍼 매도를 체결로 되돌린다 (원장 소급 교정).
+
+    KIS 잔고가 매도수량만큼 정확히 줄었음이 POSITION_SYNCED 로 증명된 행만
+    교정한다 — 근거가 없거나 잔고가 안 줄어든 행은 건너뛴다.
+    자세한 판정 규칙은 trading.kis.expired_sell_repair 모듈 독스트링 참조.
+
+    Flags
+    -----
+    --apply       실제 UPDATE/audit 수행. 미지정 시 dry-run(기본).
+    --verbose     행별 판정 결과를 모두 출력.
+
+    Exit codes: 0 on success, 1 on error.
+    """
+    dry_run = "--apply" not in rest
+    verbose = "--verbose" in rest
+
+    from trading.kis.expired_sell_repair import repair_expired_sells
+
+    try:
+        result = repair_expired_sells(dry_run=dry_run)
+    except Exception as e:
+        print(f"trading repair-expired-sells: error: {e}", file=sys.stderr)
+        return 1
+
+    if verbose:
+        for d in result.get("details", []):
+            mark = "REPAIR" if d.get("eligible") else "SKIP  "
+            px = d.get("fill_price")
+            print(
+                f"  {mark} id={d['order_id']:>4} {d['ticker']} qty={d['qty']} "
+                f"pre={d.get('pre_qty')} post={d.get('post_qty')} "
+                f"px={px}({d.get('price_source')}) — {d.get('reason')}"
+            )
+
+    print(
+        f"repair-expired-sells: candidates={result.get('candidates', 0)} "
+        f"repaired={result.get('repaired', 0)} "
+        f"skipped={result.get('skipped', 0)} "
+        f"dry_run={result.get('dry_run', dry_run)}"
     )
     return 0
 

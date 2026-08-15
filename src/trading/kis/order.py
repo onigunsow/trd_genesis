@@ -91,6 +91,7 @@ def _synthetic_fill(
     side: Side,
     order_type: OrderType,
     limit_price: int | None,
+    pre_submit_held: int | None = None,
 ) -> None:
     """REQ-039-1..4: fill a *paper* order synthetically at submission time.
 
@@ -138,7 +139,20 @@ def _synthetic_fill(
     fill_qty = qty
     if side == "sell":
         # REQ-039-4: clamp to held; the dropped excess is audited, never shorted.
-        held = _held_qty(client, ticker)
+        #
+        # 보유수량은 KIS POST *이전* 값이어야 한다 (2026-08-14 회귀). 이 함수는
+        # submit_order Step 4 — 즉 매도가 이미 KIS에 접수된 뒤 — 에서 돈다.
+        # 여기서 balance() 를 새로 읽으면 방금 낸 자기 매도가 반영된 잔고를 보고
+        # held=0 으로 오판해, 정상 매도인데 합성 체결을 건너뛴다. 그러면 주문이
+        # 'submitted' 로 방치되다 order_resolver 가 'expired' 로 닫아 원장에서
+        # 왕복이 사라진다 (055550, order 195, ODNO 0000028318).
+        # balance() 의 2초 TTL 캐시(SPEC-043) 덕에 대개는 매도 전 잔고가 캐시에
+        # 걸려 우연히 정상 동작했고, KIS 응답이 느린 날에만 터졌다.
+        held = (
+            pre_submit_held
+            if pre_submit_held is not None
+            else _held_qty(client, ticker)
+        )
         fill_qty = min(qty, held)
         if qty > held:
             audit(
@@ -290,6 +304,22 @@ def submit_order(
         row = cur.fetchone()
         order_id = row["id"]
 
+    # 매도 합성 체결이 쓸 보유수량을 POST 전에 확정한다. POST 뒤에 읽으면 자기
+    # 주문이 반영된 잔고를 보게 된다 (_synthetic_fill 의 clamp 주석 참조).
+    # 상위 매도 경로가 직전에 balance() 로 사전 가드를 돌므로 이 읽기는 대개
+    # 2초 TTL 캐시에 걸려 KIS 왕복을 추가하지 않는다. 페이퍼 전용 — 라이브는
+    # _synthetic_fill 자체가 no-op 이라 캡처하지 않는다.
+    pre_submit_held: int | None = None
+    if side == "sell" and client.mode == TradingMode.PAPER:
+        try:
+            pre_submit_held = _held_qty(client, ticker)
+        except Exception:  # 조회 실패는 주문을 막지 않는다
+            LOG.exception(
+                "pre-submit held capture failed (order_id=%s) — "
+                "_synthetic_fill 이 POST 후 재조회로 폴백",
+                order_id,
+            )
+
     # ── Step 2: External KIS call (no DB transaction held during external IO). ──
     try:
         resp: KisResponse = client.post(path, tr_id=tr_id, body=body)
@@ -417,6 +447,7 @@ def submit_order(
                 side=side,
                 order_type=order_type,
                 limit_price=limit_price,
+                pre_submit_held=pre_submit_held,
             )
             with connection() as conn, conn.cursor() as cur:
                 cur.execute("SELECT status FROM orders WHERE id = %s", (order_id,))

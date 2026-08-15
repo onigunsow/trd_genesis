@@ -329,6 +329,52 @@ class TestOverSellClamp:
         assert _order_updates(cursor) == []
         assert "OVERSELL_CLAMPED" in _all_events(cursor, sink)
 
+    def test_sell_fills_when_kis_balance_drops_after_post(self):
+        """2026-08-14 회귀: POST 후 잔고가 0이 되어도 매도는 체결로 기록된다.
+
+        재현: 055550 을 1주 보유한 상태에서 매도 → KIS 가 접수하며 잔고를
+        즉시 0 으로 차감 → _synthetic_fill 이 POST 후 balance() 를 다시 읽으면
+        held=0 을 보고 자기 주문을 오버셀로 오판, 체결 기록을 건너뛴다.
+        그러면 주문이 'submitted' 로 남아 order_resolver 가 'expired' 로 닫고
+        (order 195, ODNO 0000028318) 원장에서 왕복이 사라진다.
+
+        보유수량은 POST *이전* 값으로 확정해야 하므로 fill_qty=1 이 기록되고
+        OVERSELL_CLAMPED 는 찍히지 않아야 한다.
+        """
+        from trading.kis import order
+
+        client = _paper_client()
+        posted = {"done": False}
+
+        def _post(*_a: Any, **_k: Any) -> KisResponse:
+            posted["done"] = True  # KIS 접수 = 잔고 차감 시점
+            return _ok_response("0000028318")
+
+        client.post.side_effect = _post
+
+        def _balance(*_a: Any, **_k: Any) -> dict:
+            # POST 전에는 1주 보유, POST 후에는 매도가 반영되어 0주.
+            return _bal([] if posted["done"] else [_held("055550", 1, 107_500)])
+
+        cursor = ScriptedCursor(
+            fetchone_queue=[
+                {"id": 195},
+                {"qty": 1, "avg_cost": 107_500},
+                {"status": "filled"},
+            ],
+        )
+        with _patched(order, cursor,
+                      current_price=MagicMock(return_value=_quote(107_500)),
+                      balance=MagicMock(side_effect=_balance)) as sink:
+            order.submit_order(client, ticker="055550", qty=1, side="sell")
+
+        ups = _order_updates(cursor)
+        assert ups, "매도는 체결로 기록되어야 한다 (submitted 방치 금지)"
+        assert 1 in ups[-1][1], "fill_qty 는 POST 전 보유수량 1 이어야 한다"
+        assert "OVERSELL_CLAMPED" not in _all_events(cursor, sink), (
+            "자기 주문이 반영된 잔고를 오버셀로 오판하면 안 된다"
+        )
+
 
 # ---------------------------------------------------------------------------
 # AC-3 — live mode untouched (paper-only hard gate)
