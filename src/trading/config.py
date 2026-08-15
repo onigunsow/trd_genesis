@@ -54,6 +54,12 @@ RISK_SINGLE_ORDER_MAX: Final[float] = float(
 )  # 10.0%
 RISK_DAILY_ORDER_COUNT_MAX: Final[int] = int(os.getenv("RISK_DAILY_ORDER_COUNT_MAX", "10"))
 
+# 2026-08-15: 손실 청산 후 같은 종목 재매수 금지 기간(일). 65건 왕복 분해에서
+# 064350 을 8번 사서 8번 다 손절(-139,096원), 071050 4번(-54,500원) —
+# 손절 며칠 뒤 재매수해 같은 함정에 빠지는 패턴이 손실의 큰 몫이었다.
+# 익절/회전 청산은 대상 아님(잘 나간 종목의 재진입은 막지 않는다). 0 이면 비활성.
+REENTRY_COOLDOWN_DAYS: Final[int] = int(os.getenv("REENTRY_COOLDOWN_DAYS", "10"))
+
 # SPEC-TRADING-040 M2 (REQ-040-2): single-ticker concentration cap. When a held
 # ticker exceeds this fraction of the total portfolio value the position watchdog
 # auto-trims (code-enforced — the decision persona effectively never sells). The

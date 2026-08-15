@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from trading.config import (
     RISK_DAILY_MAX_LOSS,
+    REENTRY_COOLDOWN_DAYS,
     RISK_DAILY_ORDER_COUNT_MAX,
     RISK_PER_TICKER_MAX_POSITION,
     RISK_SELL_BUDGET_RESERVE,
@@ -132,6 +133,45 @@ def buy_count_today(ticker: str) -> int:
 _OVERHEAT_MAX_BUYS_PER_DAY = 1
 
 
+def days_since_loss_exit(ticker: str, lookback_days: int) -> int | None:
+    """``ticker`` 를 최근 ``lookback_days`` 안에 손실 청산했다면 그로부터 며칠 지났는지.
+
+    없으면 None. 손실 청산 = 체결된 SELL 의 fill_price 가 그 시점 직전 BUY
+    체결의 fill_price 보다 낮은 것. FIFO 를 완전히 재현하지 않고 "가장 최근
+    매수가" 와 비교한다 — 쿨다운 목적엔 충분하고 SQL 한 번으로 끝난다.
+
+    2026-08-15: 65건 왕복 분해에서 064350 을 8번 사서 8번 다 손절했다
+    (-139,096원). 손절 며칠 뒤 같은 종목을 다시 사서 같은 함정에 빠지는
+    패턴을 끊기 위한 재료다. correction=TRUE 교정 매도는 원장 정리용이라 제외.
+    """
+    sql = """
+        WITH sells AS (
+            SELECT s.ts, s.fill_price,
+                   (SELECT b.fill_price FROM orders b
+                     WHERE b.ticker = s.ticker AND b.side = 'buy'
+                       AND b.status IN ('filled','partial')
+                       AND b.fill_price IS NOT NULL
+                       AND COALESCE(b.filled_at, b.ts) < COALESCE(s.filled_at, s.ts)
+                     ORDER BY COALESCE(b.filled_at, b.ts) DESC LIMIT 1) AS last_buy_px
+              FROM orders s
+             WHERE s.ticker = %s AND s.side = 'sell'
+               AND s.status IN ('filled','partial')
+               AND s.fill_price IS NOT NULL
+               AND COALESCE(s.correction, false) = FALSE
+               AND s.ts >= NOW() - make_interval(days => %s)
+        )
+        SELECT MAX(ts) AS last_loss_exit FROM sells
+         WHERE last_buy_px IS NOT NULL AND fill_price < last_buy_px
+    """
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (ticker, int(lookback_days)))
+        row = cur.fetchone()
+    last = row.get("last_loss_exit") if row else None
+    if last is None:
+        return None
+    return (datetime.now(UTC) - last).days
+
+
 # @MX:ANCHOR: SPEC-TRADING-040 — the pre-order hard-limit gate. fan_in: every
 # orchestrator buy/sell path (pre_market / intraday / event) calls it before
 # submitting. The SPEC-040 additions (sell-budget separation, 단기과열 repeat-buy
@@ -207,6 +247,17 @@ def check_pre_order(
         if held_pnl_pct is not None and held_pnl_pct < 0:
             chk.breaches.append(
                 f"avg_down: {ticker} 단기과열·손실({held_pnl_pct:+.2f}%) 물타기 매수 거부"
+            )
+
+    # 2c. 손실 청산 후 재진입 쿨다운 (2026-08-15). 과열 여부와 무관하게 BUY 에만.
+    # 064350 8연패처럼 "손절 → 며칠 뒤 재매수 → 또 손절" 을 끊는다. 손절이
+    # 아닌 청산(익절/회전)은 대상이 아니다 — 잘 나간 종목의 재진입은 막지 않는다.
+    if side == "buy" and REENTRY_COOLDOWN_DAYS > 0:
+        since = days_since_loss_exit(ticker, REENTRY_COOLDOWN_DAYS)
+        if since is not None and since < REENTRY_COOLDOWN_DAYS:
+            chk.breaches.append(
+                f"reentry_cooldown: {ticker} 손실 청산 {since}일 전 — "
+                f"{REENTRY_COOLDOWN_DAYS}일 재진입 금지"
             )
 
     # 3. daily loss (only blocks NEW orders, not the current loss-recovery sell)

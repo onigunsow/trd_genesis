@@ -173,6 +173,32 @@ def _apply_sector_cap_guard(
         except Exception:
             LOG.warning("sector cap 텔레그램 알림 실패 (swallowed)")
 
+        # 2026-08-15: 섹터캡 드롭은 텔레그램만 있고 감사가 없었다 — "무엇이 매수를
+        # 깎았나"를 30일 뒤에 집계할 수 없었다. 어느 게이트가 얼마를 왜 막았는지를
+        # 감사에 남긴다(PORTFOLIO_ADJUSTMENT 와 같은 batch 규약).
+        sid_by_ticker = {
+            sig.get("ticker"): sid
+            for sig, sid in zip(signals, sig_ids, strict=False)
+            if sig.get("side") == "buy"
+        }
+        audit(
+            "PORTFOLIO_GATE_DROP",
+            actor="portfolio_gate",
+            details={
+                "cycle": cycle_kind,
+                "gate": "sector_cap",
+                "dropped": [
+                    {
+                        "ticker": d["ticker"],
+                        "reason": d.get("reason", "섹터 cap 초과"),
+                        "decision_id": sid_by_ticker.get(d["ticker"]),
+                    }
+                    for d in dropped_infos
+                ],
+                "decision_scope": "batch",
+            },
+        )
+
         return kept_signals, new_sig_ids
 
     except Exception as exc:
@@ -302,6 +328,19 @@ def _apply_portfolio_adjustment(
         kept_sids_after_floor.append(sid)
     if floor_dropped and res_rejected is not None:
         res_rejected.extend(floor_dropped)
+    if floor_dropped:
+        # 2026-08-15: 현금바닥 드롭도 감사가 없었다(res_rejected 에만 들어감).
+        audit(
+            "PORTFOLIO_GATE_DROP",
+            actor="portfolio_gate",
+            details={
+                "cycle": cycle_kind,
+                "gate": "cash_floor",
+                "reason": f"cash {cash_pct:.1f}% < floor {floor:.1f}% (regime={regime})",
+                "dropped": [{"decision_id": sid} for sid in floor_dropped],
+                "decision_scope": "batch",
+            },
+        )
     signals, sig_ids = kept_after_floor, kept_sids_after_floor
 
     # Split buy vs non-buy; non-buy preserved untouched (REQ-034-4).
@@ -376,19 +415,34 @@ def _apply_portfolio_adjustment(
         res_rejected.extend(dropped_sids)
 
     # Build transparency payloads only for tickers that actually changed.
+    # 2026-08-15: 페르소나는 조정마다 rationale 을 응답에 담아 보내는데(portfolio.jinja),
+    # 여기서 ticker/qty 만 남기고 버리고 있었다. 감사에 "왜"가 없어서 30일치 축소
+    # (평균 47%)가 누구 소행인지 알 수 없었다. 받은 그대로 옮긴다.
+    rejected_reason = {
+        r["ticker"]: r.get("reason")
+        for r in (pj.get("rejected") or [])
+        if isinstance(r, dict) and "ticker" in r
+    }
     adjusted_report = [
         {
             "ticker": s.get("ticker"),
             "qty_original": orig_qty.get(sid),
             "qty_adjusted": s.get("qty"),
             "decision_id": sid,
+            "gate": "portfolio_persona",
+            "rationale": adjusted.get(s.get("ticker"), {}).get("rationale"),
         }
         for s, sid in kept_buys
         if s.get("ticker") in adjusted and s.get("qty") != orig_qty.get(sid)
     ]
     dropped_set = set(dropped_sids)
     rejected_report = [
-        {"ticker": s.get("ticker"), "decision_id": sid}
+        {
+            "ticker": s.get("ticker"),
+            "decision_id": sid,
+            "gate": "portfolio_persona",
+            "reason": rejected_reason.get(s.get("ticker")),
+        }
         for s, sid in buys
         if sid in dropped_set
     ]
