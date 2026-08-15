@@ -75,6 +75,11 @@ TITLE_SIMILARITY_THRESHOLD = 0.80
 # 이 값을 초과하는 결과 개수가 나오면 배치 전체를 fail-closed 로 거부한다.
 ANCHOR_MISMATCH_MAX = 1
 
+# 앵커로 인정하는 최소 길이. 이보다 짧은 echo 는 아무 제목에나 우연히 포함될 수
+# 있어 정렬 증거가 되지 못하므로 불일치로 센다. 라이브 실측(2026-08-15) 최소
+# 길이는 10자라 정상 응답은 걸리지 않는다. 시장 종속 값 아님.
+ANCHOR_MIN_CHARS = 6
+
 # Valid classifications
 VALID_CLASSIFICATIONS = frozenset({
     "macro_market_moving", "sector_specific", "company_specific", "noise",
@@ -572,16 +577,41 @@ def _alignment_reject_reasons(results: list[dict], article_ids: list[int]) -> di
     }
 
 
-def _normalize_title_head(text: str) -> str:
-    """공백을 정규화(연속 공백 -> 1칸, 양끝 trim)한 뒤 앞 12자를 rstrip해 반환한다.
+def _normalize_ws(text: str) -> str:
+    """연속 공백 -> 1칸, 양끝 trim. 앵커 비교의 공통 전처리."""
+    return re.sub(r"\s+", " ", (text or "")).strip()
 
-    REQ-062-B2 앵커 비교 단위. 두 값 모두 이 함수를 거친 뒤 비교한다.
-    slice 후 rstrip: 제목의 12번째 문자가 공백이면 모델은 후행 공백 없이
-    echo하므로(2026-07-09 라이브 오탐 5~6/20 전수 확인), 절단 경계의 후행
-    공백은 비교에서 제외해야 완벽 정렬 배치를 거부하지 않는다.
+
+def _anchor_matches(title: str, title_head: str) -> bool:
+    """echo된 ``title_head`` 가 기사 ``title`` 안에 그대로 들어 있는지.
+
+    2026-08-15 전환: 종전에는 양쪽의 "앞 12자"를 만들어 **완전일치**를 요구했다.
+    라이브 실측(청크 2개 38건 전수 대조)에서 불일치 14건이 나왔는데 **전부
+    오탐**이었다 — 진짜 오정렬은 0건. 두 가지 이유로 깨졌다:
+
+      A) 모델이 12자를 정확히 못 센다(한글·문장부호 혼재).
+         exp='학생 없어 펑펑 남아돌'(12자) vs got='학생 없어 펑펑 남'(10자)
+         exp='Somali Pirac'           vs got='Somali Pira'
+         got 은 exp 의 접두사 — 내용도 정렬도 정확한데 거부됐다.
+
+      B) 모델이 제목 '앞' 이 아니라 제목 중간을 골라 echo 한다.
+         title='Consumer Warning Lights Flash, Oil and Treasury Yields Rise'
+         exp='Consumer War' vs got='Treasury Yie'  ← 같은 제목 안의 다른 조각
+
+    이 오탐 때문에 청크가 통째로 fail-closed 거부돼 하루 기사의 절반 이상이
+    버려지고 있었다(2026-08-09~15 폐기율 53%, 2,071/3,876건).
+
+    포함(containment) 비교는 SPEC-062 가 막으려던 제2 실패모드를 그대로 잡는다:
+    내용이 뒤바뀌면 title_head 는 **다른 기사**의 조각이라 매핑된 제목에 없다.
+    A/B 는 둘 다 "같은 제목의 어떤 조각"이므로 통과한다.
+
+    ``ANCHOR_MIN_CHARS`` 미만은 우연 포함 위험이 있어 비교 근거로 삼지 않고
+    불일치로 센다(라이브 실측 최소 길이는 10자라 정상 응답은 걸리지 않는다).
     """
-    collapsed = re.sub(r"\s+", " ", (text or "")).strip()
-    return collapsed[:12].rstrip()
+    got = _normalize_ws(title_head)
+    if len(got) < ANCHOR_MIN_CHARS:
+        return False
+    return got in _normalize_ws(title)
 
 
 # @MX:SPEC: SPEC-TRADING-062 REQ-062-B2/B4
@@ -596,15 +626,16 @@ def _anchor_mismatch_count(
 
     순수 함수 — DB/네트워크 접근 없음(REQ-062-B4), 시장 종속 로직 없음.
     title_head 가 없는(구버전) 결과는 비교하지 않는다(REQ-062-B3, 하위호환).
+
+    비교 규칙은 ``_anchor_matches`` 참조 — 2026-08-15 부터 "앞 12자 완전일치"가
+    아니라 "제목에 포함"이다(오탐 근절, 오염 탐지력은 유지).
     """
     mismatches = 0
     for article_id, result in aligned:
         title_head = result.get("title_head")
         if not title_head:
             continue
-        expected = _normalize_title_head(article_titles.get(article_id, ""))
-        got = _normalize_title_head(title_head)
-        if got != expected:
+        if not _anchor_matches(article_titles.get(article_id, ""), title_head):
             mismatches += 1
     return mismatches
 

@@ -327,20 +327,27 @@ class TestConcentrationTrimIdempotentSameStore:
 # holding_days + rsi data sources (M1c wiring) — helpers
 # --------------------------------------------------------------------------- #
 class _OrdersCursor:
-    """Cursor double returning the MIN(first-buy) date for a ticker."""
+    """매수 체결 행(최신순)을 돌려주는 커서 더블.
 
-    def __init__(self, first_buy_by_ticker: dict[str, Any]) -> None:
-        self._map = first_buy_by_ticker
-        self._result: Any = None
+    2026-08-15 변경: _holding_days 가 MIN(첫 매수) 한 값을 받는 대신, 매수
+    행 목록을 최신순으로 훑어 held_qty 를 채우는 지점을 찾는다.
+    맵 값은 [(진입시각, 수량), ...] 를 최신순으로 준다.
+    """
+
+    def __init__(self, buys_by_ticker: dict[str, Any]) -> None:
+        self._map = buys_by_ticker
+        self._result: Any = []
 
     def execute(self, sql: str, params: Any = None) -> None:
         ticker = params[0] if params else None
-        first = self._map.get(ticker)
-        # the helper SELECTs MIN(...) AS first_buy
-        self._result = {"first_buy": first} if first is not None else {"first_buy": None}
+        rows = self._map.get(ticker) or []
+        self._result = [{"t": t, "q": q} for t, q in rows]
+
+    def fetchall(self) -> Any:
+        return self._result
 
     def fetchone(self) -> Any:
-        return self._result
+        return self._result[0] if self._result else None
 
     def __enter__(self) -> _OrdersCursor:
         return self
@@ -350,8 +357,8 @@ class _OrdersCursor:
 
 
 class _OrdersConn:
-    def __init__(self, first_buy_by_ticker: dict[str, Any]) -> None:
-        self._map = first_buy_by_ticker
+    def __init__(self, buys_by_ticker: dict[str, Any]) -> None:
+        self._map = buys_by_ticker
 
     def cursor(self) -> _OrdersCursor:
         return _OrdersCursor(self._map)
@@ -373,53 +380,74 @@ class _OrdersConn:
 
 
 class TestHoldingDaysHelper:
-    def test_days_since_first_buy(self):
-        """REQ-040-1c wiring: holding_days = today - MIN(first buy fill date)."""
+    @staticmethod
+    @contextmanager
+    def _conn(buys):
+        yield _OrdersConn(buys)
+
+    def _days(self, buys, ticker, held_qty, today=date(2026, 6, 3)):
+        from trading.watchers import position_watchdog
+
+        with (
+            patch.object(position_watchdog, "connection",
+                         side_effect=lambda *a, **k: self._conn(buys)),
+            patch.object(position_watchdog, "_today_kst", return_value=today),
+        ):
+            return position_watchdog._holding_days(ticker, held_qty=held_qty)
+
+    def test_days_since_current_lot_entry(self):
+        """보유 1주는 가장 최근 매수 1건이 채운다 — 그 진입일 기준."""
         from datetime import datetime
 
-        from trading.watchers import position_watchdog
+        buys = {"064350": [(datetime(2026, 5, 24), 1), (datetime(2026, 5, 4), 1)]}
+        assert self._days(buys, "064350", 1) == 10  # 5/24 진입
 
-        first_buy = datetime(2026, 5, 4)  # ~30 days before 2026-06-03
+    def test_older_lot_included_when_held_qty_spans_multiple_buys(self):
+        """보유 2주면 매수 2건이 필요 — 그중 오래된 진입일이 기준."""
+        from datetime import datetime
 
-        @contextmanager
-        def _factory(*_a: Any, **_k: Any):
-            yield _OrdersConn({"064350": first_buy})
+        buys = {"064350": [(datetime(2026, 5, 24), 1), (datetime(2026, 5, 4), 1)]}
+        assert self._days(buys, "064350", 2) == 30  # 5/4 까지 거슬러감
 
-        with (
-            patch.object(position_watchdog, "connection", side_effect=_factory),
-            patch.object(position_watchdog, "_today_kst", return_value=date(2026, 6, 3)),
-        ):
-            days = position_watchdog._holding_days("064350")
+    def test_reentry_after_full_exit_resets_holding_days(self):
+        """2026-08-14 재현: 완전 청산 후 재매수하면 보유일이 리셋된다.
 
-        assert days == 30
+        055550 을 5/26 부터 여러 번 사고팔았지만 8/14 재매수분만 보유 중이었다.
+        종전 구현은 MIN(첫 매수)=5/26 → 80일로 계산해 STAGNATION_DAYS(20)를
+        넘겨 매수 3분 뒤 rotate 매도했다. 현재 보유수량(1주)을 채우는 매수는
+        가장 최근 1건뿐이므로 보유일은 0 이어야 한다.
+        """
+        from datetime import datetime
+
+        buys = {"055550": [
+            (datetime(2026, 6, 3), 1),   # 재매수 (오늘)
+            (datetime(2026, 5, 26), 3),  # 과거 매수 — 이미 청산됨
+        ]}
+        assert self._days(buys, "055550", 1) == 0
 
     def test_no_rows_returns_none(self):
-        """No buy fills for the ticker → None (defensive skip)."""
-        from trading.watchers import position_watchdog
+        """매수 기록이 없으면 None (정체 판정 포기)."""
+        assert self._days({}, "XXXXX", 1) is None
 
-        @contextmanager
-        def _factory(*_a: Any, **_k: Any):
-            yield _OrdersConn({})  # empty → first_buy None
+    def test_held_qty_zero_or_none_returns_none(self):
+        """미보유는 정체 판정 대상이 아니다."""
+        from datetime import datetime
 
-        with (
-            patch.object(position_watchdog, "connection", side_effect=_factory),
-            patch.object(position_watchdog, "_today_kst", return_value=date(2026, 6, 3)),
-        ):
-            assert position_watchdog._holding_days("XXXXX") is None
+        buys = {"064350": [(datetime(2026, 5, 4), 5)]}
+        assert self._days(buys, "064350", 0) is None
+        assert self._days(buys, "064350", None) is None
 
-    def test_date_typed_first_buy(self):
-        """A date (not datetime) first-buy value is handled too."""
-        from trading.watchers import position_watchdog
+    def test_ledger_short_of_held_qty_returns_none(self):
+        """매수 기록이 보유수량을 설명 못 하면 날짜를 추정하지 않는다."""
+        from datetime import datetime
 
-        @contextmanager
-        def _factory(*_a: Any, **_k: Any):
-            yield _OrdersConn({"064350": date(2026, 5, 24)})  # 10 days
+        buys = {"064350": [(datetime(2026, 5, 24), 1)]}
+        assert self._days(buys, "064350", 5) is None
 
-        with (
-            patch.object(position_watchdog, "connection", side_effect=_factory),
-            patch.object(position_watchdog, "_today_kst", return_value=date(2026, 6, 3)),
-        ):
-            assert position_watchdog._holding_days("064350") == 10
+    def test_date_typed_entry(self):
+        """date(datetime 아님) 값도 처리한다."""
+        buys = {"064350": [(date(2026, 5, 24), 1)]}
+        assert self._days(buys, "064350", 1) == 10
 
 
 class TestTickerRsiHelper:

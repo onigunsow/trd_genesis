@@ -233,36 +233,64 @@ def _portfolio_value(client: Any) -> int:
     return int(bal.get("invest_basis") or bal.get("total_assets") or 0)
 
 
-# @MX:NOTE: SPEC-TRADING-040 M1c — holding_days source. Days since the FIRST buy
-# fill for a ticker (from the orders table). No buy fills -> None (defensive
-# skip, so is_stagnant cannot fire on a holding we cannot date).
+# @MX:NOTE: SPEC-TRADING-040 M1c — holding_days source. 현재 보유 lot 의 진입일
+# 기준 보유일. 매수 기록이 부족하면 None (정체 판정 불가 → rotate 안 함).
+# @MX:WARN: money path — 이 값이 과대평가되면 갓 산 종목을 정체로 오판해 즉시
+#   회전 매도한다.
+# @MX:REASON: 2026-08-14 실측 — 055550 을 12:32 매수하고 12:35(3분 뒤) rotate
+#   매도했다. 종전 구현이 MIN(전 기간 첫 매수)를 써서, 완전 청산 후 재매수해도
+#   보유일이 리셋되지 않았기 때문(첫 매수 2026-05-26 → 80일로 계산, 실제 0일).
+#   STAGNATION_DAYS=20 을 가볍게 넘겨 매번 정체 판정이 났다.
+#   누적 순수량이 0 이 되는 지점을 찾는 방식은 쓸 수 없다 — orders 원장의 누적이
+#   실제 보유와 어긋나 음수까지 내려가는 종목이 있다(316140: -3까지, 원장/KIS
+#   divergence). 대신 FIFO 성질을 쓴다: 오래된 lot 부터 팔리므로 **현재 보유분은
+#   가장 최근 매수들**이다. KIS 확인 수량(held_qty)만큼 최신 매수부터 거슬러
+#   올라가면 보유 중인 lot 가운데 가장 오래된 진입일이 나온다.
 # @MX:SPEC: SPEC-TRADING-040
-def _holding_days(ticker: str) -> int | None:
-    """Days held = today (KST) - MIN(first buy fill date) for `ticker`.
+def _holding_days(ticker: str, held_qty: int | None = None) -> int | None:
+    """현재 보유 lot 의 진입일 기준 보유일 (today KST - 진입일).
 
-    Uses ``filled_at`` when present, else ``ts`` (paper synthetic fills set both).
-    Returns None when the ticker has no filled/partial buy on record, or on a DB
-    error — both absorbed by the caller's per-ticker isolation.
+    ``held_qty`` 는 KIS 확인 보유수량(호출자가 balance 에서 받은 값). 미보유
+    (0 이하)이거나 미지정이면 판정 대상이 아니므로 None.
+
+    ``filled_at`` 이 있으면 그것을, 없으면 ``ts`` 를 진입 시각으로 본다(페이퍼
+    합성 체결은 둘 다 채운다). 매수 기록이 보유수량에 못 미치면(원장 결손)
+    None — 날짜를 추정하느니 정체 판정을 포기한다.
+
+    DB 오류도 None (호출자의 종목별 격리가 흡수).
     """
+    if held_qty is None or held_qty <= 0:
+        return None
+
     sql = """
-        SELECT MIN(COALESCE(filled_at, ts)) AS first_buy
+        SELECT COALESCE(filled_at, ts) AS t, COALESCE(fill_qty, qty) AS q
           FROM orders
          WHERE ticker = %s
            AND side = 'buy'
            AND status IN ('filled','partial')
+         ORDER BY COALESCE(filled_at, ts) DESC, id DESC
     """
     try:
         with connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (ticker,))
-            row = cur.fetchone()
+            rows = list(cur.fetchall())
     except Exception as e:
         LOG.warning("position_watchdog: holding_days DB error for %s: %s", ticker, e)
         return None
-    first_buy = row.get("first_buy") if row else None
-    if first_buy is None:
-        return None
-    first_date = first_buy.date() if isinstance(first_buy, datetime) else first_buy
-    return (_today_kst() - first_date).days
+
+    remaining = int(held_qty)
+    entry = None
+    for row in rows:
+        entry = row.get("t")
+        remaining -= int(row.get("q", 0) or 0)
+        if remaining <= 0:
+            break
+
+    if entry is None or remaining > 0:
+        return None  # 매수 기록이 보유수량을 설명하지 못한다 — 판정 포기
+
+    entry_date = entry.date() if isinstance(entry, datetime) else entry
+    return (_today_kst() - entry_date).days
 
 
 # @MX:NOTE: SPEC-TRADING-040 M1c — RSI source. Reuses the shared compute_rsi
@@ -466,7 +494,9 @@ def poll_position_watchdog() -> dict[str, Any]:
                 # position is rotated out (partial trim). holding_days + RSI are
                 # fetched lazily so a non-stagnant holding pays no DB cost.
                 if is_stagnant(
-                    holding_days=_holding_days(ticker),
+                    # qty 는 KIS balance 가 준 확인 보유수량 — 이 수량을 채우는
+                    # 최신 매수들이 현재 lot 이다(FIFO). 전 기간 첫 매수가 아님.
+                    holding_days=_holding_days(ticker, held_qty=qty),
                     pnl_pct=pnl_pct,
                     rsi=_ticker_rsi(ticker),
                 ):
