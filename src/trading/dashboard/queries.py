@@ -160,7 +160,37 @@ def fetch_system_status() -> dict[str, Any]:
     if not row:
         raise RuntimeError("system_state 행 없음 — migration 001 미적용?")
 
-    return dict(row)
+    out = dict(row)
+    # SPEC-065 REQ-065-1c: 헤드라인 상태줄 — "살아있나" 를 한 줄로.
+    # 하트비트(last_resolver_run, SPEC-055)·마지막 사이클·오늘 주문/거부/차단.
+    # 실패해도 status 자체는 살린다(선택 필드).
+    try:
+        with ro_connection() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                  (SELECT last_resolver_run FROM system_state LIMIT 1)            AS last_resolver_run,
+                  (SELECT max(ts) FROM persona_runs
+                    WHERE persona_name = 'decision')                              AS last_cycle_at,
+                  (SELECT count(*) FROM orders
+                    WHERE ts::date = (now() AT TIME ZONE 'Asia/Seoul')::date)    AS orders_today,
+                  (SELECT count(*) FROM orders
+                    WHERE ts::date = (now() AT TIME ZONE 'Asia/Seoul')::date
+                      AND status = 'rejected')                                    AS rejected_today,
+                  (SELECT count(*) FROM audit_log
+                    WHERE ts::date = (now() AT TIME ZONE 'Asia/Seoul')::date
+                      AND event_type IN ('LIMIT_BREACH','PORTFOLIO_GATE_DROP',
+                                         'ORDER_BLOCKED_OUTSIDE_SESSION'))         AS blocked_today
+            """)
+            hb = cur.fetchone() or {}
+        for k in ("last_resolver_run", "last_cycle_at"):
+            v = hb.get(k)
+            out[k] = v.isoformat() if hasattr(v, "isoformat") else v
+        for k in ("orders_today", "rejected_today", "blocked_today"):
+            out[k] = int(hb.get(k) or 0)
+    except Exception:
+        LOG.warning("status heartbeat block failed (status kept)", exc_info=True)
+
+    return out
 
 
 # ---------------------------------------------------------------------------

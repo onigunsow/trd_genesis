@@ -10,7 +10,6 @@ import ReturnsDistribution from './charts/ReturnsDistribution'
 import CumRealizedPnl from './charts/CumRealizedPnl'
 import ConfidenceScatter from './charts/ConfidenceScatter'
 import PostmortemBreakdown from './charts/PostmortemBreakdown'
-import Scorecard from './charts/Scorecard'
 
 const s = {
   grid: {
@@ -49,22 +48,16 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 
 export default function ChartsView() {
   const equityFetcher = useCallback(() => api.fetchEquity(180), [])
-  const scorecardFetcher = useCallback(() => api.fetchScorecard(), [])
   const postmortemFetcher = useCallback(() => api.fetchPostmortem(30), [])
   const confidenceFetcher = useCallback(() => api.fetchConfidenceAnalysis(30), [])
 
   const { data: equity, error: equityError } = usePolling(equityFetcher, 60_000)
-  const { data: scorecard, error: scorecardError } = usePolling(scorecardFetcher, 60_000)
   const { data: postmortem, error: postmortemError } = usePolling(postmortemFetcher, 60_000)
   const { data: confidence, error: confidenceError } = usePolling(confidenceFetcher, 60_000)
 
   return (
     <div style={s.grid}>
-      {/* 스코어카드 */}
-      <Card title="엣지 스코어카드">
-        {scorecardError && <div style={s.errorNote}>오류: {scorecardError}</div>}
-        {scorecard ? <Scorecard data={scorecard} /> : !scorecardError && <div style={s.empty}>로딩 중...</div>}
-      </Card>
+      {/* SPEC-065 REQ-065-1b: 엣지 스코어카드 블록 제거 — 같은 숫자를 HeadlineOverview 가 한 번만 보여준다 */}
 
       {/* 에쿼티 곡선 */}
       <Card title="에쿼티 곡선">
@@ -106,25 +99,10 @@ export default function ChartsView() {
         ) : !equityError && <div style={s.empty}>로딩 중...</div>}
       </Card>
 
-      {/* REQ-050-21: KOSPI 알파 — benchmark_available=false 시 graceful degrade */}
-      <Card title="KOSPI 대비 알파">
-        {scorecardError && <div style={s.errorNote}>오류: {scorecardError}</div>}
-        {scorecard ? (
-          scorecard.benchmark_available === false || scorecard.alpha_pct == null
-            ? <div style={s.empty}>데이터 없음 (KOSPI 지수 데이터 미가용)</div>
-            : (
-              <div style={{ padding: '20px 0', textAlign: 'center' }}>
-                <div style={{ fontSize: '2.2rem', fontWeight: 700, color: scorecard.alpha_pct >= 0 ? theme.accentGreen : theme.accentRed, fontFamily: 'var(--font-mono)' }}>
-                  {scorecard.alpha_pct >= 0 ? '+' : ''}{scorecard.alpha_pct.toFixed(2)}%
-                </div>
-                <div style={{ color: theme.textSecondary, fontSize: '0.75rem', marginTop: 6 }}>vs KOSPI (누적 알파)</div>
-              </div>
-            )
-        ) : !scorecardError && <div style={s.empty}>로딩 중...</div>}
-      </Card>
+      {/* SPEC-065 REQ-065-1b: KOSPI 알파 카드 제거 — HeadlineOverview 보조 지표로 이동 */}
 
       {/* Confidence 산점도 / 버킷 */}
-      <Card title="Confidence-수익 상관">
+      <Card title="Confidence-수익 상관 (체결 기준 — 결정 전체 반사실은 검증 게이트 탭)">
         {confidenceError && <div style={s.errorNote}>오류: {confidenceError}</div>}
         {confidence ? (
           <ConfidenceScatter data={confidence} />

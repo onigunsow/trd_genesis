@@ -189,56 +189,12 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
     )
   }
 
-  // 종목별 비중 파이 데이터 — 이름이 코드와 다를 때 이름 우선, 같으면 코드만
-  const holdingsPieData = data.holdings.map((h, i) => ({
-    name: (h.ticker_name && h.ticker_name !== h.ticker) ? h.ticker_name : h.ticker,
-    value: parseFloat(h.weight_pct.toFixed(2)),
-    // tooltip 전용 보조 정보 (ticker 코드)
-    _ticker: h.ticker,
-    itemStyle: { color: theme.chartPalette[i % theme.chartPalette.length] },
-  }))
-  // 현금도 파이에 포함
-  if (data.cash_ratio > 0) {
-    // cash_ratio 는 백엔드에서 이미 % 단위 (예: 61.0 = 61%). * 100 불필요.
-    holdingsPieData.push({
-      name: '현금',
-      value: parseFloat(data.cash_ratio.toFixed(2)),
-      _ticker: '',
-      itemStyle: { color: '#9ca3af' },
-    })
-  }
-
   // 섹터별 비중 파이 데이터 (REQ-054-G1: 미분류 폴백 포함)
   const sectorPieData = data.sector_breakdown.map((s, i) => ({
     name: s.sector || '미분류(Unclassified)',
     value: parseFloat(s.weight_pct.toFixed(2)),
     itemStyle: { color: theme.chartPalette[i % theme.chartPalette.length] },
   }))
-
-  // 종목별 비중 파이 — 툴팁: "종목명 (코드): 비중%"
-  // _ticker 가 있으면 "이름 (코드): x%" 형식, 현금이면 "현금: x%"
-  const holdingsPieOption = {
-    ...echartsBaseOpts,
-    tooltip: {
-      ...echartsBaseOpts.tooltip,
-      trigger: 'item',
-      formatter: (params: { name: string; value: number; data: { _ticker?: string } }) => {
-        const { name, value, data: d } = params
-        if (d._ticker && d._ticker !== name) {
-          return `${name} (${d._ticker}): ${value}%`
-        }
-        return `${name}: ${value}%`
-      },
-    },
-    series: [{
-      type: 'pie',
-      radius: ['35%', '65%'],
-      center: ['50%', '55%'],
-      data: holdingsPieData,
-      label: { color: theme.textPrimary, fontSize: 11 },
-      emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.1)' } },
-    }],
-  }
 
   // 섹터별 비중 파이 — 단순 포맷
   const sectorPieOption = {
@@ -293,18 +249,34 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
           gap: 16,
         }}
       >
+        {/* SPEC-065 REQ-065-1d: 자본 가동률 — 종목별 도넛(92% 가 회색 현금)이 전하려던
+            사실은 이 숫자 하나다. 실측 최대 레버(모든 출구 튜닝은 투자된 몫에만 작동). */}
+        <div style={{ gridColumn: '1 / -1' }}>
+          <div style={labelStyle}>자본 가동률 (투자 / NAV)</div>
+          {(() => {
+            const invested = Math.max(0, 100 - data.cash_ratio)
+            const color = invested < 20 ? 'var(--accent-red)' : invested < 40 ? 'var(--accent-yellow, #9a6700)' : 'var(--accent-green)'
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ fontSize: '1.9rem', fontWeight: 800, fontFamily: 'var(--font-mono)', color, minWidth: 90 }}>
+                  {invested.toFixed(1)}%
+                </div>
+                <div style={{ flex: 1, height: 12, background: 'var(--border-light, #e8ecf0)', borderRadius: 6, overflow: 'hidden' }}
+                     role="progressbar" aria-valuenow={invested} aria-valuemin={0} aria-valuemax={100}>
+                  <div style={{ width: `${Math.min(100, invested)}%`, height: '100%', background: color, transition: 'width .3s' }} />
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', minWidth: 160 }}>
+                  현금 {data.cash_ratio.toFixed(1)}% · {fmtKrw(data.cash_amount)}
+                </div>
+              </div>
+            )
+          })()}
+        </div>
         <div>
           <div style={labelStyle}>총 NAV</div>
           <div style={{ fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
             {fmtKrw(data.nav)}
           </div>
-        </div>
-        <div>
-          <div style={labelStyle}>현금 비율</div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-            {data.cash_ratio.toFixed(1)}%
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{fmtKrw(data.cash_amount)}</div>
         </div>
         <div>
           <div style={labelStyle}>집중도 (Herfindahl)</div>
@@ -321,18 +293,11 @@ export function PortfolioViewContent({ data, isLoading, onExport }: PortfolioVie
         </div>
       </div>
 
-      {/* 파이 차트 2개 — 종목별 비중 + 섹터별 비중 */}
+      {/* SPEC-065 REQ-065-1d: 종목별 도넛 제거 — 92% 가 회색 현금이라 정보량 0.
+          가동률은 위 게이지, 종목 상세는 아래 표. 섹터 도넛은 투자분 안의 분포라 남긴다. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
         <div style={cardStyle}>
-          <div style={labelStyle}>종목별 비중 (투자비중 = 시가평가액/NAV)</div>
-          <ReactECharts
-            option={holdingsPieOption}
-            style={{ height: 240 }}
-            notMerge
-          />
-        </div>
-        <div style={cardStyle}>
-          <div style={labelStyle}>섹터별 비중</div>
+          <div style={labelStyle}>섹터별 비중 (투자분 내)</div>
           {sectorPieData.length === 0 ? (
             <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
               섹터 데이터 없음

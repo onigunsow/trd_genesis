@@ -3,7 +3,13 @@
 // NUMERIC→number 변환은 db.py 로더에서 보장 — 모든 숫자 필드는 number 타입 사용
 
 // ── /api/status ────────────────────────────────────────────────────────────
+export interface GateConfig {
+  since: string | null   // null = "수정 이후만" 토글 비활성 (env DASHBOARD_GATE_SINCE 미설정)
+  min_n: number
+}
+
 export interface SystemStatus {
+  gate?: GateConfig      // SPEC-065 REQ-065-2b
   halt_state: boolean
   halt_reason: string | null
   trading_mode: string
@@ -13,6 +19,12 @@ export interface SystemStatus {
   late_cycle_level: string | null
   cool_down_active: boolean
   updated_at: string | null
+  // SPEC-065 REQ-065-1c 상태줄 (선택 — 백엔드 실패 시 없음)
+  last_resolver_run?: string | null
+  last_cycle_at?: string | null
+  orders_today?: number
+  rejected_today?: number
+  blocked_today?: number
 }
 
 // ── /api/decisions ─────────────────────────────────────────────────────────
@@ -92,6 +104,10 @@ export interface Scorecard {
   n_closed: number
   benchmark_available?: boolean
   reasons?: string[]
+  // SPEC-065 REQ-065-2a/2c
+  since?: string | null
+  low_sample?: boolean
+  gate_min_n?: number
 }
 
 // ── /api/news ──────────────────────────────────────────────────────────────
@@ -298,4 +314,66 @@ export interface PnlDailyResponse {
   period: string
   benchmark_available: boolean
   rows: PnlDailyRow[]
+}
+
+
+// ── SPEC-065 그룹 3: /api/gate/* ─────────────────────────────────────────────
+export interface HoldingBucket {
+  bucket: string
+  n: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  sum_net_pnl: number
+}
+export interface HoldingPeriodPnl {
+  since: string | null
+  n_total: number
+  buckets: HoldingBucket[]
+}
+
+export interface EntryQualityCell {
+  conf_bucket: number
+  freshness: string          // early | confirmed | late | unlabeled
+  n: number
+  n_with_horizon: number
+  ret_20d: number | null
+  ret_40d: number | null
+  win_20d: number | null
+}
+export interface EntryQualityMatrix {
+  since: string | null
+  horizons: number[]
+  basis: string              // "all_buy_decisions" — 체결 무관
+  cells: EntryQualityCell[]
+}
+
+export interface RiskVerdicts {
+  since: string | null
+  n: number
+  verdicts: Record<string, number>
+  hold_reasons: { reason: string; n: number; share: number | null }[]
+  hold_counterfactual: { n: number; ret_20d: number | null; ret_40d: number | null }
+  code_rules_passed_share: number | null
+  horizons: number[]
+}
+
+export interface SizingGateRow {
+  gate: string
+  n: number
+  avg_cut_pct: number | null
+}
+export interface SizingRecent {
+  ts: string
+  gate: string
+  ticker: string | null
+  qty_original: number | null
+  qty_adjusted: number | null
+  reason: string | null
+  decision_id: number | null
+}
+export interface SizingGates {
+  since: string | null
+  gates: SizingGateRow[]
+  recent: SizingRecent[]
+  n_events: number
 }

@@ -10,18 +10,22 @@ import ChartsView from './components/ChartsView'
 import NewsView from './components/NewsView'
 import PositionsView from './components/PositionsView'
 import ErrorBoundary from './components/ErrorBoundary'
-import KpiCards from './components/KpiCards'
 import PortfolioView from './components/PortfolioView'
 import RoundtripLedger from './components/RoundtripLedger'
 import PnlTrendView from './components/PnlTrendView'
 import TraceView from './components/TraceView'
+// SPEC-065: 운영자 조종석 — 헤드라인 개요·검증 게이트·since 토글
+import { GateProvider, GateToggle } from './gate/GateContext'
+import { HeadlineOverview } from './gate/HeadlineOverview'
+import { GateView } from './gate/GateView'
 
 // REQ-064-C5: 'trace' 추가. ADR-004 에 따라 PipelineView 는 그룹 C 에서 건드리지 않는다 —
 // 운영자가 두 뷰를 나란히 비교한 뒤 대체 여부를 판단한다.
-type View = 'overview' | 'portfolio' | 'roundtrips' | 'pnl' | 'pipeline' | 'trace' | 'news' | 'positions'
+type View = 'overview' | 'gate' | 'portfolio' | 'roundtrips' | 'pnl' | 'pipeline' | 'trace' | 'news' | 'positions'
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: string }> = [
   { id: 'overview',   label: '개요',        icon: '◈' },
+  { id: 'gate',       label: '검증 게이트',  icon: '◇' },
   { id: 'portfolio',  label: '포트폴리오',   icon: '◉' },
   { id: 'roundtrips', label: '거래원장',     icon: '◎' },
   { id: 'pnl',        label: '손익 추이',    icon: '◆' },
@@ -74,6 +78,7 @@ export default function App() {
   })
 
   return (
+    <GateProvider config={status?.gate ?? null}>
     <div style={{
       display: 'flex',
       flexDirection: 'column',
@@ -120,11 +125,14 @@ export default function App() {
         }}>
           Trading Dashboard
         </span>
-        {lastUpdatedStr && (
-          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-            갱신: {lastUpdatedStr}
-          </span>
-        )}
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+          <GateToggle />
+          {lastUpdatedStr && (
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+              갱신: {lastUpdatedStr}
+            </span>
+          )}
+        </span>
       </header>
 
       {/* 상태바 */}
@@ -182,14 +190,24 @@ export default function App() {
         >
           {activeView === 'overview' && (
             <ErrorBoundary label="개요">
-              <h2 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: 16, color: 'var(--text-primary)' }}>
-                성과 개요
-              </h2>
-              <KpiCards />
-              {/* 개요에서는 ChartsView 도 함께 (REQ-054-C1 + 기존 자산통계) */}
+              {/* SPEC-065 REQ-065-1a/1b: 헤드라인(판정·PF·기대값) + 보조 3 + 접힘.
+                  종전 KpiCards(카드 10개) + 엣지 스코어카드(같은 숫자 반복)를 대체한다. */}
+              <HeadlineOverview status={status} />
               <ErrorBoundary label="자산 차트">
-                <ChartsView />
+                <div style={{ marginTop: 18 }}><ChartsView /></div>
               </ErrorBoundary>
+            </ErrorBoundary>
+          )}
+
+          {activeView === 'gate' && (
+            <ErrorBoundary label="검증 게이트">
+              <h2 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: 4, color: 'var(--text-primary)' }}>
+                검증 게이트
+              </h2>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 14 }}>
+                2026-08-15 배포 변경(출구·진입·리스크·사이징)이 어떻게 작동하는지. 헤더의 "수정 이후만" 토글로 그 이후 진입분만 본다.
+              </div>
+              <GateView />
             </ErrorBoundary>
           )}
 
@@ -249,5 +267,6 @@ export default function App() {
         </main>
       </div>
     </div>
+    </GateProvider>
   )
 }

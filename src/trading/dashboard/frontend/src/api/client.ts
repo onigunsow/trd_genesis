@@ -17,6 +17,10 @@ import type {
   PortfolioData,
   PnlDailyResponse,
   DecisionTrace,
+  HoldingPeriodPnl,
+  EntryQualityMatrix,
+  RiskVerdicts,
+  SizingGates,
 } from './types'
 
 // same-origin 요청 — FastAPI 가 /static/ 과 /api/ 를 모두 서빙
@@ -58,7 +62,18 @@ export const api = {
   fetchEquity: (days = 90) => get<EquityPoint[]>(`/api/equity?days=${days}`),
 
   // ── 스코어카드 (REQ-054-A4: sortino 포함) ────────────────────────────────
-  fetchScorecard: () => get<Scorecard>('/api/scorecard'),
+  fetchScorecard: (since?: string | null) =>
+    get<Scorecard>(`/api/scorecard${since ? `?since=${since}` : ''}`),
+
+  // SPEC-065 그룹 3 — 검증 게이트 뷰 (since = 진입일 필터, 선택)
+  fetchGateHoldingPeriod: (since?: string | null) =>
+    get<HoldingPeriodPnl>(`/api/gate/holding-period${since ? `?since=${since}` : ''}`),
+  fetchGateEntryQuality: (since?: string | null) =>
+    get<EntryQualityMatrix>(`/api/gate/entry-quality${since ? `?since=${since}` : ''}`),
+  fetchGateRisk: (since?: string | null) =>
+    get<RiskVerdicts>(`/api/gate/risk${since ? `?since=${since}` : ''}`),
+  fetchGateSizing: (since?: string | null, topN = 20) =>
+    get<SizingGates>(`/api/gate/sizing?top_n=${topN}${since ? `&since=${since}` : ''}`),
 
   // ── 뉴스 ──────────────────────────────────────────────────────────────────
   fetchNews: (days = 7, limit = 50) =>

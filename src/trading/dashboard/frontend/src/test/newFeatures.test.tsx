@@ -461,7 +461,9 @@ describe('PortfolioViewContent 렌더 (AC-9)', () => {
   it('NAV, 현금비율, 집중도가 표시된다', () => {
     render(<PortfolioViewContent data={MOCK_PORTFOLIO} isLoading={false} onExport={() => {}} />)
     expect(screen.getByText('총 NAV')).toBeDefined()
-    expect(screen.getByText('현금 비율')).toBeDefined()
+    // SPEC-065 REQ-065-1d: '현금 비율' 카드는 자본 가동률 게이지에 흡수됐다
+    expect(screen.getByText('자본 가동률 (투자 / NAV)')).toBeDefined()
+    expect(screen.getByRole('progressbar')).toBeDefined()
     expect(screen.getByText('집중도 (Herfindahl)')).toBeDefined()
   })
 
