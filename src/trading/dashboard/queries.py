@@ -27,6 +27,46 @@ from trading.db.session import DECISION_SCOPE_EXEMPT_EVENTS
 from trading.kis.kis_ticker_info import lookup_names_from_db, resolve_ticker_name
 from trading.scripts.codemap import scan_audit_calls
 
+# ── SPEC-TRADING-065 그룹 2: "수정 이후" 게이트 필터 ─────────────────────────
+# 게이트 기준일·최소 표본은 코드 리터럴 금지(운영자 [HARD]) — env 로 받는다.
+# DASHBOARD_GATE_SINCE : ISO date. 이 날 이후 *진입* 한 왕복만 집계하는 토글의 기준.
+#                        미설정이면 토글 자체가 비활성(프런트가 gate.since=null 로 판단).
+# DASHBOARD_GATE_MIN_N : since 필터 후 왕복 수가 이 미만이면 "표본 부족" 을 판정과 함께 준다.
+#                        표본 없는 PF 를 GO/NO-GO 로 오독하지 않게 하는 안전장치.
+_GATE_MIN_N_DEFAULT = 10
+
+
+def gate_config() -> dict[str, Any]:
+    """검증 게이트 설정(env) — 프런트가 토글 활성 여부·라벨에 쓴다."""
+    import os
+    from datetime import date as _date
+
+    raw = (os.environ.get("DASHBOARD_GATE_SINCE") or "").strip()
+    since: str | None = None
+    if raw:
+        try:
+            since = _date.fromisoformat(raw).isoformat()
+        except ValueError:
+            LOG.warning("DASHBOARD_GATE_SINCE=%r 는 ISO date 가 아님 — 게이트 비활성", raw)
+    try:
+        min_n = int(os.environ.get("DASHBOARD_GATE_MIN_N", str(_GATE_MIN_N_DEFAULT)))
+    except ValueError:
+        min_n = _GATE_MIN_N_DEFAULT
+    return {"since": since, "min_n": min_n}
+
+
+def _parse_since(since: str | None):
+    """라우트가 넘긴 since 문자열 → date | None. 잘못된 값은 None(전기간)."""
+    if not since:
+        return None
+    from datetime import date as _date
+
+    try:
+        return _date.fromisoformat(since)
+    except ValueError:
+        LOG.warning("since=%r 는 ISO date 가 아님 — 전기간으로 처리", since)
+        return None
+
 LOG = logging.getLogger(__name__)
 
 # 응답에서 제외할 민감 컬럼 (KIS 요청/응답 페이로드, 주문번호)
@@ -586,7 +626,9 @@ def _kospi_forward_relative(
 
 # @MX:ANCHOR: [AUTO] fetch_postmortem — postmortem 분류 단일 읽기 진입점.
 # @MX:REASON: 대시보드·테스트 모두 이 함수를 소비(fan_in ≥ 3 예상). 구형 stub 대체.
-def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
+def fetch_postmortem(
+    *, days: int = 30, limit: int = 200, since: str | None = None,
+) -> dict[str, Any]:
     """persona_decisions → 라운드트립 매칭 → classify_decision_outcome → 4분류 + 귀인.
 
     SPEC-050 follow-up 수정사항:
@@ -619,9 +661,10 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
         attribute_to_persona,
         classify_decision_outcome,
     )
-    from trading.edge.roundtrips import build_roundtrips
+    from trading.edge.roundtrips import build_roundtrips, filter_since
 
-    cache_key = f"postmortem:{days}:{limit}"
+    since_d = _parse_since(since)
+    cache_key = f"postmortem:{days}:{limit}:{since_d}"
     cached = _cache_get(_postmortem_cache, cache_key)
     if cached is not None:
         return cached
@@ -678,14 +721,16 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
         WHERE o.status IN ('filled', 'partial')
           AND o.fill_qty IS NOT NULL AND o.fill_qty > 0
           AND o.fill_price IS NOT NULL
-          AND o.ts >= NOW() - (%s || ' days')::INTERVAL
+          {days_clause}
         ORDER BY o.ticker, COALESCE(o.filled_at, o.ts), o.id
     """
+    # SPEC-065: since 가 오면 전체 원장(FIFO 짝 보존) 후 진입일 필터.
+    _dc = "" if since_d else "AND o.ts >= NOW() - (%s || ' days')::INTERVAL"
     with ro_connection() as conn, conn.cursor() as cur:
-        cur.execute(fill_sql, (str(int(days)),))
+        cur.execute(fill_sql.format(days_clause=_dc), () if since_d else (str(int(days)),))
         fill_rows = cur.fetchall()
 
-    rt_result = build_roundtrips([dict(r) for r in fill_rows])
+    rt_result = filter_since(build_roundtrips([dict(r) for r in fill_rows]), since_d)
 
     # -------------------------------------------------------------------------
     # KOSPI 종가 로드 — 전체 결정 기간 + 선행 20거래일(≈28일)
@@ -846,6 +891,7 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
         },
         "total": sum(distribution.values()),
         "days": days,
+        "since": since_d.isoformat() if since_d else None,
     }
 
     _cache_put(_postmortem_cache, cache_key, payload)
@@ -859,7 +905,7 @@ def fetch_postmortem(*, days: int = 30, limit: int = 200) -> dict[str, Any]:
 
 # @MX:ANCHOR: [AUTO] fetch_confidence_analysis — confidence 엣지 분석 읽기 진입점.
 # @MX:REASON: 대시보드·차트·테스트가 소비(fan_in ≥ 3 예상). 구형 stub 대체.
-def fetch_confidence_analysis(*, days: int = 30) -> dict[str, Any]:
+def fetch_confidence_analysis(*, days: int = 30, since: str | None = None) -> dict[str, Any]:
     """체결 행 → build_roundtrips → confidence.analyze → 버킷/상관 반환.
 
     REQ-050-6a: edge.roundtrips.build_roundtrips / edge.confidence.analyze 재사용.
@@ -870,14 +916,17 @@ def fetch_confidence_analysis(*, days: int = 30) -> dict[str, Any]:
 
     Args:
         days: 최근 N일 이내 체결만 포함.
+        since: SPEC-065 REQ-065-2a — 지정 시 days 컷을 풀고 전체 원장으로 FIFO 를
+            만든 뒤 진입일 >= since 로 거른다(ts 컷은 진입/청산 짝을 깨뜨림).
 
     Returns:
         dict: buckets(list), n_with_conf, pearson, spearman, none_count, approve, overridden.
     """
     from trading.edge.confidence import analyze
-    from trading.edge.roundtrips import build_roundtrips
+    from trading.edge.roundtrips import build_roundtrips, filter_since
 
-    cache_key = f"confidence:{days}"
+    since_d = _parse_since(since)
+    cache_key = f"confidence:{days}:{since_d}"
     cached = _cache_get(_confidence_cache, cache_key)
     if cached is not None:
         return cached
@@ -905,15 +954,18 @@ def fetch_confidence_analysis(*, days: int = 30) -> dict[str, Any]:
         WHERE o.status IN ('filled', 'partial')
           AND o.fill_qty IS NOT NULL AND o.fill_qty > 0
           AND o.fill_price IS NOT NULL
-          AND o.ts >= NOW() - (%s || ' days')::INTERVAL
+          {days_clause}
         ORDER BY o.ticker, COALESCE(o.filled_at, o.ts), o.id
     """
+    # since 가 오면 전체 원장(FIFO 짝 보존) — days 컷은 since 없을 때만.
+    days_clause = "" if since_d else "AND o.ts >= NOW() - (%s || ' days')::INTERVAL"
+    params: tuple = () if since_d else (str(int(days)),)
     with ro_connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (str(int(days)),))
+        cur.execute(sql.format(days_clause=days_clause), params)
         rows = cur.fetchall()
 
     fill_rows = [dict(r) for r in rows]
-    rt_result = build_roundtrips(fill_rows)
+    rt_result = filter_since(build_roundtrips(fill_rows), since_d)
     report = analyze(rt_result.roundtrips)
 
     def _bucket_dict(b: Any) -> dict[str, Any]:
@@ -1020,6 +1072,7 @@ def fetch_pipeline() -> dict[str, Any]:
 def fetch_roundtrips(
     *,
     days: int | None = None,
+    since: str | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """edge.roundtrips 에서 라운드트립 원장을 읽어 반환.
@@ -1050,7 +1103,9 @@ def fetch_roundtrips(
     """
     from trading.edge import roundtrips as _rt
 
-    rt_result = _rt.compute_roundtrips(days)
+    # SPEC-065: since 가 오면 days 컷 무시 → 전체 원장 FIFO 후 진입일 필터.
+    since_d = _parse_since(since)
+    rt_result = _rt.filter_since(_rt.compute_roundtrips(None if since_d else days), since_d)
     rts = rt_result.roundtrips
 
     # 최신 순 정렬 (exit_date 내림차순)
@@ -1346,8 +1401,8 @@ def fetch_pnl_daily(
 # fetch_scorecard 에 sortino 를 추가하는 패치는 기존 함수를 교체로 처리.
 # 아래 함수가 app.py /api/scorecard 에서 호출된다.
 
-def fetch_scorecard_with_sortino() -> dict[str, Any]:
-    """fetch_scorecard() + sortino 노출.
+def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
+    """fetch_scorecard() + sortino 노출 (+ SPEC-065 since 필터).
 
     REQ-054-A4: analytics.sortino 는 이미 계산되어 있으나 기존
     fetch_scorecard() 응답에 포함되지 않았다. 이 함수가 그 키를 추가한다.
@@ -1367,6 +1422,13 @@ def fetch_scorecard_with_sortino() -> dict[str, Any]:
         mdd: number | null
         sharpe: number | null
         sortino: number              -- 추가 (REQ-054-A4)
+        since: string | null         -- SPEC-065 REQ-065-2a: 진입일 필터 (적용된 값)
+        low_sample: boolean          -- REQ-065-2c: since 필터 후 n < DASHBOARD_GATE_MIN_N
+        gate_min_n: number
+
+    since 는 체결 ts 가 아니라 **진입일(entry_date)** 기준이다 — 전체 원장으로
+    FIFO 왕복을 만든 뒤 거른다(edge.roundtrips.filter_since 참조). ts 로 자르면
+    since 이전 매수/이후 매도 짝이 깨져 실현손익이 어긋난다.
     """
     from trading.edge import analytics as _an
     from trading.edge import benchmark as _bm
@@ -1374,7 +1436,8 @@ def fetch_scorecard_with_sortino() -> dict[str, Any]:
     from trading.edge import scorecard as _sc
     from trading.edge.report import load_equity_snapshots
 
-    rt_result = _rt.compute_roundtrips(None)
+    since_d = _parse_since(since)
+    rt_result = _rt.filter_since(_rt.compute_roundtrips(None), since_d)
     analytics = _an.from_result(rt_result, balance=None)
     bm = _bm.compute(rt_result.roundtrips)
     card = _sc.decide(analytics, bm)
@@ -1399,6 +1462,9 @@ def fetch_scorecard_with_sortino() -> dict[str, Any]:
         "mdd": tw.mdd if tw.available else None,
         "sharpe": tw.sharpe if tw.available else None,
         "sortino": analytics.sortino,  # REQ-054-A4: 노출만, 재계산 없음
+        "since": since_d.isoformat() if since_d else None,
+        "low_sample": bool(since_d) and analytics.n_closed < gate_config()["min_n"],
+        "gate_min_n": gate_config()["min_n"],
     }
 
 

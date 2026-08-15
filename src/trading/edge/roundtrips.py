@@ -116,6 +116,28 @@ class RoundTripResult:
 # ---------------------------------------------------------------------------
 
 
+def filter_since(result: RoundTripResult, since: date | None) -> RoundTripResult:
+    """``since`` 이후 **진입**한 왕복만 남긴 새 결과를 돌려준다(SPEC-065 REQ-065-2a).
+
+    체결 행을 ts 로 자르면 안 된다 — since 이전에 산 lot 을 since 이후에 판 매도가
+    진입 짝을 잃어 FIFO 가 깨진다(unmatched 로 새고 실현손익이 어긋남). 그래서
+    전체 원장으로 왕복을 만든 뒤 entry_date 로 거른다. 순수 함수, DB 없음.
+
+    2026-08-15 배포한 출구 규칙(floor -10 → -15%)이 옛 포지션과 섞이면 PF 가
+    한동안 더 나빠 보인다(새 것은 -15% 까지 버팀). 검증 게이트에서 "수정 이후
+    진입분만" 을 봐야 하는 이유. ``since=None`` 이면 입력 그대로.
+
+    open_qty / unmatched_sells 는 원장 전체의 사실이라 필터하지 않는다.
+    """
+    if since is None:
+        return result
+    return RoundTripResult(
+        roundtrips=[rt for rt in result.roundtrips if rt.entry_date >= since],
+        unmatched_sells=list(result.unmatched_sells),
+        open_qty=dict(result.open_qty),
+    )
+
+
 def _row_date(row: dict[str, Any]) -> date:
     """체결 시각 → date. filled_at 우선, 없으면 ts."""
     val = row.get("filled_at") or row.get("ts")

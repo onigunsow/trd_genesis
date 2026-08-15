@@ -51,6 +51,10 @@ if _STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
+# SPEC-065 REQ-065-2a: 4개 집계 라우트가 공유하는 since 쿼리 파라미터.
+_SINCE_Q = Query(default=None, description="SPEC-065: 이 날(ISO) 이후 진입한 왕복만")
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     """대시보드 정적 HTML 페이지."""
@@ -82,7 +86,11 @@ def get_status() -> dict[str, Any]:
     late_cycle_defense_active / late_cycle_level 포함.
     """
     try:
-        return queries.fetch_system_status()
+        status = queries.fetch_system_status()
+        # SPEC-065 REQ-065-2b: 게이트 설정(env)을 status 에 실어 프런트가 "수정 이후만"
+        # 토글의 활성 여부·기준일 라벨을 폴링 1회로 안다. since=null 이면 토글 비활성.
+        status["gate"] = queries.gate_config()
+        return status
     except Exception as exc:
         LOG.error("fetch_system_status failed: %s", exc)
         raise HTTPException(status_code=503, detail="DB 조회 실패") from exc
@@ -156,13 +164,14 @@ def get_equity(days: int = 90) -> list[dict[str, Any]]:
 
 
 @app.get("/api/scorecard", tags=["scorecard"])
-def get_scorecard() -> dict[str, Any]:
+def get_scorecard(since: str | None = _SINCE_Q) -> dict[str, Any]:
     """엣지 검증 스코어카드 (verdict, grade, alpha, CAGR, MDD, Sharpe, sortino).
 
     REQ-054-A4: sortino 필드 추가 (edge.analytics 에서 이미 계산된 값 노출만).
+    SPEC-065 REQ-065-2a: since 는 진입일 기준 필터. low_sample 로 표본 부족 신호.
     """
     try:
-        return queries.fetch_scorecard_with_sortino()
+        return queries.fetch_scorecard_with_sortino(since=since)
     except Exception as exc:
         LOG.error("fetch_scorecard failed: %s", exc)
         raise HTTPException(status_code=503, detail="스코어카드 계산 실패") from exc
@@ -217,27 +226,32 @@ def get_trends(trend_type: str = "daily", days: int = 14) -> list[dict[str, Any]
 
 
 @app.get("/api/postmortem", tags=["analytics"])
-def get_postmortem(days: int = 30, limit: int = 200) -> dict[str, Any]:
+def get_postmortem(
+    days: int = 30, limit: int = 200,
+    since: str | None = _SINCE_Q,
+) -> dict[str, Any]:
     """결정 postmortem 분포 (4분류: TP/FP/REGIME_MISMATCH/MISSED + 페르소나 귀인).
 
     REQ-050-6/7: 어댑터 → edge.postmortem.classify_decision_outcome → 지연계산 + TTL 캐시.
     """
     limit = min(limit, 500)
     try:
-        return queries.fetch_postmortem(days=days, limit=limit)
+        return queries.fetch_postmortem(days=days, limit=limit, since=since)
     except Exception as exc:
         LOG.error("fetch_postmortem failed: %s", exc)
         raise HTTPException(status_code=503, detail="postmortem 계산 실패") from exc
 
 
 @app.get("/api/confidence-analysis", tags=["analytics"])
-def get_confidence_analysis(days: int = 30) -> dict[str, Any]:
+def get_confidence_analysis(
+    days: int = 30, since: str | None = _SINCE_Q,
+) -> dict[str, Any]:
     """Confidence 엣지 분석 (버킷별 성적 + Pearson/Spearman 상관).
 
     REQ-050-6a/7: 어댑터 → edge.roundtrips.build_roundtrips → edge.confidence.analyze.
     """
     try:
-        return queries.fetch_confidence_analysis(days=days)
+        return queries.fetch_confidence_analysis(days=days, since=since)
     except Exception as exc:
         LOG.error("fetch_confidence_analysis failed: %s", exc)
         raise HTTPException(status_code=503, detail="confidence 분석 실패") from exc
@@ -270,6 +284,7 @@ def get_pipeline() -> dict[str, Any]:
 def get_roundtrips(
     days: int | None = Query(default=None, description="최근 N일 필터"),
     limit: int = Query(default=500, le=2000, description="최대 반환 행 수"),
+    since: str | None = _SINCE_Q,
 ) -> list[dict[str, Any]]:
     """라운드트립 거래 원장.
 
@@ -281,7 +296,7 @@ def get_roundtrips(
         confidence, verdict, persona, is_win
     """
     try:
-        return queries.fetch_roundtrips(days=days, limit=limit)
+        return queries.fetch_roundtrips(days=days, limit=limit, since=since)
     except Exception as exc:
         LOG.error("fetch_roundtrips failed: %s", exc)
         raise HTTPException(status_code=503, detail="라운드트립 조회 실패") from exc
