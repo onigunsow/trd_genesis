@@ -11,7 +11,24 @@ LOG = logging.getLogger(__name__)
 SOURCE = "yfinance"
 
 # Common Yahoo symbols used in macro persona context.
-DEFAULT_SYMBOLS = ("^GSPC", "^IXIC", "^VIX", "KRW=X", "GLD", "TLT", "DX=F")
+DEFAULT_SYMBOLS = (
+    "^GSPC", "^IXIC", "^VIX", "KRW=X", "GLD", "TLT",
+    "DX-Y.NYB",  # 달러인덱스 — DX=F 는 Yahoo 에서 사라짐(2026-08 실측 404)
+    # 2026-08-16 크레딧·반도체 대리지표 — HYG/LQD(크레딧 ETF),
+    # MU·SOXX(삼성/하이닉스 원화채 부재 대체)
+    "HYG", "LQD", "MU", "SOXX",
+)
+
+
+def fetch_default_incremental(default_start: date) -> int:
+    """DEFAULT_SYMBOLS 증분 갱신(심볼별 실패 격리)."""
+    total = 0
+    for sym in DEFAULT_SYMBOLS:
+        try:
+            total += fetch_incremental(sym, default_start)
+        except Exception:
+            LOG.warning("yfinance %s incremental fetch failed", sym, exc_info=True)
+    return total
 # DX=F = ICE U.S. Dollar Index futures (DXY).
 
 

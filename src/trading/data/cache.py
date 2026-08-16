@@ -109,6 +109,19 @@ def latest_close(source: str, symbol: str) -> int | None:
     return int(close) if close is not None else None
 
 
+def macro_latest_ts(source: str, series_id: str) -> date | None:
+    """macro_indicators 의 마지막 관측일. 증분 갱신 시작점."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(ts) AS ts FROM macro_indicators WHERE source=%s AND series_id=%s",
+            (source, series_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return row.get("ts") if isinstance(row, dict) else row[0]
+
+
 def upsert_macro(
     source: str,
     series_id: str,

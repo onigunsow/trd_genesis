@@ -218,6 +218,22 @@ def _run_fetch_market_funds() -> None:
     LOG.info("fetch_market_funds: %d rows cached (901Y056 S23E/S23A)", int(n or 0))
 
 
+def _run_fetch_us_macro() -> None:
+    """FRED(등급별 크레딧 OAS·NFCI 등) + yfinance(크레딧 ETF·반도체 대리) 일일 증분 갱신.
+
+    2026-08-16: 초기 적재 후 갱신 크론이 없어 5/4 에 멈춰 있던 결함 수정. 매크로 페르소나·
+    크레딧 관찰이 최신 값을 읽게 한다. 어댑터는 시리즈별 실패 격리, _wrap 이 전체 격리.
+    """
+    from datetime import date
+
+    from trading.config import BACKFILL_START_DATE
+    from trading.data import fred_adapter, yfinance_adapter
+
+    n_fred = fred_adapter.fetch_default_incremental()
+    n_yf = yfinance_adapter.fetch_default_incremental(date.fromisoformat(BACKFILL_START_DATE))
+    LOG.info("fetch_us_macro: fred=%d rows, yfinance=%d rows", int(n_fred or 0), int(n_yf or 0))
+
+
 def _wrap(name: str, fn, *args, **kwargs):
     """Run `fn` only if today is a KRX trading day (Mon-Fri ∩ no public holidays)."""
     if not is_trading_day():
@@ -313,6 +329,14 @@ def main() -> None:
         CronTrigger(day_of_week="mon-fri", hour=5, minute=50, timezone=KST),
         id="fetch_market_funds",
         name="fetch_market_funds 05:50",
+    )
+
+    # 2026-08-16: 미국 크레딧·매크로 캐시 일일 증분 갱신 05:45 (ctx_macro 06:00 전).
+    sched.add_job(
+        lambda: _wrap("fetch_us_macro", _run_fetch_us_macro),
+        CronTrigger(day_of_week="mon-fri", hour=5, minute=45, timezone=KST),
+        id="fetch_us_macro",
+        name="fetch_us_macro 05:45",
     )
 
     # SPEC-007 — Static context builders (run regardless of trading day; cheap)

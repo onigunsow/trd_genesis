@@ -194,6 +194,11 @@ def assemble_macro_input(today: date | None = None) -> dict[str, Any]:
                        # M5 정밀화 — 유동성·신용·달러·유가
                        ("RRPONTSYD", "역레포 잔고 (유동성)"),
                        ("BAMLH0A0HYM2", "HY 스프레드 (신용시장)"),
+                       # 2026-08-16 등급별 크레딧 — HY 지수만으론 꼬리 스트레스가 안 보인다
+                       ("BAMLH0A3HYC", "CCC 이하 스프레드 (HY 꼬리)"),
+                       ("BAMLC0A4CBBB", "BBB 스프레드"),
+                       ("BAMLC0A0CM", "IG 회사채 스프레드"),
+                       ("NFCI", "시카고연준 금융여건지수"),
                        ("DCOILWTICO", "WTI 원유"),
                        ("STLFSI4", "St.Louis 금융스트레스 지수"),
                        ("DTWEXBGS", "달러 인덱스 (DXY proxy)")]:
