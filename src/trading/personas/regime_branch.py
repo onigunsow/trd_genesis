@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from trading.config import RISK_ONE_SHARE_MAX_PCT
+
 LOG = logging.getLogger(__name__)
 
 # Conservative baselines (the current/neutral behaviour — decision.jinja:12,15).
@@ -117,6 +119,9 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
         "regime_confidence_delta": adj.confidence_delta,
         "regime_sector_cap_pct": adj.sector_cap_pct,
         "regime_block_leverage": adj.block_leverage,
+        # 2026-08-16 고가주 1주 예외 비율 — 코드(RISK_ONE_SHARE_MAX_PCT)와 프롬프트가
+        # 같은 값을 본다.
+        "one_share_max_pct": RISK_ONE_SHARE_MAX_PCT * 100,
     }
 
 

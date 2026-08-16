@@ -12,9 +12,10 @@ from datetime import UTC, date, datetime
 from typing import Literal
 
 from trading.config import (
-    RISK_DAILY_MAX_LOSS,
     REENTRY_COOLDOWN_DAYS,
+    RISK_DAILY_MAX_LOSS,
     RISK_DAILY_ORDER_COUNT_MAX,
+    RISK_ONE_SHARE_MAX_PCT,
     RISK_PER_TICKER_MAX_POSITION,
     RISK_SELL_BUDGET_RESERVE,
     RISK_SINGLE_ORDER_MAX,
@@ -216,8 +217,19 @@ def check_pre_order(
     # 매수 시 실제 차감되는 매수가능금액 = notional + 수수료
     cash_impact = notional + fee if side == "buy" else 0  # 매도는 cash 증가
 
+    # 0. 고가주 1주 예외 (2026-08-16): 미보유 종목의 정확히 1주 매수가 단일 주문/종목당
+    # 한도를 넘어도 RISK_ONE_SHARE_MAX_PCT 이내면 허용. 1주 미만으로는 못 사므로 이게
+    # 없으면 고가주는 자본이 작을 때 영구 제외된다.
+    existing = next((h for h in holdings if h["ticker"] == ticker), None)
+    existing_value = (existing["eval_amount"] if existing else 0)
+    one_share_ok = (
+        side == "buy" and qty == 1 and existing_value == 0
+        and RISK_ONE_SHARE_MAX_PCT > 0
+        and cash_impact <= total_assets * RISK_ONE_SHARE_MAX_PCT
+    )
+
     # 1. single order — 수수료 포함 한도
-    if cash_impact > total_assets * RISK_SINGLE_ORDER_MAX:
+    if cash_impact > total_assets * RISK_SINGLE_ORDER_MAX and not one_share_ok:
         chk.breaches.append(
             f"single_order: 주문금액(수수료 포함) {cash_impact:,} > 한도 "
             f"{int(total_assets * RISK_SINGLE_ORDER_MAX):,}"
@@ -267,10 +279,8 @@ def check_pre_order(
 
     # 4. per-ticker max position (수수료 포함 차감 후 비중)
     if side == "buy":
-        existing = next((h for h in holdings if h["ticker"] == ticker), None)
-        existing_value = (existing["eval_amount"] if existing else 0)
         projected_value = existing_value + notional + fee
-        if projected_value > total_assets * RISK_PER_TICKER_MAX_POSITION:
+        if projected_value > total_assets * RISK_PER_TICKER_MAX_POSITION and not one_share_ok:
             chk.breaches.append(
                 f"per_ticker: {ticker} 예상 보유(수수료 포함) {projected_value:,} > 한도 "
                 f"{int(total_assets * RISK_PER_TICKER_MAX_POSITION):,}"
