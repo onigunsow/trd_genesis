@@ -2,6 +2,7 @@
 // 총자산·일일/누적 실현손익·수익률%·MDD·승률·평균 손익비·Sharpe·Sortino·KOSPI 알파
 // 모든 값은 /api/scorecard + /api/equity + /api/pnl-daily 에서 옴 (edge 코어 읽기 전용)
 import { useCallback } from 'react'
+import { useGate } from '../gate/GateContext'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { Scorecard, EquityPoint, PnlDailyResponse } from '../api/types'
@@ -168,9 +169,10 @@ export function KpiCardsContent({ scorecard, equity, pnlDaily }: Props) {
 
 // 폴링 포함 독립 컨테이너
 export default function KpiCards() {
-  const scorecardFetcher = useCallback(() => api.fetchScorecard(), [])
-  const equityFetcher = useCallback(() => api.fetchEquity(90), [])
-  const pnlFetcher = useCallback(() => api.fetchPnlDaily(90, 'daily'), [])
+  const { since } = useGate()
+  const scorecardFetcher = useCallback(() => api.fetchScorecard(since), [since])
+  const equityFetcher = useCallback(() => api.fetchEquity(90, since), [since])
+  const pnlFetcher = useCallback(() => api.fetchPnlDaily(90, 'daily', since ?? undefined), [since])
 
   const { data: scorecard } = usePolling(scorecardFetcher, 60_000)
   const { data: equity } = usePolling(equityFetcher, 60_000)

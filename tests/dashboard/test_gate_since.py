@@ -5,26 +5,76 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import patch
 
+import pytest
+
 from trading.dashboard import queries
 
 
 class TestGateConfig:
-    def test_env_missing_disables_gate(self, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        """env 미설정 + audit ACCOUNT_SWITCH 없음 이 기본. 캐시는 매 테스트 비운다."""
+        queries._gate_cache.clear()
         monkeypatch.delenv("DASHBOARD_GATE_SINCE", raising=False)
         monkeypatch.delenv("DASHBOARD_GATE_MIN_N", raising=False)
+        with patch.object(queries, "_account_switch_since", return_value=None):
+            yield
+        queries._gate_cache.clear()
+
+    def test_env_missing_and_no_switch_disables_gate(self):
         cfg = queries.gate_config()
         assert cfg["since"] is None
+        assert cfg["source"] is None
         assert cfg["min_n"] == queries._GATE_MIN_N_DEFAULT
 
     def test_env_iso_date_and_min_n(self, monkeypatch):
         monkeypatch.setenv("DASHBOARD_GATE_SINCE", "2026-08-17")
         monkeypatch.setenv("DASHBOARD_GATE_MIN_N", "7")
         cfg = queries.gate_config()
-        assert cfg == {"since": "2026-08-17", "min_n": 7}
+        assert cfg == {"since": "2026-08-17", "min_n": 7, "source": "env"}
 
     def test_bad_date_disables_not_crashes(self, monkeypatch):
         monkeypatch.setenv("DASHBOARD_GATE_SINCE", "next monday")
         assert queries.gate_config()["since"] is None
+
+    def test_account_switch_fallback_when_env_missing(self):
+        """모의계좌 리셋(ACCOUNT_SWITCH) 이 있으면 env 없이도 그 경계가 since."""
+        with patch.object(queries, "_account_switch_since", return_value="2026-08-08"):
+            cfg = queries.gate_config()
+        assert cfg["since"] == "2026-08-08"
+        assert cfg["source"] == "account_switch"
+
+    def test_env_wins_over_account_switch(self, monkeypatch):
+        monkeypatch.setenv("DASHBOARD_GATE_SINCE", "2026-08-17")
+        with patch.object(queries, "_account_switch_since", return_value="2026-08-08"):
+            assert queries.gate_config()["since"] == "2026-08-17"
+
+
+class TestAccountSwitchSince:
+    def _row(self, ts, details):
+        return {"ts": ts, "details": details}
+
+    def test_closeout_date_plus_one(self):
+        from datetime import UTC, datetime
+        row = self._row(datetime(2026, 8, 8, 16, tzinfo=UTC), {"closeout_date": "2026-08-07"})
+        with patch.object(queries, "ro_connection") as ro:
+            cur = ro.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+            cur.fetchone.return_value = row
+            assert queries._account_switch_since() == "2026-08-08"
+
+    def test_no_closeout_falls_back_to_event_date(self):
+        from datetime import UTC, datetime
+        row = self._row(datetime(2026, 8, 9, 1, tzinfo=UTC), {})
+        with patch.object(queries, "ro_connection") as ro:
+            cur = ro.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+            cur.fetchone.return_value = row
+            assert queries._account_switch_since() == "2026-08-09"
+
+    def test_no_event_returns_none(self):
+        with patch.object(queries, "ro_connection") as ro:
+            cur = ro.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+            cur.fetchone.return_value = None
+            assert queries._account_switch_since() is None
 
     def test_no_hardcoded_gate_date_in_source(self):
         """운영자 [HARD]: 게이트 기준일은 코드 리터럴 금지."""

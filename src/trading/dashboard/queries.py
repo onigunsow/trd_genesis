@@ -33,26 +33,76 @@ from trading.scripts.codemap import scan_audit_calls
 #                        미설정이면 토글 자체가 비활성(프런트가 gate.since=null 로 판단).
 # DASHBOARD_GATE_MIN_N : since 필터 후 왕복 수가 이 미만이면 "표본 부족" 을 판정과 함께 준다.
 #                        표본 없는 PF 를 GO/NO-GO 로 오독하지 않게 하는 안전장치.
+# env 미설정이면 audit_log 의 최신 ACCOUNT_SWITCH(모의계좌 리셋·재등록) 를 기준으로 삼는다:
+#   since = details.closeout_date + 1 (구계좌 청산 다음 날부터가 새 계좌 실적).
+#   운영자가 계좌를 갈아탈 때 audit_log 에 ACCOUNT_SWITCH 한 줄만 남기면 대시보드가 따라온다.
 _GATE_MIN_N_DEFAULT = 10
+_gate_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _account_switch_since() -> str | None:
+    """최신 ACCOUNT_SWITCH 이벤트 → 새 계좌 첫날(ISO date). 없으면 None."""
+    from datetime import timedelta
+
+    sql = """
+        SELECT ts, details
+        FROM audit_log
+        WHERE event_type = 'ACCOUNT_SWITCH'
+        ORDER BY ts DESC
+        LIMIT 1
+    """
+    try:
+        with ro_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+    except Exception as exc:  # DB 장애 시 게이트만 비활성 — 대시보드 전체를 죽이지 않는다
+        LOG.warning("ACCOUNT_SWITCH 조회 실패 — 게이트 비활성: %s", exc)
+        return None
+    if not row:
+        return None
+    details = row["details"] or {}
+    closeout = details.get("closeout_date")
+    if closeout:
+        from datetime import date as _date
+
+        try:
+            return (_date.fromisoformat(closeout) + timedelta(days=1)).isoformat()
+        except ValueError:
+            pass
+    return row["ts"].date().isoformat()
 
 
 def gate_config() -> dict[str, Any]:
-    """검증 게이트 설정(env) — 프런트가 토글 활성 여부·라벨에 쓴다."""
+    """검증 게이트 설정 — 프런트가 토글 활성 여부·라벨에 쓴다.
+
+    since 우선순위: env DASHBOARD_GATE_SINCE > audit_log ACCOUNT_SWITCH > None(비활성).
+    """
     import os
     from datetime import date as _date
 
+    cached = _cache_get(_gate_cache, "gate")
+    if cached is not None:
+        return cached
+
     raw = (os.environ.get("DASHBOARD_GATE_SINCE") or "").strip()
     since: str | None = None
+    source: str | None = None
     if raw:
         try:
             since = _date.fromisoformat(raw).isoformat()
+            source = "env"
         except ValueError:
             LOG.warning("DASHBOARD_GATE_SINCE=%r 는 ISO date 가 아님 — 게이트 비활성", raw)
+    if since is None:
+        since = _account_switch_since()
+        source = "account_switch" if since else None
     try:
         min_n = int(os.environ.get("DASHBOARD_GATE_MIN_N", str(_GATE_MIN_N_DEFAULT)))
     except ValueError:
         min_n = _GATE_MIN_N_DEFAULT
-    return {"since": since, "min_n": min_n}
+    cfg = {"since": since, "min_n": min_n, "source": source}
+    _cache_put(_gate_cache, "gate", cfg)
+    return cfg
 
 
 def _parse_since(since: str | None):
@@ -351,22 +401,33 @@ def fetch_holdings() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def fetch_equity_curve(*, days: int | None = 90) -> list[dict[str, Any]]:
+def fetch_equity_curve(*, days: int | None = 90, since: str | None = None) -> list[dict[str, Any]]:
     """daily_equity_snapshot — 날짜 오름차순 + drawdown 시리즈.
 
     REQ-050-5: 일별 스냅샷에 더해 drawdown(러닝 맥스 대비 낙폭) 곡선 함께 반환.
 
     Args:
         days: None 이면 전체 기간.
+        since: 계좌 리셋 경계(ISO date). 주어지면 days 를 무시하고 그 날부터만 —
+            리셋 전후를 한 곡선에 이으면 현금 복원이 수익으로 보인다.
     """
-    if days is not None:
+    since_d = _parse_since(since)
+    if since_d is not None:
+        sql = """
+            SELECT trading_day, total_assets, stock_eval, cash, unrealized_pnl
+            FROM daily_equity_snapshot
+            WHERE trading_day >= %s
+            ORDER BY trading_day
+        """
+        params: list[Any] = [since_d]
+    elif days is not None:
         sql = """
             SELECT trading_day, total_assets, stock_eval, cash, unrealized_pnl
             FROM daily_equity_snapshot
             WHERE trading_day >= (CURRENT_DATE - (%s || ' days')::INTERVAL)::DATE
             ORDER BY trading_day
         """
-        params: list[Any] = [str(int(days))]
+        params = [str(int(days))]
     else:
         sql = """
             SELECT trading_day, total_assets, stock_eval, cash, unrealized_pnl
@@ -1472,7 +1533,8 @@ def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
     bm = _bm.compute(rt_result.roundtrips)
     card = _sc.decide(analytics, bm)
 
-    snapshots = load_equity_snapshots(days=90)
+    # cagr/mdd/sharpe 도 같은 경계 — 리셋 전 곡선을 섞으면 현금 복원 점프가 수익으로 잡힌다.
+    snapshots = load_equity_snapshots(days=None if since_d else 90, since=since_d)
     tw = _an.time_weighted_metrics(snapshots)
 
     return {

@@ -59,7 +59,8 @@ export const api = {
   fetchHoldings: () => get<Holding[]>('/api/holdings'),
 
   // ── 자산 곡선 + drawdown ───────────────────────────────────────────────────
-  fetchEquity: (days = 90) => get<EquityPoint[]>(`/api/equity?days=${days}`),
+  fetchEquity: (days = 90, since?: string | null) =>
+    get<EquityPoint[]>(`/api/equity?days=${days}${since ? `&since=${since}` : ''}`),
 
   // ── 스코어카드 (REQ-054-A4: sortino 포함) ────────────────────────────────
   fetchScorecard: (since?: string | null) =>
@@ -88,12 +89,12 @@ export const api = {
     get<TrendPoint[]>(`/api/trends?trend_type=${trendType}&days=${days}`),
 
   // ── Postmortem 분포 ───────────────────────────────────────────────────────
-  fetchPostmortem: (days = 30) =>
-    get<PostmortemResult>(`/api/postmortem?days=${days}`),
+  fetchPostmortem: (days = 30, since?: string | null) =>
+    get<PostmortemResult>(`/api/postmortem?days=${days}${since ? `&since=${since}` : ''}`),
 
   // ── Confidence 분석 ───────────────────────────────────────────────────────
-  fetchConfidenceAnalysis: (days = 30) =>
-    get<ConfidenceAnalysis>(`/api/confidence-analysis?days=${days}`),
+  fetchConfidenceAnalysis: (days = 30, since?: string | null) =>
+    get<ConfidenceAnalysis>(`/api/confidence-analysis?days=${days}${since ? `&since=${since}` : ''}`),
 
   // ── 파이프라인 ────────────────────────────────────────────────────────────
   fetchPipeline: () => get<PipelineData>('/api/pipeline'),
@@ -105,8 +106,8 @@ export const api = {
 
   // ── 라운드트립 원장 (REQ-054-A1, D1) ─────────────────────────────────────
   // days: 기간 필터, limit: 최대 행 수
-  fetchRoundtrips: (days = 90, limit = 500) =>
-    get<RoundTrip[]>(`/api/roundtrips?days=${days}&limit=${limit}`),
+  fetchRoundtrips: (days = 90, limit = 500, since?: string | null) =>
+    get<RoundTrip[]>(`/api/roundtrips?days=${days}&limit=${limit}${since ? `&since=${since}` : ''}`),
 
   // ── 포트폴리오 구성 (REQ-054-A2, C2) ─────────────────────────────────────
   // position_eval_snapshot + equity + ticker_metadata 조인 결과

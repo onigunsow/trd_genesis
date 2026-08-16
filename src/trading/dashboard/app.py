@@ -150,14 +150,15 @@ def get_holdings() -> list[dict[str, Any]]:
 
 
 @app.get("/api/equity", tags=["equity"])
-def get_equity(days: int = 90) -> list[dict[str, Any]]:
+def get_equity(days: int = 90, since: str | None = _SINCE_Q) -> list[dict[str, Any]]:
     """일별 자산 스냅샷 (equity curve) + drawdown 시리즈.
 
     SPEC-050 REQ-050-5 확장: drawdown_pct 필드 추가.
+    since(계좌 리셋 경계) 가 오면 days 무시.
     """
     days_arg: int | None = days if days > 0 else None
     try:
-        return queries.fetch_equity_curve(days=days_arg)
+        return queries.fetch_equity_curve(days=days_arg, since=since)
     except Exception as exc:
         LOG.error("fetch_equity_curve failed: %s", exc)
         raise HTTPException(status_code=503, detail="DB 조회 실패") from exc

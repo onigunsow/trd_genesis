@@ -4,8 +4,9 @@
 
 // ── /api/status ────────────────────────────────────────────────────────────
 export interface GateConfig {
-  since: string | null   // null = "수정 이후만" 토글 비활성 (env DASHBOARD_GATE_SINCE 미설정)
+  since: string | null   // null = 토글 비활성. env DASHBOARD_GATE_SINCE > audit ACCOUNT_SWITCH(계좌 리셋)
   min_n: number
+  source?: 'env' | 'account_switch' | null
 }
 
 export interface SystemStatus {

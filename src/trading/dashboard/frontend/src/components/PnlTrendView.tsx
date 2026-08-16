@@ -3,6 +3,7 @@
 // - 전체기간 KOSPI 알파는 scorecard 에서 별도 표시 (기간별 alpha_pct 는 백엔드 한계로 null)
 // - 백엔드 한계 정직 표시: per-period alpha_pct = null → "전체기간 알파" 별도 표기
 import { useState, useCallback } from 'react'
+import { useGate } from '../gate/GateContext'
 import ReactECharts from 'echarts-for-react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
@@ -20,9 +21,11 @@ export default function PnlTrendView(_props: Props) {
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
 
+  const { since } = useGate()
+  // 시작일 미지정이면 게이트 경계(계좌 리셋일)가 기본 시작일
   const fetcher = useCallback(
-    () => api.fetchPnlDaily(180, period, startDate || undefined, endDate || undefined),
-    [period, startDate, endDate],
+    () => api.fetchPnlDaily(180, period, startDate || since || undefined, endDate || undefined),
+    [period, startDate, endDate, since],
   )
   const { data, isLoading, error } = usePolling(fetcher, 60_000)
 

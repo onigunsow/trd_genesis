@@ -392,7 +392,7 @@ class TestEquityEndpoint:
             "trading.dashboard.queries.fetch_equity_curve", return_value=[]
         ) as mock_fn:
             client.get("/api/equity?days=60")
-            mock_fn.assert_called_once_with(days=60)
+            mock_fn.assert_called_once_with(days=60, since=None)
 
 
 # ---------------------------------------------------------------------------

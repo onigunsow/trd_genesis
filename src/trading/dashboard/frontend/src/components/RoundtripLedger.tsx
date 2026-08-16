@@ -3,6 +3,7 @@
 // - 진입가·청산가·실현손익·수익률%·수수료·보유기간·페르소나·verdict
 // - 정렬/필터/검색/날짜범위/CSV 내보내기 지원
 import { useState, useCallback, useMemo } from 'react'
+import { useGate } from '../gate/GateContext'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { RoundTrip } from '../api/types'
@@ -285,7 +286,8 @@ export function RoundtripLedgerContent({ data, isLoading, onExport }: RoundtripL
 
 // 폴링 포함 독립 컨테이너
 export default function RoundtripLedger() {
-  const fetcher = useCallback(() => api.fetchRoundtrips(365, 500), [])
+  const { since } = useGate()
+  const fetcher = useCallback(() => api.fetchRoundtrips(365, 500, since), [since])
   const { data, isLoading } = usePolling(fetcher, 60_000)
 
   return (

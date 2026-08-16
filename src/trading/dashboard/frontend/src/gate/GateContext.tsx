@@ -20,7 +20,8 @@ const Ctx = createContext<GateState>({
 })
 
 export function GateProvider({ config, children }: { config: GateConfig | null; children: ReactNode }) {
-  const [enabled, setEnabled] = useState(false)
+  // 기본 ON — 계좌 리셋 전후를 섞어 보여주는 게 사고다. 전기간은 운영자가 명시적으로 끈다.
+  const [enabled, setEnabled] = useState(true)
   const value = useMemo<GateState>(() => ({
     config,
     enabled,
@@ -40,7 +41,9 @@ export function GateToggle() {
   const available = !!config?.since
   return (
     <label
-      title={available ? `${config!.since} 이후 진입한 왕복만 집계` : 'DASHBOARD_GATE_SINCE 미설정 — 게이트 필터 비활성'}
+      title={available
+        ? `${config!.since} 이후만 집계 (${config!.source === 'account_switch' ? '모의계좌 리셋 기준' : 'DASHBOARD_GATE_SINCE'})`
+        : 'DASHBOARD_GATE_SINCE 미설정·ACCOUNT_SWITCH 없음 — 게이트 필터 비활성'}
       style={{
         display: 'flex', alignItems: 'center', gap: 6,
         fontSize: '0.72rem', color: available ? 'var(--text-secondary)' : 'var(--text-muted)',
@@ -54,7 +57,7 @@ export function GateToggle() {
         onChange={e => setEnabled(e.target.checked)}
         aria-label="수정 이후 진입분만 집계"
       />
-      수정 이후만{available ? ` (${config!.since}~)` : ''}
+      {config?.source === 'account_switch' ? '계좌 리셋 이후만' : '수정 이후만'}{available ? ` (${config!.since}~)` : ''}
     </label>
   )
 }

@@ -1,6 +1,7 @@
 // M4: 자산 통계 차트 (REQ-050-19/20/21)
 // ECharts + echarts-for-react 사용
 import { useCallback } from 'react'
+import { useGate } from '../gate/GateContext'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import { theme } from '../theme'
@@ -47,9 +48,10 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 export default function ChartsView() {
-  const equityFetcher = useCallback(() => api.fetchEquity(180), [])
-  const postmortemFetcher = useCallback(() => api.fetchPostmortem(30), [])
-  const confidenceFetcher = useCallback(() => api.fetchConfidenceAnalysis(30), [])
+  const { since } = useGate()
+  const equityFetcher = useCallback(() => api.fetchEquity(180, since), [since])
+  const postmortemFetcher = useCallback(() => api.fetchPostmortem(30, since), [since])
+  const confidenceFetcher = useCallback(() => api.fetchConfidenceAnalysis(30, since), [since])
 
   const { data: equity, error: equityError } = usePolling(equityFetcher, 60_000)
   const { data: postmortem, error: postmortemError } = usePolling(postmortemFetcher, 60_000)

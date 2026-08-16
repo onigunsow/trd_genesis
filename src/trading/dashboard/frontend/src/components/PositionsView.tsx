@@ -4,6 +4,7 @@
 //   /api/roundtrips → RoundTrip[] (실현 완료 거래)
 // CRITICAL: eval_price null 행은 phantom — "—" 표시, 가격 fabricate 금지
 import { useState, useCallback, useMemo } from 'react'
+import { useGate } from '../gate/GateContext'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import type { Holding, RoundTrip } from '../api/types'
@@ -468,7 +469,8 @@ export function PositionsViewContent({
 // ── 폴링 포함 독립 컨테이너 ───────────────────────────────────────────────────
 export default function PositionsView() {
   const holdingsFetcher = useCallback(() => api.fetchHoldings(), [])
-  const roundtripsFetcher = useCallback(() => api.fetchRoundtrips(365, 1000), [])
+  const { since } = useGate()
+  const roundtripsFetcher = useCallback(() => api.fetchRoundtrips(365, 1000, since), [since])
 
   const { data: holdings, isLoading: holdingsLoading } = usePolling(holdingsFetcher, 15_000)
   const { data: roundtrips, isLoading: roundtripsLoading } = usePolling(roundtripsFetcher, 60_000)

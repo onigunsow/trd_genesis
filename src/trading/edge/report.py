@@ -20,11 +20,19 @@ from trading.edge import scorecard as _sc
 LOG = logging.getLogger(__name__)
 
 
-def load_equity_snapshots(days: int | None = None) -> list[tuple[date, float]]:
-    """daily_equity_snapshot → [(trading_day, total_assets)] 오름차순."""
+def load_equity_snapshots(
+    days: int | None = None, since: date | None = None,
+) -> list[tuple[date, float]]:
+    """daily_equity_snapshot → [(trading_day, total_assets)] 오름차순.
+
+    since 가 있으면 days 보다 우선한다(계좌 리셋 경계 이후만).
+    """
     sql = "SELECT trading_day, total_assets FROM daily_equity_snapshot"
     params: list[Any] = []
-    if days is not None:
+    if since is not None:
+        sql += " WHERE trading_day >= %s"
+        params.append(since)
+    elif days is not None:
         sql += " WHERE trading_day >= (CURRENT_DATE - (%s || ' days')::INTERVAL)"
         params.append(str(int(days)))
     sql += " ORDER BY trading_day"
