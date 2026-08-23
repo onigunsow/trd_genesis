@@ -36,6 +36,15 @@ HEARTBEAT_INTERVAL=30
 CLAUDE_TIMEOUT=300
 MAX_ATTEMPTS=2
 
+# 2026-08-23: 페르소나 CLI 모델 고정. 미지정이면 claude 가 운영자 기본 모델(Fable 5)을
+# 쓰는데, 그러면 운영자 대화 세션과 매매 시스템이 같은 프리미엄 쿼터를 두고 경쟁한다.
+# 8/18~21 실측: decision 성공 45 / 실패 105 —
+#   "You've hit your session limit · resets 2:10pm" 97건 (5시간 세션 한도)
+#   "You've reached your Fable 5 limit. Switch to another model" 19건 (모델 한도)
+# 매매 사이클은 15분마다 도는 정형 작업이라 상위 모델이 필요 없다. 한도 여유가 큰
+# 모델로 고정해 매매가 운영자 세션 사용량에 끌려가지 않게 한다.
+PERSONA_CLI_MODEL="${PERSONA_CLI_MODEL:-sonnet}"
+
 mkdir -p "$CALLS_DIR" "$RESULTS_DIR" "$(dirname "$LOG")"
 
 log() {
@@ -154,7 +163,8 @@ except Exception as e:
 
             # timeout 124 반환 시 재시도 대상 (실패 시도로 간주).
             # stdin redirect (<) 사용 — cat 파이프 대신 timeout이 프로세스 직접 소유.
-            RESPONSE=$(timeout "${CLAUDE_TIMEOUT}s" "$CLAUDE" -p --max-turns 1 < "$PROMPT_FILE" 2>>"$LOG")
+            RESPONSE=$(timeout "${CLAUDE_TIMEOUT}s" "$CLAUDE" -p --max-turns 1 \
+                --model "$PERSONA_CLI_MODEL" < "$PROMPT_FILE" 2>>"$LOG")
             EXIT_CODE=$?
 
             if [ "$EXIT_CODE" -eq 0 ] && [ -n "$RESPONSE" ]; then
@@ -163,7 +173,7 @@ except Exception as e:
 
             # 재시도 남은 경우 로그 + 대기
             if (( ATTEMPT < MAX_ATTEMPTS )); then
-                log "RETRY $PERSONA — 빈응답/실패 (exit=$EXIT_CODE, len=${#RESPONSE}), 재시도"
+                log "RETRY $PERSONA — 빈응답/실패 (exit=$EXIT_CODE, len=${#RESPONSE}, model=$PERSONA_CLI_MODEL), 재시도"
                 sleep 3
             fi
         done
@@ -202,7 +212,7 @@ with open('$RESULT_FILE', 'w') as f:
             # decision 종일 실패(exit=1, len=95 고정)의 정체가 무언의 exit=1로만
             # 기록돼 원인 확정이 불가능했다. len=95 고정 문자열의 실체를 포착한다.
             RESPONSE_HEAD=$(printf '%s' "$RESPONSE" | head -c 300 | tr '\n' ' ')
-            log "FAILED $PERSONA (exit=$EXIT_CODE, len=${#RESPONSE}); stdout[:300]=${RESPONSE_HEAD:-<empty>}"
+            log "FAILED $PERSONA (exit=$EXIT_CODE, len=${#RESPONSE}, model=$PERSONA_CLI_MODEL); stdout[:300]=${RESPONSE_HEAD:-<empty>}"
             python3 -c "
 import json
 result = {

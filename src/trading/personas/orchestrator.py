@@ -139,6 +139,17 @@ def _has_recent_ohlcv(ticker: str) -> bool:
 # keeping 단기과열(55) as a cautioned, de-weighted candidate. Used for every
 # blocked-aware exclusion path (watchlist + decision candidate filter).
 # @MX:SPEC: SPEC-TRADING-026
+def _reentry_cooldown_map() -> dict[str, int]:
+    """재진입 쿨다운 종목 → 남은 일수. 조회 실패 시 빈 dict (안내 생략, 한도는 유효)."""
+    from trading.risk.limits import tickers_in_reentry_cooldown
+
+    try:
+        return tickers_in_reentry_cooldown()
+    except Exception:
+        LOG.warning("재진입 쿨다운 조회 실패 — 프롬프트 안내 생략", exc_info=True)
+        return {}
+
+
 def _split_blocked(
     blocked: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1169,6 +1180,9 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
         # Blocked tickers (단기과열/거래정지) for Decision filtering
         "blocked_tickers": blocked_tickers,
+        # 2026-08-23: 재진입 쿨다운 종목을 프롬프트에 알린다. 없으면 페르소나가
+        # 못 사는 종목을 매 사이클 재제안하고 전부 LIMIT_BREACH 로 거부된다.
+        "cooldown_tickers": _reentry_cooldown_map(),
     }
     # Inject HOLD feedback from today
     candidate_tickers = [
@@ -1679,6 +1693,9 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
         "car_context": None,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
         "blocked_tickers": blocked_tickers,
+        # 2026-08-23: 재진입 쿨다운 종목을 프롬프트에 알린다. 없으면 페르소나가
+        # 못 사는 종목을 매 사이클 재제안하고 전부 LIMIT_BREACH 로 거부된다.
+        "cooldown_tickers": _reentry_cooldown_map(),
     }
     candidate_tickers = [
         c.get("ticker")

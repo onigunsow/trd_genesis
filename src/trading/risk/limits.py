@@ -134,6 +134,57 @@ def buy_count_today(ticker: str) -> int:
 _OVERHEAT_MAX_BUYS_PER_DAY = 1
 
 
+def tickers_in_reentry_cooldown() -> dict[str, int]:
+    """현재 재진입 쿨다운에 걸린 종목 → 남은 일수. 없으면 빈 dict.
+
+    ``days_since_loss_exit`` 과 같은 판정(손실 청산 = 체결 SELL 가격 < 직전 BUY 가격)을
+    전 종목에 대해 한 번의 쿼리로 낸다. 결정 페르소나 프롬프트에 주입해 못 사는 종목을
+    반복 제안하는 것을 막는 용도 — 한도 검사(check_pre_order)가 진실의 원천이고 이건
+    사전 안내다.
+
+    2026-08-23: 8/18~21 실측에서 buy 결정 73건 중 32건이 055550 재제안이었고 전부
+    LIMIT_BREACH 로 거부됐다. 페르소나가 쿨다운을 알 방법이 없던 게 원인.
+    """
+    if REENTRY_COOLDOWN_DAYS <= 0:
+        return {}
+    sql = """
+        WITH sells AS (
+            SELECT s.ticker, s.ts, s.fill_price,
+                   (SELECT b.fill_price FROM orders b
+                     WHERE b.ticker = s.ticker AND b.side = 'buy'
+                       AND b.status IN ('filled','partial')
+                       AND b.fill_price IS NOT NULL
+                       AND COALESCE(b.filled_at, b.ts) < COALESCE(s.filled_at, s.ts)
+                     ORDER BY COALESCE(b.filled_at, b.ts) DESC LIMIT 1) AS last_buy_px
+              FROM orders s
+             WHERE s.side = 'sell'
+               AND s.status IN ('filled','partial')
+               AND s.fill_price IS NOT NULL
+               AND COALESCE(s.correction, false) = FALSE
+               AND s.ts >= NOW() - make_interval(days => %s)
+        )
+        SELECT ticker,
+               EXTRACT(DAY FROM (NOW() - MAX(ts)))::int AS days_since
+          FROM sells
+         WHERE last_buy_px IS NOT NULL AND fill_price < last_buy_px
+         GROUP BY ticker
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (REENTRY_COOLDOWN_DAYS,))
+            rows = cur.fetchall()
+    except Exception:  # 조회 실패는 안내 누락일 뿐 — 한도 검사가 여전히 막는다
+        LOG.warning("tickers_in_reentry_cooldown 조회 실패 — 프롬프트 안내 생략", exc_info=True)
+        return {}
+    out: dict[str, int] = {}
+    for r in rows:
+        days_since = int(r["days_since"] if isinstance(r, dict) else r[1])
+        remaining = REENTRY_COOLDOWN_DAYS - days_since
+        if remaining > 0:
+            out[r["ticker"] if isinstance(r, dict) else r[0]] = remaining
+    return out
+
+
 def days_since_loss_exit(ticker: str, lookback_days: int) -> int | None:
     """``ticker`` 를 최근 ``lookback_days`` 안에 손실 청산했다면 그로부터 며칠 지났는지.
 

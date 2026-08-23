@@ -119,6 +119,16 @@
 {% endif %}
 {% endif %}
 
+{% if cooldown_tickers is defined and cooldown_tickers %}
+## 재진입 쿨다운 종목 (매수 제안 금지 — 매도는 가능)
+{% for ticker, days_left in cooldown_tickers.items() %}
+- {{ ticker }}: 손실 청산 후 재진입 금지, 잔여 {{ days_left }}일
+{% endfor %}
+손실 청산 직후 같은 종목을 다시 사서 같은 함정에 빠지는 패턴을 끊기 위한 코드 룰이다.
+위 종목에 대한 **매수** 시그널은 제안하지 마라(제안해도 주문 단계에서 거부된다).
+보유 중이라면 매도·보유 판단은 정상적으로 하라.
+
+{% endif %}
 {% if hold_warnings is defined and hold_warnings %}
 ## 금일 Risk HOLD 이력 (주의)
 {% for warn in hold_warnings %}
