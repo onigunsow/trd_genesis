@@ -98,6 +98,9 @@ export interface Scorecard {
   expectancy_adj: number | null
   profit_factor_adj: number | null
   alpha_pct: number | null
+  alpha_basis?: string | null          // 알파 산출 기준(대기 현금 제외 등 한계 포함)
+  strategy_return_pct?: number | null  // 알파의 좌변
+  kospi_return_pct?: number | null     // 알파의 우변
   n_unmatched_sells?: number   // 짝 없는 매도 — 왕복 지표에서 제외됨
   cagr: number | null
   mdd: number | null

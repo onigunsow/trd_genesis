@@ -128,5 +128,13 @@ def compute(
     # SPEC-TRADING-044 M4: 누적 초과수익 surface (REQ-044-B1, B2)
     # alpha_pct = 전략 - KOSPI = 누적 초과수익 (동일 기간, money-weighted 근사)
     b.cumulative_excess_return_pct = b.alpha_pct
-    b.comparison_basis = "money-weighted(원가기준 집계): 실투입 원가 대비 순손익률"
+    # 2026-08-23: 이 알파가 무엇인지 화면이 밝힐 수 있도록 한계까지 문장에 담는다.
+    # 전략 쪽은 "실제로 돈이 들어가 있던 구간의 투입원가 대비" 수익률이라 대기 현금이
+    # 분모에서 빠지고, KOSPI 쪽은 전 구간 full-invested 다. 2026-07 처럼 시장이 크게
+    # 빠질 때 대부분 현금이었다면 "덜 잃었다" 가 +알파로 잡힌다 — 종목 선택 능력이
+    # 아니라 미투자 효과다. 정의 자체는 유지하고(운영자 결정), 오독만 막는다.
+    b.comparison_basis = (
+        "투입원가 기준 초과수익: 전략=Σ순손익/Σ투입원가(보유 구간만, 대기 현금 제외) "
+        "− KOSPI=전 구간 매수후보유. 현금 비중이 높을수록 하락장에서 알파가 부풀려진다."
+    )
     return b

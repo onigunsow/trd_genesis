@@ -62,13 +62,21 @@ class TestCumulativeExcessReturn:
         assert len(b.comparison_basis) > 0
 
     def test_comparison_basis_mentions_money_weighted(self):
-        """비교 기준이 money-weighted 를 언급한다."""
+        """비교 기준이 산출 방식과 한계를 함께 밝힌다.
+
+        2026-08-23: 알파 +12.69% 가 PF 0.22 와 나란히 떠서 종목 선택 능력으로
+        오독됐다. 실제로는 '보유 구간 투입원가 대비' vs '전 구간 매수후보유' 비교라
+        현금 비중이 높을수록 하락장에서 부풀려진다. 기준 문구가 그 한계까지 말해야
+        화면이 오독을 막을 수 있다.
+        """
         from trading.edge.benchmark import compute
 
         rts = [_rt("2026-01-01", "2026-01-31", 10, 100, 120)]
         closes = [(date(2026, 1, 1), 2500.0), (date(2026, 1, 31), 2550.0)]
         b = compute(rts, closes=closes)
-        assert "money-weighted" in b.comparison_basis.lower() or "원가기준" in b.comparison_basis
+        basis = b.comparison_basis
+        assert "투입원가" in basis, "산출 방식(투입원가 기준)을 밝혀야 한다"
+        assert "현금" in basis, "대기 현금이 전략 쪽에서 빠진다는 한계를 밝혀야 한다"
 
 
 class TestBenchmarkGracefulUnavailable:

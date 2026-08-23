@@ -40,10 +40,11 @@ interface KpiCardProps {
   sub?: string
   positive?: boolean | null  // null = 중립
   unit?: string
+  title?: string             // 호버 시 산출 기준 설명 (알파처럼 오독 위험이 있는 지표)
 }
 
 // 개별 KPI 카드
-function KpiCard({ label, value, sub, positive, unit }: KpiCardProps) {
+function KpiCard({ label, value, sub, positive, unit, title }: KpiCardProps) {
   const valueColor =
     positive === true
       ? 'var(--accent-green)'
@@ -53,6 +54,7 @@ function KpiCard({ label, value, sub, positive, unit }: KpiCardProps) {
 
   return (
     <div
+      title={title}
       style={{
         background: 'var(--bg-card)',
         border: '1px solid var(--border)',
@@ -161,7 +163,15 @@ export function KpiCardsContent({ scorecard, equity, pnlDaily }: Props) {
         label="KOSPI 알파"
         value={alphaAvail && alphaPct != null ? fmt.pctRaw(alphaPct) : '—'}
         positive={alphaAvail && alphaPct != null ? alphaPct >= 0 : null}
-        sub={alphaAvail ? '전체기간 대비' : '데이터 없음'}
+        /* 2026-08-23: 숫자만 보면 종목 선택 능력으로 읽힌다. 실제로는 '보유 구간
+           투입원가 대비' vs '전 구간 매수후보유' 비교라 현금 비중이 높을수록 하락장에서
+           부풀려진다. 양변을 나란히 적어 스스로 설명하게 한다. */
+        sub={
+          alphaAvail && scorecard?.strategy_return_pct != null && scorecard?.kospi_return_pct != null
+            ? `전략 ${fmt.pctRaw(scorecard.strategy_return_pct)} vs KOSPI ${fmt.pctRaw(scorecard.kospi_return_pct)}`
+            : alphaAvail ? '전체기간 대비' : '데이터 없음'
+        }
+        title={scorecard?.alpha_basis ?? undefined}
       />
     </div>
   )

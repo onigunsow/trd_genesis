@@ -111,13 +111,26 @@ function Secondary({ sc }: { sc: Scorecard }) {
     { k: '승률', v: sc.win_rate == null ? '—' : `${(sc.win_rate * 100).toFixed(1)}%`, good: (sc.win_rate ?? 0) >= 0.5 },
     // mdd 는 소수 비율(-0.049), cagr/alpha_pct 는 이미 % — 단위가 다르다(KpiCards.fmt 와 동일 규약)
     { k: 'MDD', v: sc.mdd == null ? '—' : pct(sc.mdd * 100, 2), good: (sc.mdd ?? 0) > -0.10 },
-    { k: 'KOSPI 알파', v: sc.benchmark_available ? `${pct(sc.alpha_pct, 2)}p` : '—', good: (sc.alpha_pct ?? 0) > 0 },
+    // 2026-08-23: 알파는 '보유 구간 투입원가 대비' vs '전 구간 매수후보유' 비교다.
+    // 현금 비중이 높을수록 하락장에서 부풀려지므로 양변을 툴팁으로 함께 준다.
+    {
+      k: 'KOSPI 알파',
+      v: sc.benchmark_available ? `${pct(sc.alpha_pct, 2)}p` : '—',
+      good: (sc.alpha_pct ?? 0) > 0,
+      title: sc.strategy_return_pct != null && sc.kospi_return_pct != null
+        ? `전략 ${pct(sc.strategy_return_pct, 2)} vs KOSPI ${pct(sc.kospi_return_pct, 2)}\n${sc.alpha_basis ?? ''}`
+        : (sc.alpha_basis ?? undefined),
+    },
   ]
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 12 }}>
       {items.map(it => (
-        <div key={it.k} style={card}>
-          <div style={label}>{it.k}</div>
+        <div key={it.k} style={card} title={(it as {title?: string}).title}>
+          <div style={label}>
+            {it.k}
+            {/* 산출 기준이 오독을 부르는 지표(알파)는 표식을 달아 툴팁이 있음을 알린다 */}
+            {(it as {title?: string}).title && <span style={{ marginLeft: 4, opacity: 0.6 }}>ⓘ</span>}
+          </div>
           <div style={{ fontSize: '1.3rem', fontWeight: 700, color: it.good ? 'var(--accent-green)' : 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>{it.v}</div>
         </div>
       ))}

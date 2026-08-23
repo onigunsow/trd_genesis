@@ -1646,6 +1646,11 @@ def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
         ),
         "alpha_pct": bm.alpha_pct if bm.available else None,
         "benchmark_available": bm.available,
+        # 알파의 산출 기준과 양변을 함께 준다. 숫자만 보면 종목 선택 능력으로 읽히지만
+        # 실제로는 '보유 구간 투입원가 대비' vs '전 구간 매수후보유' 비교다.
+        "alpha_basis": bm.comparison_basis if bm.available else None,
+        "strategy_return_pct": bm.strategy_return_pct if bm.available else None,
+        "kospi_return_pct": bm.kospi_return_pct if bm.available else None,
         "cagr": tw.cagr if tw.available else None,
         "mdd": tw.mdd if tw.available else None,
         "sharpe": tw.sharpe if tw.available else None,
