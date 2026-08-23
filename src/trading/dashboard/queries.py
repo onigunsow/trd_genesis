@@ -186,12 +186,23 @@ def fetch_system_status() -> dict[str, Any]:
                 ss.late_cycle_level,
                 {cool_expr},
                 ss.updated_at,
-                al.details->>'reason' AS halt_reason
+                -- 2026-08-23: 종전엔 최신 TRIP 사유를 무조건 붙여, 해제된 지 6주 된
+                -- 정지 사유("manual /halt", 7/10)가 halt_state=false 인 화면에 계속
+                -- 떠 있었다. TRIP 이 최신 RESET 보다 뒤일 때 = 실제로 정지 중일 때만
+                -- 사유를 준다(risk.auto_resume 의 판정과 동일 규칙).
+                CASE WHEN al.trip_ts IS NOT NULL
+                      AND (al.reset_ts IS NULL OR al.trip_ts > al.reset_ts)
+                     THEN al.reason END AS halt_reason
             FROM system_state ss
             LEFT JOIN LATERAL (
-                SELECT details FROM audit_log
-                WHERE event_type = 'CIRCUIT_BREAKER_TRIP'
-                ORDER BY ts DESC LIMIT 1
+                SELECT
+                    max(ts) FILTER (WHERE event_type = 'CIRCUIT_BREAKER_TRIP')  AS trip_ts,
+                    max(ts) FILTER (WHERE event_type = 'CIRCUIT_BREAKER_RESET') AS reset_ts,
+                    (SELECT details->>'reason' FROM audit_log
+                      WHERE event_type = 'CIRCUIT_BREAKER_TRIP'
+                      ORDER BY ts DESC LIMIT 1) AS reason
+                FROM audit_log
+                WHERE event_type IN ('CIRCUIT_BREAKER_TRIP', 'CIRCUIT_BREAKER_RESET')
             ) al ON true
             WHERE ss.id = 1
             """
@@ -1533,8 +1544,15 @@ def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
     bm = _bm.compute(rt_result.roundtrips)
     card = _sc.decide(analytics, bm)
 
-    # cagr/mdd/sharpe 도 같은 경계 — 리셋 전 곡선을 섞으면 현금 복원 점프가 수익으로 잡힌다.
-    snapshots = load_equity_snapshots(days=None if since_d else 90, since=since_d)
+    # cagr/mdd/sharpe 는 에쿼티 곡선 기반이라 계좌 리셋 경계를 반드시 지켜야 한다.
+    # 2026-08-23: since 를 안 준 전기간 조회에서 이 경계가 빠져 있었다 — 8/7 9,558,451
+    # → 8/10 10,001,370 의 +4.63% 는 매매 수익이 아니라 모의계좌 현금 복원인데,
+    # 90일 창이 그 스텝을 품어 CAGR/Sharpe 를 양수로, MDD 를 과소로 만들었다.
+    # (PF·기대값 같은 거래 기반 지표는 현금 주입에 영향받지 않으므로 전기간 유지.)
+    equity_since = since_d or _parse_since(gate_config()["since"])
+    snapshots = load_equity_snapshots(
+        days=None if equity_since else 90, since=equity_since,
+    )
     tw = _an.time_weighted_metrics(snapshots)
 
     return {
@@ -1554,6 +1572,10 @@ def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
         "mdd": tw.mdd if tw.available else None,
         "sharpe": tw.sharpe if tw.available else None,
         "sortino": analytics.sortino,  # REQ-054-A4: 노출만, 재계산 없음
+        # 기준이 다른 지표가 한 패널에 섞여 오독을 부른다. 프런트가 라벨을 붙일 수
+        # 있도록 산출 기준을 함께 준다: 거래 기반(PF·기대값·Sortino) vs
+        # 에쿼티 곡선 기반(CAGR·MDD·Sharpe, 계좌 리셋 이후만).
+        "equity_metrics_since": equity_since.isoformat() if equity_since else None,
         "since": since_d.isoformat() if since_d else None,
         "low_sample": bool(since_d) and analytics.n_closed < gate_config()["min_n"],
         "gate_min_n": gate_config()["min_n"],
