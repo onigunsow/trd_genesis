@@ -1576,6 +1576,10 @@ def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
         # 있도록 산출 기준을 함께 준다: 거래 기반(PF·기대값·Sortino) vs
         # 에쿼티 곡선 기반(CAGR·MDD·Sharpe, 계좌 리셋 이후만).
         "equity_metrics_since": equity_since.isoformat() if equity_since else None,
+        # 2026-08-23: 짝(선행 매수)을 못 찾은 매도. 원가가 없어 왕복에서 제외되므로
+        # 위 모든 지표에서 조용히 빠진다. 실측 5건(원장 매도 121주 vs 매수 113주) —
+        # 숫자가 안 보이면 스코어카드가 계좌 실적 전부를 담은 것으로 오독된다.
+        "n_unmatched_sells": analytics.n_unmatched_sells,
         "since": since_d.isoformat() if since_d else None,
         "low_sample": bool(since_d) and analytics.n_closed < gate_config()["min_n"],
         "gate_min_n": gate_config()["min_n"],

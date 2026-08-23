@@ -98,6 +98,7 @@ export interface Scorecard {
   expectancy_adj: number | null
   profit_factor_adj: number | null
   alpha_pct: number | null
+  n_unmatched_sells?: number   // 짝 없는 매도 — 왕복 지표에서 제외됨
   cagr: number | null
   mdd: number | null
   sharpe: number | null

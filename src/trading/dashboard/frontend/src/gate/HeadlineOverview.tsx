@@ -68,7 +68,15 @@ function Headline({ sc }: { sc: Scorecard }) {
           {sc.verdict}
         </div>
         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-          {sc.grade} · {sc.n_closed}건 왕복
+          {/* grade 는 성과 등급이 아니라 표본 크기 등급이다(scorecard.grade_sample:
+              n<10 INSUFFICIENT / <30 WEAK / <100 MODERATE / 100+ OK).
+              NO-GO 옆의 'MODERATE' 가 성과 평가로 오독되던 것을 라벨로 못박는다. */}
+          표본 {sc.grade} · {sc.n_closed}건 왕복
+          {!!sc.n_unmatched_sells && (
+            <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
+              · 짝 없는 매도 {sc.n_unmatched_sells}건 제외
+            </span>
+          )}
           {sc.low_sample && (
             <span style={{ marginLeft: 8, color: 'var(--accent-red)', fontWeight: 600 }}>
               표본 부족 (n={sc.n_closed} &lt; {sc.gate_min_n})
