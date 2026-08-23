@@ -118,7 +118,12 @@ _ENTRY_QUALITY_SQL = """
            count(*) FILTER (WHERE p1 IS NOT NULL) AS n_h1,
            avg(100.0 * (p1 - p0) / NULLIF(p0, 0)) AS ret_h1,
            avg(100.0 * (p2 - p0) / NULLIF(p0, 0)) AS ret_h2,
-           avg(CASE WHEN p1 > p0 THEN 1.0 ELSE 0.0 END) AS win_h1
+           -- 2026-08-23: 종전엔 p1 이 NULL(아직 미래 봉이 없음)일 때 ELSE 0.0 으로
+           -- 떨어져 '데이터 없음' 이 '패배' 로 집계됐다. 최근 결정이 많은 구간의
+           -- 승률이 0 으로 표시되고 화면에선 '전부 실패' 로 읽혔다.
+           -- NULL 은 avg 가 무시하므로 데이터 있는 행만 평균한다(없으면 NULL).
+           -- (주석에 퍼센트 기호를 쓰지 말 것 — psycopg 가 플레이스홀더로 해석한다)
+           avg(CASE WHEN p1 IS NULL THEN NULL WHEN p1 > p0 THEN 1.0 ELSE 0.0 END) AS win_h1
       FROM px WHERE p0 > 0
      GROUP BY 1, 2 ORDER BY 1, 2
 """
