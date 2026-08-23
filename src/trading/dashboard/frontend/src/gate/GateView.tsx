@@ -7,7 +7,7 @@
  *
  *  ③ 어디서 잃나   — 보유기간별 손익 (막대)
  *  ④ 진입 품질     — confidence x entry_freshness 매트릭스 (결정 전체 반사실)
- *  ⑤ 리스크 판정   — verdict 분포 + HOLD 사유 + HOLD 반사실 + code_rules_passed
+ *  ⑤ 리스크 판정   — verdict 분포 + HOLD 사유 + HOLD 반사실 + 주문 도달률
  *  ⑥ 무엇이 막고 깎았나 — 게이트별 건수·삭감률 + 최근 사유 표
  */
 import { useCallback } from 'react'
@@ -120,7 +120,7 @@ function RiskPanel({ d }: { d: RiskVerdicts }) {
   return (
     <div style={panel}>
       <h3 style={h3}>리스크 페르소나 — 무엇을 거르나</h3>
-      <div style={sub}>검토 {d.n}건{d.since ? ` · ${d.since}~` : ''} · code_rules_passed {d.code_rules_passed_share == null ? '—' : `${Math.round(d.code_rules_passed_share * 100)}%`}</div>
+      <div style={sub}>검토 {d.n}건{d.since ? ` · ${d.since}~` : ''} · 주문 도달 {d.execution_reach_share == null ? '—' : `${Math.round(d.execution_reach_share * 100)}% (APPROVE ${d.execution_reach_n}건)`}</div>
       <div style={{ display: 'flex', height: 14, borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
         {order.map(v => (d.verdicts[v] ?? 0) > 0 && (
           <div key={v} title={`${v} ${d.verdicts[v]}`} style={{ width: `${100 * (d.verdicts[v] ?? 0) / total}%`, background: colors[v] }} />

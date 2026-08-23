@@ -354,7 +354,8 @@ export interface RiskVerdicts {
   verdicts: Record<string, number>
   hold_reasons: { reason: string; n: number; share: number | null }[]
   hold_counterfactual: { n: number; ret_20d: number | null; ret_40d: number | null }
-  code_rules_passed_share: number | null
+  execution_reach_share: number | null   // risk APPROVE 중 실제 주문 도달 비율
+  execution_reach_n: number
   horizons: number[]
 }
 

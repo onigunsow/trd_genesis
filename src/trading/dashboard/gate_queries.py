@@ -161,8 +161,8 @@ def fetch_entry_quality_matrix(*, since: str | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _RISK_ROWS_SQL = """
-    SELECT rr.verdict, rr.rationale, rr.code_rules_passed, pd.ticker, pd.ts::date AS d,
-           pd.side
+    SELECT rr.verdict, rr.rationale, pd.ticker, pd.ts::date AS d, pd.side,
+           EXISTS (SELECT 1 FROM orders o WHERE o.persona_decision_id = pd.id) AS reached_order
       FROM risk_reviews rr JOIN persona_decisions pd ON pd.id = rr.decision_id
      WHERE (%(since)s::date IS NULL OR pd.ts::date >= %(since)s::date)
 """
@@ -214,11 +214,17 @@ def fetch_risk_verdicts(*, since: str | None = None) -> dict[str, Any]:
 
     verdict_counts: dict[str, int] = defaultdict(int)
     hold_reasons: dict[str, int] = defaultdict(int)
-    code_true = code_total = 0
+    # 2026-08-23: 종전엔 risk_reviews.code_rules_passed 를 그대로 셌는데 그 컬럼이
+    # 신뢰 불가다 — 실측(8/8~)에서 false 인 83건 중 8건이 실제로 주문이 됐다.
+    # 한도 검사 전에 걸러진 신호(risk HOLD·세션가드·섹터캡 등)와 "검사 후 실패" 를
+    # 구분하지 못하고, 갱신 자체가 4/95 에서만 일어났다.
+    # 대신 orders 원장으로 실행 도달률을 직접 센다 — 원장은 사후 조작이 없다.
+    exec_reached = exec_total = 0
     for r in rows:
         verdict_counts[r["verdict"]] += 1
-        code_total += 1
-        code_true += 1 if r.get("code_rules_passed") else 0
+        if r["verdict"] == "APPROVE":
+            exec_total += 1
+            exec_reached += 1 if r.get("reached_order") else 0
         if r["verdict"] in ("HOLD", "REJECT"):
             hold_reasons[_classify_hold_reason(r.get("rationale") or "")] += 1
 
@@ -236,7 +242,10 @@ def fetch_risk_verdicts(*, since: str | None = None) -> dict[str, Any]:
             f"ret_{h1}d": (float(cf["ret_h1"]) if cf.get("ret_h1") is not None else None),
             f"ret_{h2}d": (float(cf["ret_h2"]) if cf.get("ret_h2") is not None else None),
         },
-        "code_rules_passed_share": (code_true / code_total) if code_total else None,
+        # risk 가 승인한 결정 중 실제 주문까지 간 비율. 낮으면 페르소나와 코드 한도가
+        # 서로 다른 세계를 보고 있다는 뜻(프롬프트-코드 한도 모순 등).
+        "execution_reach_share": (exec_reached / exec_total) if exec_total else None,
+        "execution_reach_n": exec_total,
         "horizons": list(COUNTERFACTUAL_HORIZONS),
     }
     _cache_put(_gate_cache, key, out)
