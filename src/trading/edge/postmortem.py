@@ -23,6 +23,11 @@ LABEL_TRUE_POSITIVE = "TRUE_POSITIVE"
 LABEL_FALSE_POSITIVE = "FALSE_POSITIVE"
 LABEL_REGIME_MISMATCH = "REGIME_MISMATCH"
 LABEL_MISSED = "MISSED"
+# 2026-08-23: 미진입인데 이후 시장도 안 올랐다면 그건 누락이 아니라 회피 성공이다.
+# 종전엔 두 분기가 모두 LABEL_MISSED 를 반환했고, 두 번째 분기의 reason 문자열은
+# 스스로 "(MISSED 아님)" 이라고 적고 있었다. 실측 30일 MISSED 198건 중 100건이
+# 이 분기 — 실제 기회 누락은 98건인데 198건으로 표시됐다.
+LABEL_AVOIDED = "AVOIDED"
 
 # 진입 경로 우선순위 (높은 값 = 높은 우선순위)
 _PRIORITY = {
@@ -55,6 +60,7 @@ class PersonaStats:
     n_false_positive: int = 0
     n_regime_mismatch: int = 0
     n_missed: int = 0
+    n_avoided: int = 0  # 2026-08-23: 미진입 + 시장도 안 오름 = 회피 성공
 
 
 @dataclass
@@ -131,9 +137,9 @@ def classify_decision_outcome(
                 reason=f"미진입 결정, 이후 20일 상대수익 {relative_20d:.2%} > {rel_threshold}",
             )
         return DecisionOutcome(
-            label=LABEL_MISSED,
+            label=LABEL_AVOIDED,
             persona=decision.get("persona"),
-            reason=f"미진입 결정, 이후 20일 상대수익 {relative_20d:.2%} ≤ {rel_threshold} (MISSED 아님)",
+            reason=f"미진입 결정, 이후 20일 상대수익 {relative_20d:.2%} ≤ {rel_threshold} — 회피 성공",
         )
 
     # --- 진입 경로 (roundtrip 존재) ---

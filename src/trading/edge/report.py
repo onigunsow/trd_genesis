@@ -20,6 +20,35 @@ from trading.edge import scorecard as _sc
 LOG = logging.getLogger(__name__)
 
 
+def _account_reset_boundary() -> date | None:
+    """최신 ACCOUNT_SWITCH(모의계좌 리셋) 다음 날. 없거나 조회 실패면 None.
+
+    에쿼티 곡선 기반 지표(CAGR/MDD/Sharpe)는 현금 주입 스텝을 수익으로 오인하므로
+    반드시 이 경계 이후만 봐야 한다. 거래 기반 지표는 영향 없다.
+    """
+    from datetime import timedelta
+
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT ts, details FROM audit_log WHERE event_type='ACCOUNT_SWITCH'"
+                " ORDER BY ts DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+    except Exception:
+        LOG.warning("ACCOUNT_SWITCH 조회 실패 — 에쿼티 경계 미적용", exc_info=True)
+        return None
+    if not row:
+        return None
+    closeout = (row["details"] or {}).get("closeout_date")
+    if closeout:
+        try:
+            return date.fromisoformat(closeout) + timedelta(days=1)
+        except ValueError:
+            pass
+    return row["ts"].date()
+
+
 def load_equity_snapshots(
     days: int | None = None, since: date | None = None,
 ) -> list[tuple[date, float]]:
@@ -90,7 +119,13 @@ def generate(
     if include_confidence and rt_result.roundtrips:
         confidence_text = _conf.render(_conf.analyze(rt_result.roundtrips))
 
-    snapshots = load_equity_snapshots(days)
+    # 2026-08-23: 텔레그램 엣지 리포트도 계좌 리셋 경계를 지켜야 한다. 대시보드는
+    # 8/16 에 막았는데 이 경로가 남아 8/7 9,558,451 → 8/10 10,001,370 의 현금 복원
+    # (+4.63%)이 CAGR +2.6% / Sharpe 0.25 로 잡히고 있었다(리셋 전 Sharpe -2.01).
+    equity_since = _account_reset_boundary()
+    snapshots = load_equity_snapshots(
+        None if equity_since else days, since=equity_since,
+    )
     tw = _an.time_weighted_metrics(snapshots)
     tw_text = _time_weighted_text(tw)
 

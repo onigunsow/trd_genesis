@@ -171,19 +171,20 @@ def compute(
     # Sortino = mean(return_pct) / downside_dev(return_pct), MAR=0
     # downside_dev: 손실 거래 수익률의 모표준편차 (단, 손실 1건이면 절댓값 대체)
     # 손실 0 건 → downside dev = 0 → Sortino = +inf
+    # 2026-08-23 수정: 종전엔 pstdev(손실만) = "손실들끼리의 흩어짐" 을 분모로 썼다.
+    # 교과서 downside deviation 은 sqrt(mean(min(r,0)^2)) — 전체 n 기준이다.
+    # 실측 차이: 종전 -0.5609 vs 정정 -0.3693. 더 나쁜 실패는 손실이 균일할 때
+    # pstdev=0 → `if dd else 0.0` 이 0.0 을 반환해, 꾸준히 잃는 전략이 중립으로 보였다.
     downsides = [r for r in rets if r < 0]
     if not rets:
         a.sortino = 0.0
     elif not downsides:
         a.sortino = math.inf
     else:
-        if len(downsides) == 1:
-            # pstdev of a single value is 0; use abs as the deviation proxy
-            dd = abs(downsides[0])
-        else:
-            dd = statistics.pstdev(downsides)
+        dd = math.sqrt(sum(min(r, 0.0) ** 2 for r in rets) / len(rets))
         mean_ret = statistics.mean(rets)
-        a.sortino = (mean_ret / dd) if dd else 0.0
+        # dd 는 손실이 하나라도 있으면 0 이 될 수 없다(제곱합 > 0).
+        a.sortino = mean_ret / dd
 
     # SPEC-TRADING-044 M3: cost-adjusted win rate (REQ-044-C2)
     # round-trip 비용(단일소스: LIVE_ROUND_TRIP_COST_KOSPI)을 초과한 수익 거래 비율

@@ -264,7 +264,9 @@ _FILL_SQL = """
       FROM orders o
       LEFT JOIN persona_decisions pd ON pd.id = o.persona_decision_id
       LEFT JOIN persona_runs pr ON pr.id = pd.persona_run_id
-     WHERE o.mode = 'paper'
+     -- 2026-08-23: 종전엔 'paper' 리터럴이라 실거래 전환 순간 모든 엣지 지표가
+     -- 조용히 비어버렸다(스코어카드·게이트 전부). 현재 운영 모드를 파라미터로 받는다.
+     WHERE o.mode = %(mode)s
        AND o.status IN ('filled', 'partial')
        AND o.fill_qty IS NOT NULL AND o.fill_qty > 0
        AND o.fill_price IS NOT NULL
@@ -273,13 +275,20 @@ _FILL_SQL = """
 """
 
 
-def load_fill_rows(days: int | None = None) -> list[dict[str, Any]]:
-    """페이퍼 체결 행을 DB 에서 로드(confidence/verdict 조인 포함)."""
+def load_fill_rows(days: int | None = None, mode: str | None = None) -> list[dict[str, Any]]:
+    """체결 행을 DB 에서 로드(confidence/verdict 조인 포함).
+
+    mode 미지정 시 현재 운영 모드(settings.trading_mode). 종전엔 'paper' 리터럴이라
+    실거래로 넘어가는 순간 엣지 지표가 통째로 비었다.
+    """
+    from trading.config import get_settings
+
+    resolved_mode = mode or get_settings().trading_mode.value
     since_clause = ""
-    params: list[Any] = []
+    params: dict[str, Any] = {"mode": resolved_mode}
     if days is not None:
-        since_clause = "AND o.ts >= NOW() - (%s || ' days')::INTERVAL"
-        params.append(str(int(days)))
+        since_clause = "AND o.ts >= NOW() - (%(days)s || ' days')::INTERVAL"
+        params["days"] = str(int(days))
     sql = _FILL_SQL.format(since_clause=since_clause)
     with connection() as conn, conn.cursor() as cur:
         cur.execute(sql, params)

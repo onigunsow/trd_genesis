@@ -791,11 +791,15 @@ def fetch_postmortem(
         JOIN persona_runs pr ON pr.id = pd.persona_run_id
         LEFT JOIN risk_reviews rr ON rr.decision_id = pd.id
         WHERE pd.ts >= NOW() - (%s || ' days')::INTERVAL
+          -- 2026-08-23: since 가 SQL 에 없어서 게이트 토글이 켜져도 결정 집합이 그대로였다
+          -- (실측: since 유무와 무관하게 total=200·MISSED=198 동일). 응답만 since 를
+          -- 되돌려줘 필터된 것처럼 보였다.
+          AND (%s::date IS NULL OR pd.ts::date >= %s::date)
         ORDER BY pd.ts DESC
         LIMIT %s
     """
     with ro_connection() as conn, conn.cursor() as cur:
-        cur.execute(decision_sql, (str(int(days)), limit))
+        cur.execute(decision_sql, (str(int(days)), since_d, since_d, limit))
         decision_rows = cur.fetchall()
 
     # -------------------------------------------------------------------------
@@ -878,6 +882,9 @@ def fetch_postmortem(
         "FALSE_POSITIVE": 0,
         "REGIME_MISMATCH": 0,
         "MISSED": 0,
+        # 2026-08-23: 미진입 + 이후 시장도 안 오름 = 회피 성공(기회 누락 아님).
+        # 종전엔 이 경우도 MISSED 로 세어 30일 198건 중 100건이 허수였다.
+        "AVOIDED": 0,
     }
     per_persona: dict[str, PersonaStats] = {}
 
@@ -977,6 +984,8 @@ def fetch_postmortem(
             stats.n_regime_mismatch += 1
         elif label == "MISSED":
             stats.n_missed += 1
+        elif label == "AVOIDED":
+            stats.n_avoided += 1
 
     payload: dict[str, Any] = {
         "distribution": distribution,
@@ -988,6 +997,7 @@ def fetch_postmortem(
                 "n_false_positive": v.n_false_positive,
                 "n_regime_mismatch": v.n_regime_mismatch,
                 "n_missed": v.n_missed,
+                "n_avoided": v.n_avoided,
             }
             for k, v in per_persona.items()
         },
@@ -1432,7 +1442,10 @@ def fetch_pnl_daily(
     try:
         if rts:
             all_dates = sorted(r.exit_date for r in rts)
-            bm_closes = _bm.kospi_closes(all_dates[0], all_dates[-1])
+            # 2026-08-23: kospi_closes 는 list[tuple[date,float]] 를 준다. dict 로 바꾸지
+            # 않으면 _period_kospi_return 의 .keys() 가 AttributeError 를 내고
+            # /api/pnl-daily 와 CSV export 가 통째로 503 이 됐다(실측).
+            bm_closes = dict(_bm.kospi_closes(all_dates[0], all_dates[-1]))
     except Exception as exc:
         LOG.warning("KOSPI 종가 조회 실패 (알파 null 폴백): %s", exc)
         bm_closes = {}
@@ -1486,11 +1499,15 @@ def fetch_pnl_daily(
         kospi_ret = _period_kospi_return(label)
         # 해당 기간 전략 수익률 (원화 → 비율 계산은 edge 미제공이므로 null 근사)
         alpha = None  # 원화 알파 직접 산출 불가(단위 불일치) — null 처리
+        # 2026-08-23: kospi_ret 을 계산해놓고 버리고 있었다. alpha 가 영원히 null 인
+        # 열 옆에서 benchmark_available=true 만 참이라 "알파를 줄 수 있다" 는 인상만
+        # 남았다. 산출 가능한 값(해당 기간 KOSPI 수익률)은 그대로 준다.
         rows.append({
             "period_label": label,
             "realized_pnl": pnl,
             "cumulative_pnl": cumulative,
             "alpha_pct": alpha,
+            "kospi_return_pct": kospi_ret,
         })
 
     return {

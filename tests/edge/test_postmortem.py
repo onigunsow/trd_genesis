@@ -90,8 +90,14 @@ class TestClassifyDecisionOutcome:
         assert outcome.label == LABEL_REGIME_MISMATCH
 
     def test_missed_non_entry_negative_relative(self) -> None:
-        """미진입 경로, relative_20d<=0 → MISSED (label=MISSED but with 'not MISSED' reason)."""
-        from trading.edge.postmortem import classify_decision_outcome, LABEL_MISSED
+        """미진입 경로, relative_20d<=0 → AVOIDED(회피 성공).
+
+        2026-08-23 정정: 종전엔 이 경우도 LABEL_MISSED 를 반환했고 이 테스트가 그
+        동작을 고정했다(원래 docstring 이 스스로 "label=MISSED but with 'not MISSED'
+        reason" 이라고 적고 있었다). 시장이 안 올랐으면 기회 누락이 아니다.
+        실측 30일: MISSED 198 중 100건이 이 분기 → 정정 후 MISSED 98 / AVOIDED 100.
+        """
+        from trading.edge.postmortem import classify_decision_outcome, LABEL_AVOIDED
         outcome = classify_decision_outcome(
             _decision(),
             None,
@@ -100,7 +106,7 @@ class TestClassifyDecisionOutcome:
             regime="neutral",
         )
         # 분류 라벨은 MISSED 이지만 reason 에 "MISSED 아님" 또는 유사 문구
-        assert outcome.label == LABEL_MISSED
+        assert outcome.label == LABEL_AVOIDED
 
     def test_injected_thresholds_change_outcome(self) -> None:
         """임계 주입: confidence_threshold=0.9 → confidence=0.8 이면 FP 아님."""

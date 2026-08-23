@@ -79,11 +79,27 @@ class TestSortino:
         rets = [r.return_pct for r in rts]
         downsides = [r for r in rets if r < 0]
         if downsides:
-            dd = statistics.pstdev(downsides)
-            expected = statistics.mean(rets) / dd if dd else 0.0
+            # 2026-08-23 정정: 종전 테스트는 pstdev(손실만) = 손실끼리의 흩어짐을
+            # 기대값으로 박아 버그를 고정하고 있었다. 교과서 downside deviation 은
+            # sqrt(mean(min(r,0)^2)) — 전체 n 기준.
+            import math
+            dd = math.sqrt(sum(min(r, 0.0) ** 2 for r in rets) / len(rets))
+            expected = statistics.mean(rets) / dd
             assert abs(a.sortino - expected) < 1e-6
+
         else:
             assert math.isinf(a.sortino) or a.sortino > 0
+
+    def test_sortino_not_zero_when_losses_are_uniform(self):
+        """손실이 균일해도 0.0(중립)으로 무너지지 않는다.
+
+        종전 공식은 pstdev(손실)=0 → `if dd else 0.0` 로 0.0 을 반환해, 꾸준히
+        같은 폭으로 잃는 전략이 '중립' 으로 보였다.
+        """
+        from trading.edge.analytics import compute
+        rts = [_rt(0, -1_000.0), _rt(1, -1_000.0), _rt(2, -1_000.0)]
+        a = compute(rts)
+        assert a.sortino < 0
 
     def test_empty_sortino_is_zero(self):
         """거래 없음 → sortino = 0.0."""
