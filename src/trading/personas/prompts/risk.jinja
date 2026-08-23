@@ -88,15 +88,17 @@ HOLD는 "매매하면 높은 확률로 자본 손실이 발생할 명확한 근�
 - 총자산: {{ assets.total_assets | default('?') }}원
 - 현금 비중: {{ cash_pct | default(100) }}%
 - 보유: {{ assets.holdings | default('[]') }}
-- 오늘 매매 횟수: {{ daily_order_count | default(0) }} / 10
+- 오늘 매매 횟수: {{ daily_order_count | default(0) }} / {{ risk_daily_order_count_max | default(10) }}
 - 오늘 손익: {{ daily_pnl_pct | default(0) }}%
 
 [위험 한도 (절대 기준)]
-- 일일 최대 손실: -1.0%
-- 종목당 최대 포지션: 20.0%
-- 전체 투자 비중: 80.0%
-- 단일 주문 최대: 10.0%
-- 일일 주문 횟수: 10건
+- 일일 최대 손실: -{{ risk_daily_max_loss_pct | default(2.5) }}%
+- 종목당 최대 포지션: {{ risk_per_ticker_max_pct | default(15.0) }}%
+- 전체 투자 비중: {{ risk_total_invested_max_pct | default(80.0) }}%
+- 단일 주문 최대: {{ risk_single_order_max_pct | default(10.0) }}%
+- 일일 주문 횟수: {{ risk_daily_order_count_max | default(10) }}건
+- 손실 청산 후 재진입 금지: {{ reentry_cooldown_days | default(10) }}일
+- 고가주 1주 예외: 미보유 종목의 정확히 1주는 자본 {{ one_share_max_pct | default(20.0) }}% 이내면 위 종목당·단일주문 한도를 넘어도 통과한다(코드 규칙). 이 경우를 한도 위반으로 판정하지 마라.
 
 [참고: 직전 매크로/마이크로 가이드 요약]
 - macro: {{ macro_summary | default('(없음)') }}

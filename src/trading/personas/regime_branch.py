@@ -24,7 +24,16 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from trading.config import RISK_ONE_SHARE_MAX_PCT
+from trading.config import (
+    DECISION_CONFIDENCE_FULL_SIZE,
+    REENTRY_COOLDOWN_DAYS,
+    RISK_DAILY_MAX_LOSS,
+    RISK_DAILY_ORDER_COUNT_MAX,
+    RISK_ONE_SHARE_MAX_PCT,
+    RISK_PER_TICKER_MAX_POSITION,
+    RISK_SINGLE_ORDER_MAX,
+    RISK_TOTAL_INVESTED_MAX,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -122,6 +131,17 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
         # 2026-08-16 고가주 1주 예외 비율 — 코드(RISK_ONE_SHARE_MAX_PCT)와 프롬프트가
         # 같은 값을 본다.
         "one_share_max_pct": RISK_ONE_SHARE_MAX_PCT * 100,
+        # 2026-08-23: 위험 한도는 config 단일 원천. 프롬프트에 숫자를 박아두면 코드와
+        # 어긋난다 — 실측으로 '종목당 20%·일일 -1%' 라고 말하는 동안 코드는 15%·-2.5%
+        # 를 강제하고 있었다. 페르소나가 틀린 한도를 기준으로 사이징하면 제안이 통째로
+        # 거부되거나(과대) 스스로를 과하게 조인다(과소).
+        "risk_daily_max_loss_pct": abs(RISK_DAILY_MAX_LOSS) * 100,
+        "risk_per_ticker_max_pct": RISK_PER_TICKER_MAX_POSITION * 100,
+        "risk_total_invested_max_pct": RISK_TOTAL_INVESTED_MAX * 100,
+        "risk_single_order_max_pct": RISK_SINGLE_ORDER_MAX * 100,
+        "risk_daily_order_count_max": RISK_DAILY_ORDER_COUNT_MAX,
+        "reentry_cooldown_days": REENTRY_COOLDOWN_DAYS,
+        "confidence_full_size": DECISION_CONFIDENCE_FULL_SIZE,
     }
 
 

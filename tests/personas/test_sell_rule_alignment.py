@@ -66,6 +66,8 @@ class TestEntryLogicUnchanged:
 
     def test_buy_signal_obligation_rules_present(self):
         # Sanity that we did not disturb the entry/매수 obligation sections.
+        # 2026-08-23: 한도 숫자는 config 변수로 옮겼다(프롬프트-코드 모순 제거).
+        # 숫자가 아니라 규칙이 살아 있는지를 검사한다.
         assert "수급 분석 의무 규칙" in PROMPT
-        assert "매수 권장 수량은 자본의 10%를 절대 넘지 않는다" in PROMPT
+        assert "매수 권장 수량은 자본의 {{ risk_single_order_max_pct" in PROMPT
         assert "공매도 금지" in PROMPT

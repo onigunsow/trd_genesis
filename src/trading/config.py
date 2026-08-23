@@ -61,6 +61,15 @@ RISK_DAILY_ORDER_COUNT_MAX: Final[int] = int(os.getenv("RISK_DAILY_ORDER_COUNT_M
 # 0 이면 비활성. 종목당 상한(15%)보다 넓으므로 집중 리스크는 이 예외 1주로 한정된다.
 RISK_ONE_SHARE_MAX_PCT: Final[float] = float(os.getenv("RISK_ONE_SHARE_MAX_PCT", "0.20"))
 
+# 2026-08-23: 전량 진입 confidence 임계. decision.jinja 의 confidence 정의는
+# "이 진입이 20거래일 뒤 수익일 확률" 인데, 기존 임계 0.7 은 그 정의에서 도달 불가였다.
+# 실측(8/8~ buy 결정 105건): 평균 0.523, 최대 0.60, 0.7 이상 0건 → "0.7 미만이면 절반"
+# 룰이 100% 발동해 사실상 목표 비중의 절반이 상한이었다. 주식 20일 수익 확률에서
+# 0.55 는 이미 유의미한 우위(동전 던지기 0.50 대비 +10%)다.
+DECISION_CONFIDENCE_FULL_SIZE: Final[float] = float(
+    os.getenv("DECISION_CONFIDENCE_FULL_SIZE", "0.55")
+)
+
 # 2026-08-15: 손실 청산 후 같은 종목 재매수 금지 기간(일). 65건 왕복 분해에서
 # 064350 을 8번 사서 8번 다 손절(-139,096원), 071050 4번(-54,500원) —
 # 손절 며칠 뒤 재매수해 같은 함정에 빠지는 패턴이 손실의 큰 몫이었다.
