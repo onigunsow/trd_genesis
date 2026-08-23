@@ -85,7 +85,15 @@ export default function PostmortemBreakdown({ data }: Props) {
             {k}: {v}
           </span>
         ))}
-        <span style={{ fontSize: '0.7rem', color: theme.textMuted }}>총 {total}건 / {data.days}일</span>
+        <span style={{ fontSize: '0.7rem', color: theme.textMuted }}>
+          총 {total}건 / {data.days}일
+          {/* 창 안의 결정 수보다 적게 집계됐다면 파이 비율은 잘린 집합 기준이다 */}
+          {(data as {truncated?: boolean}).truncated && (
+            <span style={{ color: theme.accentRed }}>
+              {' '}· 창 {(data as {n_in_window?: number}).n_in_window}건 중 일부만 집계
+            </span>
+          )}
+        </span>
       </div>
 
       {total === 0 ? (

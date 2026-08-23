@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "session_id": "656f6e7f-42ec-4261-8813-c0b59c001e68",
-  "writer_pid": 3957625,
-  "captured_at": "2026-08-23T12:18:56.584421743+09:00",
+  "writer_pid": 4016373,
+  "captured_at": "2026-08-23T12:34:02.66431094+09:00",
   "context_window_size": 1000000,
-  "tokens_used": 580000,
-  "raw_pct": 58,
+  "tokens_used": 640000,
+  "raw_pct": 64,
   "stage": "soft",
   "band": "large"
 }

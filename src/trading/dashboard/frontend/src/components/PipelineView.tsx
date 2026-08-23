@@ -218,9 +218,27 @@ export default function PipelineView({ status }: Props) {
           {pipeline?.cycle_ts && (
             <span style={{ fontWeight: 400, marginLeft: 8 }}>
               ({fmtTs(pipeline.cycle_ts)})
+              {/* 2026-08-23: 묵은 사이클도 '최신' 으로 보이던 문제 — 경과 시간 표기 */}
+              {(() => {
+                const age = (pipeline as { cycle_age_seconds?: number | null }).cycle_age_seconds
+                if (age == null || age < 3600) return null
+                const h = Math.floor(age / 3600)
+                return <span style={{ color: 'var(--accent-red)' }}> · {h >= 24 ? `${Math.floor(h / 24)}일` : `${h}시간`} 경과</span>
+              })()}
             </span>
           )}
         </div>
+
+        {/* 실패한 페르소나는 persona_runs 에 행을 남기지 않아 위 단계 목록에서 사라진다.
+            audit_log 에서 끌어온 실패를 함께 보여주지 않으면 '전부 정상' 으로 읽힌다. */}
+        {!!(pipeline as { failed_personas?: {persona: string; n: number}[] })?.failed_personas?.length && (
+          <div style={s.errorNote}>
+            이 사이클 실패:{' '}
+            {(pipeline as { failed_personas: {persona: string; n: number}[] }).failed_personas
+              .map((f) => `${f.persona} ${f.n}회`)
+              .join(' · ')}
+          </div>
+        )}
 
         {pipelineError && <div style={s.errorNote}>파이프라인 오류 (마지막 데이터 유지): {pipelineError}</div>}
 

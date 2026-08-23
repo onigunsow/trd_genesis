@@ -128,8 +128,12 @@ class TestScorecardSince:
         dates = [date(2026, 8, 18)] * 12
         assert self._run("2026-08-17", dates, min_n=10)["low_sample"] is False
 
-    def test_no_since_never_low_sample(self):
-        """전기간 조회는 표본 부족 개념이 없다 — 토글 꺼진 상태를 오염시키지 않는다."""
+    def test_low_sample_fires_without_since_too(self):
+        """2026-08-23 정정: 표본 부족은 필터 여부와 무관한 사실이다.
+
+        종전엔 `bool(since_d) and ...` 이라 게이트 토글이 꺼져 있으면 왕복 2건짜리
+        PF 도 표본 부족 표시 없이 나갔다.
+        """
         out = self._run(None, [date(2026, 8, 18)] * 2, min_n=10)
         assert out["since"] is None
-        assert out["low_sample"] is False
+        assert out["low_sample"] is True

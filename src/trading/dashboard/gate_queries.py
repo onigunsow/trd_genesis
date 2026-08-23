@@ -34,7 +34,10 @@ HOLDING_BUCKETS: tuple[tuple[str, int, int], ...] = (
     ("31일+", 31, 10**6),
 )
 
-# 반사실 관측 창(달력일). 20일 = decision.jinja 의 confidence 정의와 일치.
+# 반사실 관측 창 — **거래일** 기준. decision.jinja 의 confidence 정의가
+# "이 진입이 20거래일 뒤 수익일 확률" 이므로 같은 단위여야 한다.
+# 2026-08-23: 종전엔 `d.d + 20` 이라 달력 20일(=거래일 약 14일)이었고, 주석은
+# "달력일" 이라 적으면서 confidence 정의와 일치한다고 주장해 파일 안에서 모순이었다.
 COUNTERFACTUAL_HORIZONS: tuple[int, ...] = (20, 40)
 
 # HOLD 사유 키워드 → 라벨. risk.jinja 의 재량 사유와 1:1. 순서 = 우선순위(첫 매치).
@@ -108,14 +111,16 @@ _ENTRY_QUALITY_SQL = """
         SELECT d.*,
           (SELECT close FROM ohlcv o WHERE o.symbol = d.ticker AND o.ts >= d.d
             ORDER BY o.ts LIMIT 1) AS p0,
-          (SELECT close FROM ohlcv o WHERE o.symbol = d.ticker AND o.ts >= d.d + %(h1)s
-            ORDER BY o.ts LIMIT 1) AS p1,
-          (SELECT close FROM ohlcv o WHERE o.symbol = d.ticker AND o.ts >= d.d + %(h2)s
-            ORDER BY o.ts LIMIT 1) AS p2
+          -- OFFSET N = 결정일 이후 N번째 거래 봉(=N거래일 후). 달력일 덧셈이 아니다.
+          (SELECT close FROM ohlcv o WHERE o.symbol = d.ticker AND o.ts >= d.d
+            ORDER BY o.ts OFFSET %(h1)s LIMIT 1) AS p1,
+          (SELECT close FROM ohlcv o WHERE o.symbol = d.ticker AND o.ts >= d.d
+            ORDER BY o.ts OFFSET %(h2)s LIMIT 1) AS p2
           FROM d
     )
     SELECT conf_bucket, freshness, count(*) AS n,
            count(*) FILTER (WHERE p1 IS NOT NULL) AS n_h1,
+           count(*) FILTER (WHERE p2 IS NOT NULL) AS n_h2,
            avg(100.0 * (p1 - p0) / NULLIF(p0, 0)) AS ret_h1,
            avg(100.0 * (p2 - p0) / NULLIF(p0, 0)) AS ret_h2,
            -- 2026-08-23: 종전엔 p1 이 NULL(아직 미래 봉이 없음)일 때 ELSE 0.0 으로
@@ -147,6 +152,9 @@ def fetch_entry_quality_matrix(*, since: str | None = None) -> dict[str, Any]:
         "freshness": r["freshness"],
         "n": int(r["n"]),
         "n_with_horizon": int(r["n_h1"]),
+        # 2026-08-23: h2(40거래일) 표본은 별도로 훨씬 적다 — n_h1 만 보이면
+        # ret_40d 가 몇 건짜리인지 알 수 없다.
+        "n_with_horizon_h2": int(r["n_h2"]),
         f"ret_{h1}d": (float(r["ret_h1"]) if r["ret_h1"] is not None else None),
         f"ret_{h2}d": (float(r["ret_h2"]) if r["ret_h2"] is not None else None),
         f"win_{h1}d": (float(r["win_h1"]) if r["win_h1"] is not None else None),

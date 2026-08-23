@@ -34,8 +34,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(confidence=0.5),
             _roundtrip(net_pnl=5000.0),
-            relative_5d=0.02,
-            relative_20d=0.02,
+            relative_excess=0.02,
             regime="neutral",
         )
         assert outcome.label == LABEL_TRUE_POSITIVE
@@ -46,8 +45,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(confidence=0.8),
             _roundtrip(net_pnl=-1000.0),
-            relative_5d=-0.01,
-            relative_20d=-0.03,
+            relative_excess=-0.03,
             regime="neutral",
         )
         assert outcome.label == LABEL_FALSE_POSITIVE
@@ -58,8 +56,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(),
             None,  # 미진입
-            relative_5d=0.01,
-            relative_20d=0.04,
+            relative_excess=0.04,
             regime="neutral",
         )
         assert outcome.label == LABEL_MISSED
@@ -70,8 +67,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(confidence=0.8, signal_dir="buy"),
             _roundtrip(net_pnl=-2000.0),
-            relative_5d=-0.02,
-            relative_20d=-0.05,
+            relative_excess=-0.05,
             regime="bearish",
         )
         assert outcome.label == LABEL_REGIME_MISMATCH
@@ -83,8 +79,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(confidence=0.9, signal_dir="buy"),
             _roundtrip(net_pnl=-500.0),
-            relative_5d=-0.01,
-            relative_20d=-0.03,
+            relative_excess=-0.03,
             regime="bearish",
         )
         assert outcome.label == LABEL_REGIME_MISMATCH
@@ -101,8 +96,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(),
             None,
-            relative_5d=-0.01,
-            relative_20d=-0.02,
+            relative_excess=-0.02,
             regime="neutral",
         )
         # 분류 라벨은 MISSED 이지만 reason 에 "MISSED 아님" 또는 유사 문구
@@ -115,15 +109,13 @@ class TestClassifyDecisionOutcome:
         outcome_default = classify_decision_outcome(
             _decision(confidence=0.8),
             _roundtrip(net_pnl=-500.0),
-            relative_5d=-0.01,
-            relative_20d=-0.02,
+            relative_excess=-0.02,
             regime="neutral",
         )
         outcome_strict = classify_decision_outcome(
             _decision(confidence=0.8),
             _roundtrip(net_pnl=-500.0),
-            relative_5d=-0.01,
-            relative_20d=-0.02,
+            relative_excess=-0.02,
             regime="neutral",
             thresholds={"confidence_threshold": 0.9, "relative_threshold": 0.0},
         )
@@ -136,8 +128,7 @@ class TestClassifyDecisionOutcome:
         outcome = classify_decision_outcome(
             _decision(persona="macro"),
             _roundtrip(1000.0),
-            relative_5d=0.02,
-            relative_20d=0.02,
+            relative_excess=0.02,
             regime="neutral",
         )
         assert outcome.persona == "macro"
@@ -149,7 +140,7 @@ class TestAttributeToPersona:
     def test_returns_outcome_persona(self) -> None:
         from trading.edge.postmortem import classify_decision_outcome, attribute_to_persona
         outcome = classify_decision_outcome(
-            _decision(persona="micro"), _roundtrip(), 0.01, 0.01, "neutral"
+            _decision(persona="micro"), _roundtrip(), 0.01, "neutral"
         )
         persona = attribute_to_persona(outcome, _decision(persona="micro"))
         assert persona == "micro"
@@ -228,8 +219,7 @@ class TestPostmortemMarketNeutral:
         out_kr = classify_decision_outcome(
             _decision(confidence=0.7),
             _roundtrip(1000.0),
-            relative_5d=0.01,
-            relative_20d=0.02,
+            relative_excess=0.02,
             regime="neutral",
             thresholds={"confidence_threshold": 0.6, "relative_threshold": 0.0},
         )
@@ -238,8 +228,7 @@ class TestPostmortemMarketNeutral:
         out_us = classify_decision_outcome(
             _decision(confidence=0.7),
             _roundtrip(500.0),
-            relative_5d=0.005,
-            relative_20d=0.015,
+            relative_excess=0.015,
             regime="neutral",
             thresholds={"confidence_threshold": 0.65, "relative_threshold": 0.0},
         )

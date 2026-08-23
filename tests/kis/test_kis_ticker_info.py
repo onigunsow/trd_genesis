@@ -634,8 +634,11 @@ class TestDashboardTickerNameEnrichment:
             "sector": "금융",
         }]
 
+        # 2026-08-23: _get_latest_equity_nav 가 (NAV, 기준일) 튜플을 반환한다 —
+        # NAV 부재를 0.0 이 아니라 None 으로 구분하기 위한 변경.
         with patch("trading.dashboard.queries.ro_connection") as mock_ro, \
-             patch("trading.dashboard.queries._get_latest_equity_nav", return_value=1000000.0), \
+             patch("trading.dashboard.queries._get_latest_equity_nav",
+                   return_value=(1000000.0, None)), \
              self._mock_lookup({"055550": "신한지주"}):
             @contextmanager
             def _fake(autocommit=False):

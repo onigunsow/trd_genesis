@@ -28,6 +28,9 @@ LABEL_MISSED = "MISSED"
 # 스스로 "(MISSED 아님)" 이라고 적고 있었다. 실측 30일 MISSED 198건 중 100건이
 # 이 분기 — 실제 기회 누락은 98건인데 198건으로 표시됐다.
 LABEL_AVOIDED = "AVOIDED"
+# 2026-08-23: 전방 20거래일 창이 아직 안 찬 결정. 종전엔 결측을 0.0 으로 채워
+# '보합' 과 구분이 안 됐고, 최근 결정이 전부 MISSED/AVOIDED 로 확정 분류됐다.
+LABEL_PENDING = "PENDING"
 
 # 진입 경로 우선순위 (높은 값 = 높은 우선순위)
 _PRIORITY = {
@@ -61,6 +64,7 @@ class PersonaStats:
     n_regime_mismatch: int = 0
     n_missed: int = 0
     n_avoided: int = 0  # 2026-08-23: 미진입 + 시장도 안 오름 = 회피 성공
+    n_pending: int = 0  # 판정 창 미완성
 
 
 @dataclass
@@ -93,8 +97,7 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
 def classify_decision_outcome(
     decision: dict[str, Any],
     roundtrip_or_none: dict[str, Any] | None,
-    relative_5d: float,
-    relative_20d: float,
+    relative_excess: float | None,
     regime: str,
     *,
     thresholds: dict[str, float] | None = None,
@@ -108,8 +111,11 @@ def classify_decision_outcome(
     Args:
         decision:           persona_decisions 행 (side, confidence, regime 등 포함).
         roundtrip_or_none:  해당 결정의 라운드트립 dict (진입·종료 시) 또는 None (미진입).
-        relative_5d:        결정 이후 5일 KOSPI 상대수익률.
-        relative_20d:       결정 이후 20일 KOSPI 상대수익률.
+        relative_excess:    KOSPI 대비 초과수익률(%). 진입한 결정은 보유기간 전체,
+                            미진입 결정은 이후 20거래일. 창이 아직 안 찼거나 데이터가
+                            없으면 None → PENDING(판정 보류).
+                            2026-08-23: 종전엔 relative_5d/relative_20d 두 인자였으나
+                            호출자가 항상 같은 값을 넣어 사실상 한 번의 검사였다.
         regime:             결정 시점 macro regime 문자열.
         thresholds:         {'confidence_threshold': float, 'relative_threshold': float}.
 
@@ -128,18 +134,26 @@ def classify_decision_outcome(
     confidence = float(decision.get("confidence") or 0.0)
     signal_dir = str(decision.get("signal_dir", side)).lower()
 
+    # 판정 불가 — 전방 창 미완성/데이터 없음. 0.0 으로 채워 확정 분류하면 안 된다.
+    if relative_excess is None:
+        return DecisionOutcome(
+            label=LABEL_PENDING,
+            persona=decision.get("persona"),
+            reason="KOSPI 상대수익 판정 창 미완성 — 분류 보류",
+        )
+
     # --- 미진입 경로 ---
     if roundtrip_or_none is None:
-        if relative_20d > rel_threshold:
+        if relative_excess > rel_threshold:
             return DecisionOutcome(
                 label=LABEL_MISSED,
                 persona=decision.get("persona"),
-                reason=f"미진입 결정, 이후 20일 상대수익 {relative_20d:.2%} > {rel_threshold}",
+                reason=f"미진입 결정, 이후 20거래일 상대수익 {relative_excess:.2%} > {rel_threshold}",
             )
         return DecisionOutcome(
             label=LABEL_AVOIDED,
             persona=decision.get("persona"),
-            reason=f"미진입 결정, 이후 20일 상대수익 {relative_20d:.2%} ≤ {rel_threshold} — 회피 성공",
+            reason=f"미진입 결정, 이후 20거래일 상대수익 {relative_excess:.2%} ≤ {rel_threshold} — 회피 성공",
         )
 
     # --- 진입 경로 (roundtrip 존재) ---
@@ -157,20 +171,20 @@ def classify_decision_outcome(
             f"매수 신호가 {regime} regime 에서 발생",
         ))
 
-    # FALSE_POSITIVE: confidence >= threshold 이었으나 relative_20d < 0
-    if confidence >= conf_threshold and relative_20d < 0:
+    # FALSE_POSITIVE: confidence >= threshold 이었으나 시장 대비 열위
+    if confidence >= conf_threshold and relative_excess < 0:
         candidates.append((
             _PRIORITY[LABEL_FALSE_POSITIVE],
             LABEL_FALSE_POSITIVE,
-            f"confidence={confidence:.2f} ≥ {conf_threshold} 이지만 20일 상대수익 {relative_20d:.2%}",
+            f"confidence={confidence:.2f} ≥ {conf_threshold} 이지만 보유기간 상대수익 {relative_excess:.2%}",
         ))
 
     # TRUE_POSITIVE: 수익 실현 + 시장 대비 우위
-    if realized_return > 0 and (relative_5d > rel_threshold or relative_20d > rel_threshold):
+    if realized_return > 0 and relative_excess > rel_threshold:
         candidates.append((
             _PRIORITY[LABEL_TRUE_POSITIVE],
             LABEL_TRUE_POSITIVE,
-            f"실현손익 {realized_return:,.0f} > 0, 상대수익 {relative_20d:.2%}",
+            f"실현손익 {realized_return:,.0f} > 0, 보유기간 상대수익 {relative_excess:.2%}",
         ))
 
     if not candidates:

@@ -50,7 +50,9 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 export default function ChartsView() {
   const { since } = useGate()
   const equityFetcher = useCallback(() => api.fetchEquity(180, since), [since])
-  const postmortemFetcher = useCallback(() => api.fetchPostmortem(30, since), [since])
+  // 2026-08-23: 30 → 60일. 20거래일 전방 판정엔 최소 ~28 캘린더일이 필요해서
+  // 30일 창에서는 모든 결정이 PENDING(판정 보류)으로만 나왔다.
+  const postmortemFetcher = useCallback(() => api.fetchPostmortem(60, since), [since])
   const confidenceFetcher = useCallback(() => api.fetchConfidenceAnalysis(30, since), [since])
 
   const { data: equity, error: equityError } = usePolling(equityFetcher, 60_000)

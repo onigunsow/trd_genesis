@@ -361,7 +361,7 @@ class TestScorecardEndpoint:
 
     def test_scorecard_error_returns_503(self, client) -> None:
         with patch(
-            "trading.dashboard.queries.fetch_scorecard",
+            "trading.dashboard.queries.fetch_scorecard_with_sortino",
             side_effect=Exception("edge module failed"),
         ):
             resp = client.get("/api/scorecard")

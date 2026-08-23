@@ -228,14 +228,20 @@ def get_trends(trend_type: str = "daily", days: int = 14) -> list[dict[str, Any]
 
 @app.get("/api/postmortem", tags=["analytics"])
 def get_postmortem(
-    days: int = 30, limit: int = 200,
+    days: int = 30, limit: int = 2000,
     since: str | None = _SINCE_Q,
 ) -> dict[str, Any]:
-    """결정 postmortem 분포 (4분류: TP/FP/REGIME_MISMATCH/MISSED + 페르소나 귀인).
+    """결정 postmortem 분포 + 페르소나 귀인.
+
+    분류: TRUE_POSITIVE / FALSE_POSITIVE / REGIME_MISMATCH / MISSED /
+    AVOIDED(회피 성공) / PENDING(전방 20거래일 창 미완성 — 판정 보류).
 
     REQ-050-6/7: 어댑터 → edge.postmortem.classify_decision_outcome → 지연계산 + TTL 캐시.
+
+    2026-08-23: limit 기본 200·상한 500 이 30일 창(실측 661건)을 최신순으로 잘라,
+    판정 가능한 과거 결정이 빠지고 판정 불가한 최근 결정만 남았다. 창을 덮도록 올린다.
     """
-    limit = min(limit, 500)
+    limit = min(limit, 5000)
     try:
         return queries.fetch_postmortem(days=days, limit=limit, since=since)
     except Exception as exc:

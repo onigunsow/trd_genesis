@@ -128,12 +128,12 @@ class TestCoreDualParam:
 
         # 한국 파라미터 (KOSPI 상대수익 임계)
         out_kr = classify_decision_outcome(
-            decision, rt, 0.02, 0.03, "neutral",
+            decision, rt, 0.03, "neutral",
             thresholds={"confidence_threshold": 0.6, "relative_threshold": 0.0},
         )
         # 미국 파라미터 (SPY 상대수익 임계)
         out_us = classify_decision_outcome(
-            decision, rt, 0.01, 0.02, "neutral",
+            decision, rt, 0.02, "neutral",
             thresholds={"confidence_threshold": 0.65, "relative_threshold": 0.0},
         )
 

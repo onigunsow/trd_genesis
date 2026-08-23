@@ -248,6 +248,8 @@ export interface SectorBreakdown {
 }
 
 export interface PortfolioData {
+  nav_date?: string | null
+  nav_date_mismatch?: boolean
   holdings: PortfolioHolding[]
   nav: number
   cash_amount: number

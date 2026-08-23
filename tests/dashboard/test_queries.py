@@ -799,7 +799,11 @@ class TestFetchPostmortem:
     # ------------------------------------------------------------------
 
     def test_graceful_when_kospi_data_absent(self) -> None:
-        """(f) KOSPI 종가 없어도 크래시 없음 — relative=0.0 폴백."""
+        """(f) KOSPI 종가 없어도 크래시 없음.
+
+        2026-08-23: 종전 폴백은 relative=0.0 이라 결정이 MISSED/AVOIDED 로 확정
+        분류됐다. 이제 판정 불가는 PENDING 이다(0.0 은 보합과 구분 불가).
+        """
         from trading.dashboard import queries
 
         queries._postmortem_cache.clear()

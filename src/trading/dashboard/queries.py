@@ -14,6 +14,7 @@ SPEC-TRADING-050 M1 변경사항:
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import time
 from collections import defaultdict
@@ -473,42 +474,6 @@ def fetch_equity_curve(*, days: int | None = 90, since: str | None = None) -> li
 # ---------------------------------------------------------------------------
 
 
-def fetch_scorecard() -> dict[str, Any]:
-    """edge.scorecard 계산 결과 반환 (DB 읽기 + 순수 연산).
-
-    edge 모듈을 임포트해 실시간 계산한다. DB 쓰기 없음.
-    """
-    from trading.edge import analytics as _an
-    from trading.edge import benchmark as _bm
-    from trading.edge import roundtrips as _rt
-    from trading.edge import scorecard as _sc
-    from trading.edge.report import load_equity_snapshots
-
-    rt_result = _rt.compute_roundtrips(None)
-    analytics = _an.from_result(rt_result, balance=None)
-    bm = _bm.compute(rt_result.roundtrips)
-    card = _sc.decide(analytics, bm)
-
-    snapshots = load_equity_snapshots(days=90)
-    tw = _an.time_weighted_metrics(snapshots)
-
-    return {
-        "verdict": card.verdict,
-        "grade": card.grade,
-        "reasons": card.reasons,
-        "n_closed": analytics.n_closed,
-        "win_rate": analytics.win_rate,
-        "expectancy_adj": analytics.expectancy_adj,
-        "profit_factor_adj": (
-            float("inf") if analytics.profit_factor_adj == float("inf")
-            else analytics.profit_factor_adj
-        ),
-        "alpha_pct": bm.alpha_pct if bm.available else None,
-        "benchmark_available": bm.available,
-        "cagr": tw.cagr if tw.available else None,
-        "mdd": tw.mdd if tw.available else None,
-        "sharpe": tw.sharpe if tw.available else None,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -636,11 +601,12 @@ def _kospi_relative(
     exit_date: "date",
     trade_return_pct: float,
     closes_dict: "dict[date, float]",
-) -> "tuple[float, float]":
-    """거래 기간 KOSPI 상대수익률 (relative_5d, relative_20d) 반환.
+) -> "float | None":
+    """거래 보유기간의 KOSPI 대비 초과수익률(%). 판정 불가 시 None.
 
     동일 보유 기간의 KOSPI 수익률을 거래 수익률에서 빼서 초과수익률을 구한다.
-    closes_dict 가 비어 있거나 시작·종료 종가를 찾을 수 없으면 (0.0, 0.0) 반환.
+    closes_dict 가 비어 있거나 시작·종료 종가를 찾을 수 없으면 None(판정 보류) —
+    종전엔 0.0 을 돌려줘 '시장과 동일' 과 구분되지 않았다.
 
     Args:
         entry_date:        진입일.
@@ -649,10 +615,11 @@ def _kospi_relative(
         closes_dict:       {date: close} — benchmark.kospi_closes() 결과.
 
     Returns:
-        (relative_5d, relative_20d) — 동일 기간 초과수익률로 양쪽 모두 동일 값.
+        보유기간 전체의 초과수익률 하나. (종전엔 같은 값을 5d/20d 두 이름으로 반환해
+    분류가 서로 다른 두 지평을 본다는 인상을 줬다 — 실제로는 한 번의 검사였다.)
     """
     if not closes_dict:
-        return 0.0, 0.0
+        return None
 
     sorted_dates = sorted(closes_dict.keys())
 
@@ -673,11 +640,10 @@ def _kospi_relative(
         end_close = closes_dict[sorted_dates[-1]]
 
     if start_close is None or end_close is None or start_close == 0.0:
-        return 0.0, 0.0
+        return None
 
     kospi_ret = (end_close / start_close - 1.0) * 100.0
-    relative = trade_return_pct - kospi_ret
-    return relative, relative
+    return trade_return_pct - kospi_ret
 
 
 def _kospi_forward_relative(
@@ -685,8 +651,8 @@ def _kospi_forward_relative(
     closes_dict: "dict[date, float]",
     *,
     trading_days: int = 20,
-) -> float:
-    """미진입 결정 기준 이후 N거래일 KOSPI 수익률 반환.
+) -> float | None:
+    """미진입 결정 기준 이후 N거래일 KOSPI 수익률. 창이 아직 안 찼으면 None.
 
     결정일 종가 대비 N거래일 후 종가를 구한다.
     데이터 부재 시 0.0 반환 (graceful).
@@ -700,7 +666,7 @@ def _kospi_forward_relative(
         KOSPI N거래일 수익률 %.
     """
     if not closes_dict:
-        return 0.0
+        return None
 
     sorted_dates = sorted(closes_dict.keys())
 
@@ -711,17 +677,19 @@ def _kospi_forward_relative(
             start_idx = i
             break
     if start_idx is None:
-        return 0.0
+        return None
 
-    # N거래일 후 종가 인덱스
-    end_idx = min(start_idx + trading_days, len(sorted_dates) - 1)
-    if end_idx <= start_idx:
-        return 0.0
+    # 2026-08-23: 종전엔 min(start_idx+N, 마지막) 으로 창을 조용히 줄이고, 데이터가
+    # 없으면 0.0 을 돌려줬다. 0.0 은 '보합' 과 구분되지 않아 최근 결정이 전부
+    # MISSED/AVOIDED 로 확정 분류됐다. 온전한 N거래일이 없으면 None(판정 보류).
+    end_idx = start_idx + trading_days
+    if end_idx >= len(sorted_dates):
+        return None
 
     start_close = closes_dict[sorted_dates[start_idx]]
     end_close = closes_dict[sorted_dates[end_idx]]
     if not start_close:
-        return 0.0
+        return None
 
     return (end_close / start_close - 1.0) * 100.0
 
@@ -729,7 +697,10 @@ def _kospi_forward_relative(
 # @MX:ANCHOR: [AUTO] fetch_postmortem — postmortem 분류 단일 읽기 진입점.
 # @MX:REASON: 대시보드·테스트 모두 이 함수를 소비(fan_in ≥ 3 예상). 구형 stub 대체.
 def fetch_postmortem(
-    *, days: int = 30, limit: int = 200, since: str | None = None,
+    # 2026-08-23: limit 200 은 30일 창(실측 661건)을 잘랐고, 최신순이라 **판정 가능한
+    # 과거 결정이 잘리고 판정 불가한 최근 결정만 남는** 역효과였다. 창 전체를 덮는
+    # 값으로 올리고, 그래도 넘치면 truncated 로 알린다.
+    *, days: int = 30, limit: int = 2000, since: str | None = None,
 ) -> dict[str, Any]:
     """persona_decisions → 라운드트립 매칭 → classify_decision_outcome → 4분류 + 귀인.
 
@@ -801,6 +772,21 @@ def fetch_postmortem(
     with ro_connection() as conn, conn.cursor() as cur:
         cur.execute(decision_sql, (str(int(days)), since_d, since_d, limit))
         decision_rows = cur.fetchall()
+        # 창 안의 전체 결정 수(절단 전) — 파이 비율의 분모가 잘렸는지 알리기 위함
+        cur.execute(
+            """
+            SELECT count(*) AS n FROM persona_decisions pd
+             WHERE pd.ts >= NOW() - (%s || ' days')::INTERVAL
+               AND (%s::date IS NULL OR pd.ts::date >= %s::date)
+            """,
+            (str(int(days)), since_d, since_d),
+        )
+        # 관측성 필드다 — 못 구해도 본 계산을 막지 않는다(폴백: 절단 없음으로 간주).
+        try:
+            _row = cur.fetchone()
+            n_in_window = int((_row["n"] if isinstance(_row, dict) else _row[0]) or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            n_in_window = len(decision_rows)
 
     # -------------------------------------------------------------------------
     # 쿼리 2: orders(체결) → build_roundtrips (fetch_confidence_analysis 와 동일 패턴)
@@ -860,7 +846,7 @@ def fetch_postmortem(
             closes_list = kospi_closes(min_d, max_d)
             closes_dict = {d: c for d, c in closes_list}
         except Exception:  # noqa: BLE001 — KOSPI 조회 실패 graceful 처리
-            LOG.info("fetch_postmortem: KOSPI 종가 조회 실패 — relative_5d/20d=0.0 폴백")
+            LOG.info("fetch_postmortem: KOSPI 종가 조회 실패 — 전 결정 PENDING 처리")
 
     # -------------------------------------------------------------------------
     # 라운드트립 인덱스: ticker → list[RoundTrip] (날짜순)
@@ -885,6 +871,8 @@ def fetch_postmortem(
         # 2026-08-23: 미진입 + 이후 시장도 안 오름 = 회피 성공(기회 누락 아님).
         # 종전엔 이 경우도 MISSED 로 세어 30일 198건 중 100건이 허수였다.
         "AVOIDED": 0,
+        # 전방 20거래일 창이 아직 안 찬 결정 — 확정 분류 불가.
+        "PENDING": 0,
     }
     per_persona: dict[str, PersonaStats] = {}
 
@@ -911,8 +899,7 @@ def fetch_postmortem(
         }
 
         roundtrip_dict: dict[str, Any] | None = None
-        relative_5d = 0.0
-        relative_20d = 0.0
+        relative_excess: float | None = None
 
         if side == "buy":
             # BUY 결정 → 같은 종목 라운드트립 날짜 매칭 (±2일 이내)
@@ -941,28 +928,24 @@ def fetch_postmortem(
                     "exit_date": best_rt.exit_date,
                 }
                 # KOSPI 상대수익률 계산
-                rel5, rel20 = _kospi_relative(
+                relative_excess = _kospi_relative(
                     best_rt.entry_date,
                     best_rt.exit_date,
                     best_rt.return_pct,
                     closes_dict,
                 )
-                relative_5d, relative_20d = rel5, rel20
             else:
                 # BUY 결정이지만 매칭되는 라운드트립 없음 (미체결/진행중)
                 # 미진입 경로: 이후 20거래일 KOSPI 수익률
-                relative_20d = _kospi_forward_relative(dec_date, closes_dict)
-                relative_5d = relative_20d
+                relative_excess = _kospi_forward_relative(dec_date, closes_dict)
         else:
             # HOLD/SELL 결정 — 미진입 경로
-            relative_20d = _kospi_forward_relative(dec_date, closes_dict)
-            relative_5d = relative_20d
+            relative_excess = _kospi_forward_relative(dec_date, closes_dict)
 
         outcome = classify_decision_outcome(
             decision=decision,
             roundtrip_or_none=roundtrip_dict,
-            relative_5d=relative_5d,
-            relative_20d=relative_20d,
+            relative_excess=relative_excess,
             regime=regime,
         )
 
@@ -986,6 +969,8 @@ def fetch_postmortem(
             stats.n_missed += 1
         elif label == "AVOIDED":
             stats.n_avoided += 1
+        elif label == "PENDING":
+            stats.n_pending += 1
 
     payload: dict[str, Any] = {
         "distribution": distribution,
@@ -998,11 +983,16 @@ def fetch_postmortem(
                 "n_regime_mismatch": v.n_regime_mismatch,
                 "n_missed": v.n_missed,
                 "n_avoided": v.n_avoided,
+                "n_pending": v.n_pending,
             }
             for k, v in per_persona.items()
         },
         "total": sum(distribution.values()),
         "days": days,
+        # 2026-08-23: limit 이 창 안의 결정 수보다 작으면 파이 비율이 잘린 집합
+        # 기준이 된다(실측 30일 665건 vs limit 200). 절단 여부를 숨기지 않는다.
+        "n_in_window": n_in_window,
+        "truncated": n_in_window > len(decision_rows),
         "since": since_d.isoformat() if since_d else None,
     }
 
@@ -1103,7 +1093,10 @@ def fetch_confidence_analysis(*, days: int = 30, since: str | None = None) -> di
         "approve": _group_dict(report.approve),
         "overridden": _group_dict(report.overridden),
         "none_verdict_count": report.none_verdict_count,
-        "days": days,
+        # 2026-08-23: since 가 오면 days 컷을 풀고 전체 원장을 쓴다(진입/청산 짝 보존).
+        # 그런데 응답은 days 를 그대로 돌려줘 화면이 "최근 30일" 이라고 표기했다.
+        "days": None if since_d else days,
+        "since": since_d.isoformat() if since_d else None,
     }
 
     _cache_put(_confidence_cache, cache_key, payload)
@@ -1139,9 +1132,12 @@ def fetch_pipeline() -> dict[str, Any]:
             pr.error,
             pr.regime_at_decision
         FROM persona_runs pr
+        -- 2026-08-23: 종전 2시간 창은 서로 다른 사이클(15분 간격)을 "최신 사이클"
+        -- 하나로 합쳐 보여줬다. 한 사이클의 페르소나들은 수 분 안에 연달아 돌므로
+        -- 10분으로 좁힌다.
         WHERE pr.ts >= (
             SELECT ts FROM persona_runs ORDER BY ts DESC LIMIT 1
-        ) - INTERVAL '2 hours'
+        ) - INTERVAL '10 minutes'
         ORDER BY pr.ts ASC
     """
     with ro_connection() as conn, conn.cursor() as cur:
@@ -1168,7 +1164,38 @@ def fetch_pipeline() -> dict[str, Any]:
 
     # cycle_ts: 가장 최근 실행 ts
     cycle_ts = max((s["ts"] for s in steps if s["ts"]), default=None)
-    return {"steps": steps, "cycle_ts": cycle_ts}
+
+    # M1: 크래시한 페르소나는 persona_runs 에 행을 남기지 않는다(행 추가가 성공 후에만
+    # 일어난다). 그래서 "전부 completed" 로만 보이고 실패는 통째로 사라졌다 —
+    # 8/18~21 CLI 사용량 한도로 decision 이 105회 죽는 동안에도 화면은 정상이었다.
+    # 실패는 audit_log 에 남으니 같은 창에서 끌어와 함께 보여준다.
+    failed: list[dict[str, Any]] = []
+    try:
+        with ro_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT details->>'persona' AS persona, count(*) AS n, max(ts) AS last_ts
+                  FROM audit_log
+                 WHERE event_type IN ('CLI_DEGRADED_DEFER', 'SYSTEM_ERROR')
+                   AND ts >= %s - INTERVAL '10 minutes'
+                 GROUP BY 1 ORDER BY 2 DESC
+                """,
+                (cycle_ts,),
+            )
+            failed = [dict(r) for r in cur.fetchall() if dict(r).get("persona")]
+    except Exception as exc:  # 관측성 보강 — 실패해도 본 응답은 준다
+        LOG.warning("fetch_pipeline: 실패 페르소나 조회 실패: %s", exc)
+
+    return {
+        "steps": steps,
+        "cycle_ts": cycle_ts,
+        "failed_personas": failed,
+        # 화면이 "최신" 이라고 말하는 값이 얼마나 묵었는지. 종전엔 이 필드가 없어
+        # 이틀 묵은 사이클도 최신처럼 보였다.
+        "cycle_age_seconds": (
+            (_dt.datetime.now(_dt.UTC) - cycle_ts).total_seconds() if cycle_ts else None
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1254,26 +1281,42 @@ def fetch_roundtrips(
     return result
 
 
-def _get_latest_equity_nav() -> float:
-    """daily_equity_snapshot 최신 행에서 NAV(total_assets) 반환.
+def _get_latest_equity_nav(on_day: "date | None" = None) -> "tuple[float | None, date | None]":
+    """daily_equity_snapshot 에서 (NAV, 기준일). 없으면 (None, None).
 
-    데이터 없으면 0.0 반환.
+    2026-08-23 변경 2건:
+    - 종전엔 실패·부재 시 0.0 을 돌려줬고, 그 0 이 weight_pct·cash_ratio·herfindahl·
+      top3_pct·섹터 비중에 그대로 흘러 "전부 0%" 라는 실값처럼 보이는 화면이 됐다.
+      None 으로 구분해 화면이 '데이터 없음' 을 말할 수 있게 한다.
+    - on_day 를 주면 그 날의 NAV 를 쓴다. 종전엔 NAV 와 보유 스냅샷이 서로 다른
+      "최신일" 을 각자 찾아, 두 테이블이 어긋난 날(실측 2026-07-01 은 position_eval_
+      snapshot 에만 존재)엔 오늘 NAV 에서 어제 주식평가액을 빼는 계산이 됐다.
     """
-    sql = """
-        SELECT total_assets
-          FROM daily_equity_snapshot
-         ORDER BY trading_day DESC
-         LIMIT 1
-    """
+    if on_day is not None:
+        sql = """
+            SELECT total_assets, trading_day
+              FROM daily_equity_snapshot
+             WHERE trading_day = %s
+             LIMIT 1
+        """
+        params: tuple = (on_day,)
+    else:
+        sql = """
+            SELECT total_assets, trading_day
+              FROM daily_equity_snapshot
+             ORDER BY trading_day DESC
+             LIMIT 1
+        """
+        params = ()
     try:
         with ro_connection() as conn, conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, params)
             row = cur.fetchone()
-        if row:
-            return float(row.get("total_assets") or 0)
+        if row and row.get("total_assets") is not None:
+            return float(row["total_assets"]), row.get("trading_day")
     except Exception as exc:
-        LOG.warning("NAV 조회 실패 (0.0 폴백): %s", exc)
-    return 0.0
+        LOG.warning("NAV 조회 실패: %s", exc)
+    return None, None
 
 
 def fetch_portfolio() -> dict[str, Any]:
@@ -1330,7 +1373,19 @@ def fetch_portfolio() -> dict[str, Any]:
         LOG.error("fetch_portfolio 스냅샷 조회 실패: %s", exc)
         rows = []
 
-    nav = _get_latest_equity_nav()
+    # M7 수정: 보유 스냅샷의 거래일을 먼저 정하고, 같은 날의 NAV 를 쓴다.
+    # 종전엔 두 테이블이 각자 "최신일" 을 찾아, 어긋난 날에는 오늘 NAV 에서 어제
+    # 주식평가액을 빼는 계산이 됐다(실측: 2026-07-01 은 position_eval_snapshot 에만 존재).
+    _snap_day = None
+    for _r in rows:
+        if _r.get("trading_day"):
+            _snap_day = _r["trading_day"]
+            break
+    nav, nav_day = _get_latest_equity_nav(_snap_day)
+    if nav is None and _snap_day is not None:
+        # 그 날 NAV 가 없으면 최신 NAV 로 폴백하되 기준일 불일치를 응답에 남긴다.
+        nav, nav_day = _get_latest_equity_nav()
+    nav_is_stale = bool(_snap_day and nav_day and _snap_day != nav_day)
     snapshot_date: str | None = None
 
     # ticker_name 보강: ticker_metadata 에서 일괄 조회 (KIS/pykrx 호출 없음)
@@ -1342,7 +1397,7 @@ def fetch_portfolio() -> dict[str, Any]:
     for row in rows:
         eval_amount = float(row.get("eval_amount") or 0)
         total_stock_eval += eval_amount
-        weight_pct = (eval_amount / nav * 100.0) if nav > 0 else 0.0
+        weight_pct = (eval_amount / nav * 100.0) if nav else None
         if snapshot_date is None and row.get("trading_day"):
             td = row["trading_day"]
             snapshot_date = td.isoformat() if hasattr(td, "isoformat") else str(td)
@@ -1360,19 +1415,21 @@ def fetch_portfolio() -> dict[str, Any]:
             "sector": row.get("sector") or "미분류",
         })
 
-    # 현금 비율: NAV - 주식평가총액
-    cash_amount = max(0.0, nav - total_stock_eval)
-    cash_ratio = (cash_amount / nav * 100.0) if nav > 0 else 0.0
+    # 현금 = NAV - 주식평가총액. 음수는 두 스냅샷이 어긋났다는 신호다 — 0 으로
+    # 뭉개면 "현금 0원" 이라는 실값처럼 보인다(M8). NAV 자체가 없으면 전부 None(M9).
+    if nav:
+        cash_amount: float | None = nav - total_stock_eval
+        cash_ratio: float | None = cash_amount / nav * 100.0
+    else:
+        cash_amount = cash_ratio = None
 
     # Herfindahl 지수: Σ (weight_i)^2 (0~1 범위, weight_i = 비중/100)
-    weights = [(h["eval_amount"] / nav) for h in holdings if nav > 0]
-    herfindahl = sum(w * w for w in weights) if weights else 0.0
+    weights = [(h["eval_amount"] / nav) for h in holdings] if nav else []
+    herfindahl = sum(w * w for w in weights) if weights else None
 
     # 상위 3종목 비중 합계 (%)
-    sorted_weights_pct = sorted(
-        [h["weight_pct"] for h in holdings], reverse=True
-    )
-    top3_pct = sum(sorted_weights_pct[:3])
+    _wp = [h["weight_pct"] for h in holdings if h["weight_pct"] is not None]
+    top3_pct = sum(sorted(_wp, reverse=True)[:3]) if _wp else None
 
     # 섹터별 비중 집계
     sector_totals: dict[str, float] = {}
@@ -1384,7 +1441,7 @@ def fetch_portfolio() -> dict[str, Any]:
     for sec, amt in sorted(sector_totals.items(), key=lambda x: -x[1]):
         sector_breakdown.append({
             "sector": sec,
-            "weight_pct": (amt / nav * 100.0) if nav > 0 else 0.0,
+            "weight_pct": (amt / nav * 100.0) if nav else None,
         })
 
     return {
@@ -1396,6 +1453,10 @@ def fetch_portfolio() -> dict[str, Any]:
         "top3_pct": top3_pct,
         "sector_breakdown": sector_breakdown,
         "snapshot_date": snapshot_date,
+        # NAV 와 보유 스냅샷의 기준일이 다르면 비중·현금이 서로 다른 날의 값으로
+        # 계산된다. 숨기지 않고 알린다(M7).
+        "nav_date": nav_day.isoformat() if hasattr(nav_day, "isoformat") else None,
+        "nav_date_mismatch": nav_is_stale,
     }
 
 
@@ -1598,7 +1659,10 @@ def fetch_scorecard_with_sortino(*, since: str | None = None) -> dict[str, Any]:
         # 숫자가 안 보이면 스코어카드가 계좌 실적 전부를 담은 것으로 오독된다.
         "n_unmatched_sells": analytics.n_unmatched_sells,
         "since": since_d.isoformat() if since_d else None,
-        "low_sample": bool(since_d) and analytics.n_closed < gate_config()["min_n"],
+        # 2026-08-23: 종전엔 bool(since_d) and ... 이라 게이트 토글이 꺼져 있으면
+        # 왕복 3건짜리 PF 도 표본 부족 표시 없이 그대로 나갔다. 표본 부족은
+        # 필터 여부와 무관한 사실이다.
+        "low_sample": analytics.n_closed < gate_config()["min_n"],
         "gate_min_n": gate_config()["min_n"],
     }
 
@@ -1726,10 +1790,23 @@ def _build_trace_nodes(
     for row in event_rows:
         events_by_type[row["event_type"]].append(row)
 
+    # 2026-08-23: 매칭은 event_type 하나만 본다. 같은 event_type 을 여러 함수가
+    # 내보내면(실측: PORTFOLIO_GATE_DROP 2개 함수, NEWS_INTEL_ALIGN_REJECT 5개)
+    # 이벤트 한 건이 그 함수들을 전부 "관여" 로 물들인다. audit_log 에 발신 함수가
+    # 없어 더 좁힐 수 없으므로, 없는 정밀도를 지어내는 대신 모호함을 표시한다.
+    emitters_per_type: dict[str, int] = defaultdict(int)
+    for _key, _ets in audit_map.items():
+        for _et in set(_ets):
+            emitters_per_type[_et] += 1
+
     nodes = []
     for (file, func), event_types in sorted(audit_map.items()):
         matched = [e for et in event_types for e in events_by_type.get(et, [])]
         module = file.removeprefix("src/trading/").removesuffix(".py").split("/")[0]
+        ambiguous_types = sorted(
+            {et for et in event_types
+             if events_by_type.get(et) and emitters_per_type.get(et, 0) > 1}
+        )
         nodes.append(
             {
                 "file": file,
@@ -1737,6 +1814,9 @@ def _build_trace_nodes(
                 "module": module,
                 "state": _classify_node_state(event_types, matched),
                 "events": [_serialize_trace_event(e) for e in matched],
+                # 이 노드가 "관여" 로 표시된 근거 이벤트가 다른 함수에서도 나올 수
+                # 있는 경우 그 event_type 목록. 비어 있으면 귀속이 유일하다.
+                "ambiguous_event_types": ambiguous_types,
             }
         )
     return nodes
