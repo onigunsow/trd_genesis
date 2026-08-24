@@ -150,6 +150,51 @@ def _reentry_cooldown_map() -> dict[str, int]:
         return {}
 
 
+def _bought_today_map() -> dict[str, int]:
+    """오늘 매수 주문이 나간 종목 → 건수. 조회 실패 시 빈 dict."""
+    from trading.risk.limits import tickers_bought_today
+
+    try:
+        return tickers_bought_today()
+    except Exception:
+        LOG.warning("당일 매수 이력 조회 실패 — 프롬프트 안내 생략", exc_info=True)
+        return {}
+
+
+def _holding_thresholds(holdings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """보유 종목별 동적 손절/익절 임계.
+
+    2026-08-24: 결정 프롬프트가 "get_dynamic_thresholds 도구를 호출하여 effective_stop
+    을 쓰라"고 지시해 왔는데, 그 도구의 호출자는 워치독뿐이고 결정 페르소나에게 준 적이
+    없다. 값도 프롬프트에 실리지 않아 손절선을 환각으로 채우거나, CLI 모드에서 도구를
+    시도하다 --max-turns 1 에 걸려 사이클째 죽었다. 워치독과 같은 함수로 값을 계산해
+    프롬프트에 실어준다 — 두 경로가 같은 숫자를 보게 된다.
+    """
+    from trading.strategy.volatility.thresholds import get_dynamic_thresholds
+
+    out: list[dict[str, Any]] = []
+    for h in holdings or []:
+        ticker = str(h.get("ticker") or "")
+        if not ticker:
+            continue
+        try:
+            t = get_dynamic_thresholds(ticker)
+        except Exception:  # 한 종목 실패가 사이클을 막지 않는다
+            LOG.warning("동적 임계 조회 실패 ticker=%s — 해당 종목 안내 생략", ticker)
+            continue
+        out.append({
+            "ticker": ticker,
+            "name": h.get("name") or "",
+            "pnl_pct": h.get("pnl_pct"),
+            "effective_stop": t.get("effective_stop"),
+            "effective_take": t.get("effective_take"),
+            "trailing_stop_pct": t.get("trailing_stop_pct"),
+            "volatility_regime": t.get("volatility_regime"),
+            "source": t.get("source"),
+        })
+    return out
+
+
 def _split_blocked(
     blocked: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1183,6 +1228,10 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         # 2026-08-23: 재진입 쿨다운 종목을 프롬프트에 알린다. 없으면 페르소나가
         # 못 사는 종목을 매 사이클 재제안하고 전부 LIMIT_BREACH 로 거부된다.
         "cooldown_tickers": _reentry_cooldown_map(),
+        # 2026-08-24: 오늘 이미 매수한 종목을 알린다. 없으면 단기과열 1일 1회 룰을
+        # 페르소나가 적용할 수 없어 재제안 → LIMIT_BREACH 가 반복된다.
+        "bought_today": _bought_today_map(),
+        "holding_thresholds": _holding_thresholds(assets["holdings"]),
     }
     # Inject HOLD feedback from today
     candidate_tickers = [
@@ -1544,6 +1593,11 @@ def run_event_trigger_cycle(
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
         "hold_warnings": [],
         "blocked_tickers": blocked_cache_ev.get("blocked", {}),
+        # 2026-08-24: 이벤트 트리거 사이클은 8/23 쿨다운 주입에서 빠져 있었다.
+        # 나머지 두 사이클과 같은 안내를 받아야 같은 판단을 한다.
+        "cooldown_tickers": _reentry_cooldown_map(),
+        "bought_today": _bought_today_map(),
+        "holding_thresholds": _holding_thresholds(assets["holdings"]),
     }
 
     try:
@@ -1696,6 +1750,10 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
         # 2026-08-23: 재진입 쿨다운 종목을 프롬프트에 알린다. 없으면 페르소나가
         # 못 사는 종목을 매 사이클 재제안하고 전부 LIMIT_BREACH 로 거부된다.
         "cooldown_tickers": _reentry_cooldown_map(),
+        # 2026-08-24: 오늘 이미 매수한 종목을 알린다. 없으면 단기과열 1일 1회 룰을
+        # 페르소나가 적용할 수 없어 재제안 → LIMIT_BREACH 가 반복된다.
+        "bought_today": _bought_today_map(),
+        "holding_thresholds": _holding_thresholds(assets["holdings"]),
     }
     candidate_tickers = [
         c.get("ticker")

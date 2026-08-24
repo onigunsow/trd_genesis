@@ -12,7 +12,7 @@
 # 포트폴리오 운영 룰
 - **현금 비중 가이드**: 30~50% 유지. 현금 30% 미만 시 신규 매수 보류. 50% 초과는 매크로 신호가 명확할 때만 허용.
 - **익절 룰**: 보유 종목 RSI > 85 도달 시 보유 수량의 50% 매도 시그널 발생. RSI > 90 도달 시 70% 매도 검토.
-- **손절 룰**: 보유 종목은 종목별 동적 `effective_stop`(get_dynamic_thresholds, SPEC-037 하드 스톱 플로어 -10% 적용 후) 도달 시 매도 시그널 발생 — 워치독 자동 손절과 동일 기준. source="fixed_fallback"(ATR 불가) 시에만 고정 -7% 손절을 적용한다. 단, 매크로가 일시적 조정 신호이고 펀더멘탈 훼손 없으면 플로어(-10%)까지 보유 가능.
+- **손절 룰**: 보유 종목은 종목별 동적 `effective_stop`(아래 [보유 종목 동적 손절·익절 임계] 에 실린 값, 하드 스톱 플로어 -{{ stop_floor_pct | default(15.0) }}% 적용 후) 도달 시 매도 시그널 발생 — 워치독 자동 손절과 동일 기준. source="fixed_fallback"(ATR 불가) 시에만 고정 -7% 손절을 적용한다. 단, 매크로가 일시적 조정 신호이고 펀더멘탈 훼손 없으면 플로어(-{{ stop_floor_pct | default(15.0) }}%)까지 보유 가능.
 - **섹터 분산**: 단일 섹터(반도체·전력·방산·바이오 등) 자본의 40% 초과 금지.
 - **선택과 집중**: 동시 보유 종목은 3~7종목 권장. 8종목 이상은 분산 효과 없이 추적 부담만 증가.
 - **가치 트랩 회피**: 보유 종목이 EPS 역성장 + 매크로 약세 + 마이크로 sell 신호 동시 발생 시 매도 검토.
@@ -131,6 +131,16 @@
 보유 중이라면 매도·보유 판단은 정상적으로 하라.
 
 {% endif %}
+{% if bought_today is defined and bought_today %}
+## 오늘 이미 매수한 종목
+{% for ticker, n in bought_today.items() %}
+- {{ ticker }}: {{ n }}회
+{% endfor %}
+단기과열(stat_cls=55) 지정 종목은 **당일 1회만** 코드를 통과한다 — 위 목록에 있으면 추가
+매수를 제안하지 마라(제안해도 주문 단계에서 거부된다). 그 외 종목도 같은 날 같은 방향
+반복은 과매매다. 재제안하려면 아침과 다른 새 근거가 있어야 한다.
+
+{% endif %}
 {% if hold_warnings is defined and hold_warnings %}
 ## 금일 Risk HOLD 이력 (주의)
 {% for warn in hold_warnings %}
@@ -196,12 +206,18 @@
 
 {# SPEC-012 REQ-PROMPT-06-1: Dynamic threshold rules (feature-flagged) #}
 {% if dynamic_thresholds_enabled %}
-## Dynamic Threshold Rules (활성)
-- 손절: 각 종목에 대해 get_dynamic_thresholds 도구를 호출하여 `effective_stop` 값을 사용하세요.
-- 익절: 각 종목에 대해 get_dynamic_thresholds 도구를 호출하여 `effective_take` 값을 사용하세요.
+## 보유 종목 동적 손절·익절 임계 (코드 산출값)
+{% if holding_thresholds is defined and holding_thresholds %}
+{% for t in holding_thresholds %}
+- {{ t.ticker }} {{ t.name }}: 손절 {{ t.effective_stop }}% · 익절 {{ t.effective_take }}% · 트레일링 {{ t.trailing_stop_pct }}% · 변동성 {{ t.volatility_regime }}{% if t.source == 'fixed_fallback' %} (ATR 불가 — 고정 폴백){% endif %} · 현재 평가손익 {{ t.pnl_pct }}%
+{% endfor %}
+위 숫자는 포지션 워치독이 자동 매도에 쓰는 값과 **동일한 함수로 계산된 실제 임계**다.
+추정하거나 다시 계산하지 말고 이 값을 그대로 근거로 써라. 여기 없는 종목의 임계는 모른다고 밝혀라.
+{% else %}
+(보유 종목 없음 또는 임계 산출 불가 — 고정 룰 -7% 손절 / RSI>85 익절이 적용된다)
+{% endif %}
 - 트레일링 스탑: 수익 중인 포지션에 `trailing_stop_pct` 적용.
 - 변동성 인지: 'extreme' 레짐에서는 포지션 축소를 검토하세요.
-- 폴백: source="fixed_fallback" 반환 시 -7% 손절 / RSI>85 익절 사용.
 - 최종 안전장치: 고정 룰 (-7% / RSI>85)은 항상 코드에 유지됩니다.
 {% endif %}
 

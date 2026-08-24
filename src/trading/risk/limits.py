@@ -134,6 +134,40 @@ def buy_count_today(ticker: str) -> int:
 _OVERHEAT_MAX_BUYS_PER_DAY = 1
 
 
+def tickers_bought_today() -> dict[str, int]:
+    """오늘 매수 주문이 나간 종목 → 건수. 없으면 빈 dict.
+
+    ``buy_count_today`` 와 같은 판정을 전 종목에 대해 한 번의 쿼리로 낸다. 결정
+    페르소나 프롬프트에 주입해 "오늘 이미 산 단기과열 종목"을 재제안하지 않게 하는
+    사전 안내다 — 한도 검사(check_pre_order)가 여전히 진실의 원천이다.
+
+    2026-08-24 실측: 오늘 LIMIT_BREACH 20건이 전부 repeat_buy(같은 종목 재제안)였다.
+    프롬프트는 "같은 날 같은 종목 매수는 1회만 통과한다"고 룰을 말하면서 정작 어느
+    종목을 이미 샀는지는 알려주지 않았다 — 재진입 쿨다운과 같은 결함이다.
+    """
+    sql = """
+        SELECT ticker, COUNT(*) AS n FROM orders
+         WHERE ts::date = CURRENT_DATE
+           AND side = 'buy'
+           AND status IN ('submitted','filled','partial')
+         GROUP BY ticker
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    except Exception:  # 조회 실패는 안내 누락일 뿐 — 한도 검사가 여전히 막는다
+        LOG.warning("tickers_bought_today 조회 실패 — 프롬프트 안내 생략", exc_info=True)
+        return {}
+    out: dict[str, int] = {}
+    for r in rows:
+        ticker = r["ticker"] if isinstance(r, dict) else r[0]
+        n = int(r["n"] if isinstance(r, dict) else r[1])
+        if ticker and n > 0:
+            out[str(ticker)] = n
+    return out
+
+
 def tickers_in_reentry_cooldown() -> dict[str, int]:
     """현재 재진입 쿨다운에 걸린 종목 → 남은 일수. 없으면 빈 dict.
 

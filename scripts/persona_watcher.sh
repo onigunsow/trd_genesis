@@ -45,6 +45,14 @@ MAX_ATTEMPTS=2
 # 모델로 고정해 매매가 운영자 세션 사용량에 끌려가지 않게 한다.
 PERSONA_CLI_MODEL="${PERSONA_CLI_MODEL:-sonnet}"
 
+# 2026-08-24: 도구·MCP 전면 차단. 페르소나는 프롬프트에 실린 데이터만으로 JSON 을
+# 내는 작업이라 도구가 필요 없는데, 도구가 열려 있으면 모델이 한 번이라도 쓰려는
+# 순간 그게 2턴째라 --max-turns 1 에 걸려 사이클 전체가 죽는다.
+# 오늘 실측: FAILED risk/portfolio 의 stdout 이 "Error: Reached max turns (1)"
+# (len=28) — 도구를 켠 재현에서 문자열·길이가 정확히 일치했고, 아래 플래그를 준
+# 재현은 exit=0 이었다. 덤으로 trading 저장소에 대한 Bash/Read 권한도 닫는다.
+PERSONA_CLI_TOOL_ARGS=(--tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}')
+
 mkdir -p "$CALLS_DIR" "$RESULTS_DIR" "$(dirname "$LOG")"
 
 log() {
@@ -164,7 +172,8 @@ except Exception as e:
             # timeout 124 반환 시 재시도 대상 (실패 시도로 간주).
             # stdin redirect (<) 사용 — cat 파이프 대신 timeout이 프로세스 직접 소유.
             RESPONSE=$(timeout "${CLAUDE_TIMEOUT}s" "$CLAUDE" -p --max-turns 1 \
-                --model "$PERSONA_CLI_MODEL" < "$PROMPT_FILE" 2>>"$LOG")
+                --model "$PERSONA_CLI_MODEL" "${PERSONA_CLI_TOOL_ARGS[@]}" \
+                < "$PROMPT_FILE" 2>>"$LOG")
             EXIT_CODE=$?
 
             if [ "$EXIT_CODE" -eq 0 ] && [ -n "$RESPONSE" ]; then

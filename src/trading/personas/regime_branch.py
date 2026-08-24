@@ -120,6 +120,9 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
     Returns the normalised regime/risk_appetite plus the conservative adjusted
     numbers (REQ-035-2d). Keys mirror the ``{{ regime_* }}`` template variables.
     """
+    # 손절 플로어는 volatility 패키지 소유 — 순환 임포트를 피해 지역 임포트.
+    from trading.strategy.volatility.thresholds import STOP_FLOOR_PCT
+
     adj = adjust_for_regime(regime)
     return {
         "current_regime": adj.regime,
@@ -142,6 +145,10 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
         "risk_daily_order_count_max": RISK_DAILY_ORDER_COUNT_MAX,
         "reentry_cooldown_days": REENTRY_COOLDOWN_DAYS,
         "confidence_full_size": DECISION_CONFIDENCE_FULL_SIZE,
+        # 2026-08-24: 하드 스톱 플로어도 같은 이유로 주입. 8/15 에 -10 → -15% 로
+        # 넓혔는데 프롬프트 문구는 -10% 로 남아 있어, 페르소나가 코드보다 5%p 이른
+        # 손절을 제안해 왔다.
+        "stop_floor_pct": abs(STOP_FLOOR_PCT),
     }
 
 
