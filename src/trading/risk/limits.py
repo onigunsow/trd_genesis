@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import Literal
+from typing import Final, Literal
 
 from trading.config import (
     DECISION_CONFIDENCE_FLOOR,
@@ -61,11 +61,32 @@ def requires_circuit_halt(breaches: list[str]) -> bool:
     return False
 
 
+# 크기 기반 게이트 — 수량을 줄이면 해소된다. 나머지(daily_count·repeat_buy·
+# avg_down·reentry_cooldown·confidence_floor·daily_loss)는 수량과 무관하므로
+# 삭감 대상이 아니다. 이 구분이 틀리면 "사면 안 되는 것을 조금 사는" 일이 생긴다.
+_CLAMPABLE_GATES: Final[frozenset[str]] = frozenset(
+    {"single_order", "per_ticker", "total_invested"}
+)
+
+
 @dataclass
 class LimitCheck:
     passed: bool
     breaches: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # 2026-08-27: 한도 안에서 살 수 있는 최대 수량(BUY 한정, 없으면 None).
+    # decision.jinja 는 "단일 주문 한도를 초과하면 분할한다" 고 약속하는데 코드는
+    # 통째로 거부만 했다 — 삭감 경로가 매도(clamp_sell_to_confirmed)에만 있었다.
+    # 실측: 035420 을 3일간 15번 제안했으나 한 번도 주문이 되지 못했고(사유 중
+    # 하나가 한도 100만원 대비 474만원 산정) 20거래일 뒤 +28.6퍼센트였다.
+    allowed_qty: int | None = None
+
+    @property
+    def size_only_breach(self) -> bool:
+        """위반이 전부 크기 기반이라 수량 삭감으로 해소되는가."""
+        return bool(self.breaches) and all(
+            b.split(":", 1)[0] in _CLAMPABLE_GATES for b in self.breaches
+        )
 
 
 def daily_order_count_today() -> int:
@@ -398,6 +419,30 @@ def check_pre_order(
         chk.warnings.append(f"예상 수수료 {fee:,}원 (mode={mode}, market={market})")
 
     chk.passed = not chk.breaches
+
+    # 한도 안에서 가능한 최대 수량. 크기 외 위반이 하나라도 있으면 삭감해선 안 되므로 0.
+    if side == "buy" and ref_price > 0:
+        if chk.passed:
+            chk.allowed_qty = qty
+        elif chk.size_only_breach:
+            budgets = [
+                total_assets * RISK_SINGLE_ORDER_MAX,
+                total_assets * RISK_PER_TICKER_MAX_POSITION - existing_value,
+                total_assets * RISK_TOTAL_INVESTED_MAX
+                - sum(h.get("eval_amount", 0) for h in holdings),
+            ]
+            budget = min(budgets)
+            q = min(qty, int(budget // ref_price)) if budget > 0 else 0
+            # 수수료까지 넣어 다시 좁힌다 — 예산은 수수료 포함 기준이다.
+            while q >= 1:
+                n = q * ref_price
+                if n + estimate_fee(mode=mode, side=side, market=market, notional=n) <= budget:
+                    break
+                q -= 1
+            chk.allowed_qty = max(q, 0)
+        else:
+            chk.allowed_qty = 0
+
     return chk
 
 

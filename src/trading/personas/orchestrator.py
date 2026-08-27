@@ -1488,6 +1488,40 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         risk_persona.record_code_rules_result(
             review_id, passed=chk.passed, breaches=list(chk.breaches),
         )
+        # 2026-08-27: 크기 위반은 거부가 아니라 삭감. decision.jinja 가 "단일 주문
+        # 한도를 초과하면 분할한다" 고 약속하는데 코드는 통째로 거부만 해왔다 —
+        # 삭감 경로가 매도(clamp_sell_to_confirmed)에만 있었다. 실측: 035420 을
+        # 3일간 15번 제안했으나 한 번도 주문이 되지 못했고(사유 중 하나가 한도
+        # 100만원 대비 474만원 산정) 20거래일 뒤 +28.6퍼센트였다.
+        # 크기 외 위반이 섞여 있으면 삭감하지 않는다 — 사면 안 되는 것을 조금
+        # 사는 일이 없어야 한다. 삭감 후에는 반드시 재검사한다.
+        _allowed = getattr(chk, "allowed_qty", None)
+        if (not chk.passed and chk.size_only_breach is True
+                and isinstance(_allowed, int) and _allowed >= 1):
+            clamped = int(_allowed)
+            audit("ORDER_QTY_CLAMPED", actor="risk", details={
+                "decision_id": decision_id,
+                "ticker": ticker,
+                "requested_qty": qty,
+                "clamped_qty": clamped,
+                "breaches": list(chk.breaches),
+            })
+            qty = clamped
+            sig["qty"] = clamped
+            chk = check_pre_order(
+                side=side_str,
+                ticker=ticker,
+                qty=qty,
+                ref_price=ref_price,
+                total_assets=int(assets["total_assets"]),
+                holdings=assets["holdings"],
+                mode=client.mode.value,
+                market="KOSPI",
+                overheated=bool(getattr(safety, "overheated", False)),
+                held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
+                confidence=_sig_confidence(sig),
+            )
+
         if not chk.passed:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
             tg.system_briefing(
@@ -1992,6 +2026,40 @@ def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
         risk_persona.record_code_rules_result(
             review_id, passed=chk.passed, breaches=list(chk.breaches),
         )
+        # 2026-08-27: 크기 위반은 거부가 아니라 삭감. decision.jinja 가 "단일 주문
+        # 한도를 초과하면 분할한다" 고 약속하는데 코드는 통째로 거부만 해왔다 —
+        # 삭감 경로가 매도(clamp_sell_to_confirmed)에만 있었다. 실측: 035420 을
+        # 3일간 15번 제안했으나 한 번도 주문이 되지 못했고(사유 중 하나가 한도
+        # 100만원 대비 474만원 산정) 20거래일 뒤 +28.6퍼센트였다.
+        # 크기 외 위반이 섞여 있으면 삭감하지 않는다 — 사면 안 되는 것을 조금
+        # 사는 일이 없어야 한다. 삭감 후에는 반드시 재검사한다.
+        _allowed = getattr(chk, "allowed_qty", None)
+        if (not chk.passed and chk.size_only_breach is True
+                and isinstance(_allowed, int) and _allowed >= 1):
+            clamped = int(_allowed)
+            audit("ORDER_QTY_CLAMPED", actor="risk", details={
+                "decision_id": decision_id,
+                "ticker": ticker,
+                "requested_qty": qty,
+                "clamped_qty": clamped,
+                "breaches": list(chk.breaches),
+            })
+            qty = clamped
+            sig["qty"] = clamped
+            chk = check_pre_order(
+                side=side_str,
+                ticker=ticker,
+                qty=qty,
+                ref_price=ref_price,
+                total_assets=int(assets["total_assets"]),
+                holdings=assets["holdings"],
+                mode=client.mode.value,
+                market="KOSPI",
+                overheated=bool(getattr(safety, "overheated", False)),
+                held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
+                confidence=_sig_confidence(sig),
+            )
+
         if not chk.passed:
             record_breach(chk, {"signal": sig, "decision_id": decision_id})
             tg.system_briefing(
