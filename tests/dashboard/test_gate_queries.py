@@ -193,3 +193,28 @@ class TestRoutesWired:
         for p in ("/api/gate/holding-period", "/api/gate/entry-quality",
                   "/api/gate/risk", "/api/gate/sizing"):
             assert p in paths, p
+
+
+class TestHoldReasonNotInvertedByCompliance:
+    """2026-08-27: 근거가 '한도를 지켰다' 고 말해도 한도 위반으로 분류하던 결함.
+
+    실측에서 '한도' 라벨 8건 중 7건이 035420 이었는데 전부
+    "한도 5종 전항목 준수로 수치상 위반은 없으나..." 로 시작하는 근거였다.
+    지표가 뜻을 정반대로 읽고 있었고, 그 위에서 "한도로 거른 게 +22% 손해" 라는
+    틀린 결론이 나왔다. 고친 뒤 한도 라벨은 8건 -> 2건이 됐다.
+    """
+
+    def test_compliance_phrasing_is_not_a_limit_reason(self):
+        from trading.dashboard.gate_queries import _classify_hold_reason
+
+        rationale = (
+            "한도 5종 전항목 준수로 수치상 위반은 없으나, 외국인·기관 5일 누적 "
+            "동반 이탈이 확인되고 MA60 대비 하방에 위치해 중기 추세가 미회복 상태다."
+        )
+        assert _classify_hold_reason(rationale) != "한도"
+
+    def test_real_limit_violation_is_still_caught(self):
+        from trading.dashboard.gate_queries import _classify_hold_reason
+
+        for phrase in ("종목당 한도 초과", "추가 여력 소진", "섹터 편중 60% 룰에 명백히 저촉"):
+            assert _classify_hold_reason(f"...{phrase}...") == "한도", phrase
