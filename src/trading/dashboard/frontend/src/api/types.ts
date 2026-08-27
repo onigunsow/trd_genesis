@@ -385,3 +385,40 @@ export interface SizingGates {
   recent: SizingRecent[]
   n_events: number
 }
+
+/* 진입 근거 귀속 (2026-08-27) — 종목이 아니라 판단을 채점한다.
+   머리기사(flow_cohorts)만 읽으면 시장 방향을 수급으로 오독한다. 화면은
+   by_month·sign_flip_months·regime_robust 를 반드시 함께 보여줘야 한다. */
+export interface AttrCohort {
+  label: string
+  n: number
+  n_scored: number
+  ret: number | null
+  median: number | null
+  win: number | null
+}
+export interface AttrMonth {
+  month: string
+  inflow: AttrCohort
+  outflow: AttrCohort
+  comparable: boolean
+  sign_flipped: boolean
+}
+export interface EntryAttribution {
+  since: string | null
+  horizon_trading_days: number
+  flow_window_trading_days: number
+  basis: string
+  n_total: number
+  n_scored: number
+  flow_cohorts: AttrCohort[]
+  by_month: AttrMonth[]
+  sign_flip_months: number
+  months_comparable: number
+  regime_robust: boolean
+  confidence_definition_boundary: string
+  confidence_cohorts: {
+    old_definition: AttrCohort[]
+    new_definition: AttrCohort[]
+  }
+}

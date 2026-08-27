@@ -18,7 +18,7 @@ import type {
   PnlDailyResponse,
   DecisionTrace,
   HoldingPeriodPnl,
-  EntryQualityMatrix,
+  EntryAttribution, EntryQualityMatrix,
   RiskVerdicts,
   SizingGates,
 } from './types'
@@ -71,6 +71,8 @@ export const api = {
     get<HoldingPeriodPnl>(`/api/gate/holding-period${since ? `?since=${since}` : ''}`),
   fetchGateEntryQuality: (since?: string | null) =>
     get<EntryQualityMatrix>(`/api/gate/entry-quality${since ? `?since=${since}` : ''}`),
+  fetchGateEntryAttribution: (since?: string | null) =>
+    get<EntryAttribution>(`/api/gate/entry-attribution${since ? `?since=${since}` : ''}`),
   fetchGateRisk: (since?: string | null) =>
     get<RiskVerdicts>(`/api/gate/risk${since ? `?since=${since}` : ''}`),
   fetchGateSizing: (since?: string | null, topN = 20) =>

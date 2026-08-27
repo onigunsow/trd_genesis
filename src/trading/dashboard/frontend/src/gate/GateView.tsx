@@ -15,7 +15,7 @@ import ReactECharts from 'echarts-for-react'
 import { usePolling } from '../hooks/usePolling'
 import { api } from '../api/client'
 import { theme, echartsBaseOpts } from '../theme'
-import type { EntryQualityMatrix, HoldingPeriodPnl, RiskVerdicts, SizingGates } from '../api/types'
+import type { AttrCohort, EntryAttribution, EntryQualityMatrix, HoldingPeriodPnl, RiskVerdicts, SizingGates } from '../api/types'
 import { useGate } from './GateContext'
 
 const panel: React.CSSProperties = {
@@ -104,6 +104,84 @@ function EntryQualityPanel({ d }: { d: EntryQualityMatrix }) {
                 <td key={f + '2'} style={{ ...td, color: pos(c?.ret_40d) }}>{c ? fpct(c.ret_40d) : ''}</td>
               </>) })}
             </tr>))}</tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/* ④-2 진입 근거 귀속 ──────────────────────────────────────────────────────
+   종목이 아니라 판단을 채점한다. 머리기사만 크게 띄우면 시장 방향을 수급으로
+   오독한다 — 실측에서 전체 승률은 19.6 대 81.2 였는데 같은 달 안에서 비교하니
+   5월은 부호가 뒤집혔다. 그래서 판정 배지를 머리기사 옆에 붙인다. */
+function EntryAttributionPanel({ d }: { d: EntryAttribution }) {
+  const verdict = d.regime_robust
+    ? { text: '시점 통제 후에도 유지됨', color: theme.accentGreen }
+    : d.months_comparable < 3
+      ? { text: `비교 가능한 달 ${d.months_comparable}개 — 판정 보류`, color: theme.textMuted }
+      : { text: `${d.sign_flip_months}개월에서 부호 뒤집힘 — 필터로 쓸 수 없음`, color: theme.accentRed }
+  const cell = (c: AttrCohort | undefined) =>
+    !c || c.n_scored === 0 ? '—' : `${fpct(c.ret)} · ${c.win?.toFixed(0)}%`
+  return (
+    <div style={panel}>
+      <h3 style={h3}>진입 근거 귀속 — 진입 직전 {d.flow_window_trading_days}거래일 수급</h3>
+      <div style={sub}>
+        <b>체결 매수</b> {d.n_total}건 중 {d.horizon_trading_days}거래일 미래봉 확보 {d.n_scored}건.
+        페르소나의 자기 신고(위 매트릭스)가 아니라 외부 검증이 가능한 근거로 가른다.
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0 10px' }}>
+        {d.flow_cohorts.filter(c => c.n > 0).map(c => (
+          <div key={c.label} style={{ flex: '1 1 160px', border: `1px solid ${theme.border}`, padding: '8px 10px' }}>
+            <div style={{ fontSize: '0.7rem', color: theme.textMuted }}>{c.label}</div>
+            <div style={{ fontSize: '1.15rem', fontWeight: 600, color: pos(c.ret) }}>{fpct(c.ret)}</div>
+            <div style={{ fontSize: '0.7rem', color: theme.textMuted }}>
+              승률 {c.win === null ? '—' : `${c.win.toFixed(1)}%`} · n {c.n_scored}/{c.n}
+            </div>
+          </div>))}
+      </div>
+
+      <div style={{ border: `1px solid ${verdict.color}`, padding: '7px 10px', marginBottom: 10, fontSize: '0.75rem', color: verdict.color }}>
+        시점 통제 판정 — {verdict.text}
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: 'left' }}>월 (시점 통제)</th>
+            <th style={th}>순매수 진입</th><th style={th}>순매도 진입</th><th style={th}></th>
+          </tr></thead>
+          <tbody>{d.by_month.map(m => (
+            <tr key={m.month}>
+              <td style={{ ...td, textAlign: 'left' }}>{m.month}</td>
+              <td style={{ ...td, color: pos(m.inflow.ret) }}>{cell(m.inflow)}<span style={{ color: theme.textMuted }}> (n{m.inflow.n_scored})</span></td>
+              <td style={{ ...td, color: pos(m.outflow.ret) }}>{cell(m.outflow)}<span style={{ color: theme.textMuted }}> (n{m.outflow.n_scored})</span></td>
+              <td style={{ ...td, color: m.sign_flipped ? theme.accentRed : theme.textMuted, fontSize: '0.7rem' }}>
+                {m.sign_flipped ? '부호 뒤집힘' : m.comparable ? '' : '한쪽 없음'}
+              </td>
+            </tr>))}</tbody>
+        </table>
+      </div>
+
+      <div style={{ ...sub, marginTop: 10 }}>
+        confidence 정의는 {d.confidence_definition_boundary} 에 바뀌었다 — 이전은 사이징 레버,
+        이후는 20거래일 수익 확률. 섞지 않고 따로 센다.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: 'left' }}>confidence</th>
+            <th style={th}>옛 정의</th><th style={th}>새 정의</th>
+          </tr></thead>
+          <tbody>{d.confidence_cohorts.old_definition.map((o, i) => {
+            const n = d.confidence_cohorts.new_definition[i]
+            return (
+              <tr key={o.label}>
+                <td style={{ ...td, textAlign: 'left' }}>{o.label}</td>
+                <td style={{ ...td, color: pos(o.ret) }}>{cell(o)}<span style={{ color: theme.textMuted }}> (n{o.n_scored}/{o.n})</span></td>
+                <td style={{ ...td, color: pos(n?.ret) }}>{cell(n)}<span style={{ color: theme.textMuted }}> (n{n?.n_scored ?? 0}/{n?.n ?? 0})</span></td>
+              </tr>)
+          })}</tbody>
         </table>
       </div>
     </div>
@@ -200,16 +278,19 @@ export function GateView() {
   const { since } = useGate()
   const fH = useCallback(() => api.fetchGateHoldingPeriod(since), [since])
   const fE = useCallback(() => api.fetchGateEntryQuality(since), [since])
+  const fA = useCallback(() => api.fetchGateEntryAttribution(since), [since])
   const fR = useCallback(() => api.fetchGateRisk(since), [since])
   const fS = useCallback(() => api.fetchGateSizing(since, 20), [since])
   const H = usePolling(fH, 120_000)
   const E = usePolling(fE, 120_000)
+  const A = usePolling(fA, 120_000)
   const R = usePolling(fR, 120_000)
   const S = usePolling(fS, 120_000)
   return (
     <div>
       {H.data ? <HoldingPeriodPanel d={H.data} /> : <Err what="보유기간" e={H.error} />}
       {E.data ? <EntryQualityPanel d={E.data} /> : <Err what="진입 품질" e={E.error} />}
+      {A.data ? <EntryAttributionPanel d={A.data} /> : <Err what="진입 근거 귀속" e={A.error} />}
       {R.data ? <RiskPanel d={R.data} /> : <Err what="리스크 판정" e={R.error} />}
       {S.data ? <SizingPanel d={S.data} /> : <Err what="사이징 게이트" e={S.error} />}
     </div>

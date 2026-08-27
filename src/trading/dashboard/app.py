@@ -308,6 +308,20 @@ def get_gate_entry_quality(since: str | None = _SINCE_Q) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="진입 품질 집계 실패") from exc
 
 
+@app.get("/api/gate/entry-attribution", tags=["gate"])
+def get_gate_entry_attribution(since: str | None = _SINCE_Q) -> dict[str, Any]:
+    """진입 근거 귀속 — 체결 매수를 진입 직전 수급 방향으로 갈라 20거래일 반사실.
+
+    머리기사와 함께 월별 셀·부호 뒤집힘 횟수를 돌려준다. 시점을 통제하지 않으면
+    수급이 아니라 시장 방향을 재게 되기 때문이다(2026-08-27 실측에서 5월 역전).
+    """
+    try:
+        return gate_queries.fetch_entry_attribution(since=since)
+    except Exception as exc:
+        LOG.error("fetch_entry_attribution failed: %s", exc)
+        raise HTTPException(status_code=503, detail="진입 근거 귀속 집계 실패") from exc
+
+
 @app.get("/api/gate/risk", tags=["gate"])
 def get_gate_risk(since: str | None = _SINCE_Q) -> dict[str, Any]:
     """REQ-065-3c 리스크 판정 분포 + HOLD 사유 + HOLD 반사실 + code_rules_passed."""
