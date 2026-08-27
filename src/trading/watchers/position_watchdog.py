@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import math
-from datetime import date, datetime
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Final, Any
 
 import pytz
 
@@ -293,6 +294,55 @@ def _holding_days(ticker: str, held_qty: int | None = None) -> int | None:
     return (_today_kst() - entry_date).days
 
 
+# 2026-08-27: 트레일링 스탑. thresholds.get_dynamic_thresholds 가 trailing_stop_pct
+# 를 계산해 모델에 담고 decision.jinja 도 "수익 중인 포지션에 적용" 이라고 지시해
+# 왔는데, 정작 워치독에 그 값을 읽는 줄이 한 줄도 없었다 — 계산해 놓고 아무도
+# 쓰지 않았다.
+#
+# 반사실(왕복 60건): 보유 중 평균 최고 미실현 +6.91퍼센트, 평균 실현 -2.33퍼센트
+# = 평균 9.24퍼센트포인트를 반납했다. 보유 중 +5퍼센트 이상 올랐던 32건 중
+# 이익으로 끝낸 건 17건뿐이다. 익절선이 +15~22퍼센트인데 평균 최고가 +6.91이라
+# 애초에 닿을 수 없었고, 그 구간을 잡으라고 만든 장치가 바로 트레일링이다.
+#
+# 임계는 ATR 기반 계산값을 그대로 쓴다. 시뮬레이션상 -4퍼센트가 더 좋았으나
+# (중앙 -3.01 -> +1.50) -4 와 -6 사이 낙차가 커서 견고하지 않고 인샘플이다.
+# 숫자를 지어내지 않고 이미 계산되는 값을 배선만 잇는다.
+TRAIL_ARM_PCT: Final[float] = float(os.getenv("TRAIL_ARM_PCT", "5.0"))
+
+
+def _lot_entry_date(ticker: str, held_qty: int | None) -> date | None:
+    """현재 보유 lot 의 진입일. _holding_days 와 같은 FIFO 해소를 쓴다."""
+    days = _holding_days(ticker, held_qty=held_qty)
+    if days is None:
+        return None
+    return _today_kst() - timedelta(days=days)
+
+
+def _peak_gain_pct(ticker: str, avg_cost: float, entry_date: date | None) -> float | None:
+    """진입 이후 일봉 고가 기준 최대 미실현 수익률. 산출 불가면 None.
+
+    일봉이라 당일 장중 고점은 반영되지 않는다 — 호출자가 현재 손익률과 max 로
+    합쳐 쓴다. 과대평가보다 과소평가 쪽으로 기울인다(늦게 발동하는 편이 안전).
+    """
+    if entry_date is None or avg_cost <= 0:
+        return None
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT max(high) AS hi FROM ohlcv "
+                "WHERE symbol = %s AND ts >= %s",
+                (ticker, entry_date),
+            )
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — 조회 실패는 트레일링 판정 포기일 뿐
+        LOG.warning("position_watchdog: peak lookup failed for %s: %s", ticker, e)
+        return None
+    hi = row.get("hi") if row else None
+    if hi is None:
+        return None
+    return 100.0 * (float(hi) - avg_cost) / avg_cost
+
+
 # @MX:NOTE: SPEC-TRADING-040 M1c — RSI source. Reuses the shared compute_rsi
 # (extracted from screener.daily_screen) — NOT reimplemented. None on
 # unavailable/insufficient data -> defensive skip.
@@ -326,6 +376,7 @@ _EXIT_CATEGORY = {
     "take": "자동 익절",
     "trim": "집중 트림",       # SPEC-040 M2
     "rotate": "정체 로테이션",  # SPEC-040 M1c
+    "trail": "트레일링 청산",   # 2026-08-27
 }
 
 
@@ -424,6 +475,7 @@ def poll_position_watchdog() -> dict[str, Any]:
         "take_exits": 0,
         "trim_exits": 0,     # SPEC-040 M2 concentration trim
         "rotate_exits": 0,   # SPEC-040 M1c stagnation rotation trim
+        "trailing_exits": 0,
         "skipped": 0,
         "errors": 0,
     }
@@ -468,6 +520,34 @@ def poll_position_watchdog() -> dict[str, Any]:
                 took_profit_today=_took_profit_today(ticker),
                 qty=qty,
             )
+
+            # 트레일링 스탑 (2026-08-27). stop/take 가 skip 일 때만 본다 —
+            # 이미 손절·익절이 걸렸으면 그쪽이 우선이다. 매도 전용이므로
+            # 위험을 줄이는 방향이고, 하루 1회로 제한해 반복 청산을 막는다.
+            if action == "skip" and not _action_done_today(ticker, _TRIM_ACTION):
+                trail_pct = th.get("trailing_stop_pct")
+                avg_cost = float(holding.get("avg_cost", 0) or 0)
+                if trail_pct is not None and avg_cost > 0:
+                    peak_hist = _peak_gain_pct(
+                        ticker, avg_cost, _lot_entry_date(ticker, qty)
+                    )
+                    # 일봉 고가는 당일 장중을 못 보므로 현재 손익률과 합쳐 쓴다.
+                    peak = max(peak_hist, pnl_pct) if peak_hist is not None else None
+                    if (
+                        peak is not None
+                        and peak >= TRAIL_ARM_PCT
+                        and pnl_pct <= peak + float(trail_pct)
+                    ):
+                        LOG.info(
+                            "position_watchdog: %s trailing exit — peak %+.2f%% "
+                            "현재 %+.2f%% (trail %+.2f%%)",
+                            ticker, peak, pnl_pct, float(trail_pct),
+                        )
+                        if _execute_trim(client, ticker, qty, pnl_pct, 0.0, kind="trail"):
+                            metrics["trailing_exits"] += 1
+                        else:
+                            metrics["skipped"] += 1
+                        continue
 
             # SPEC-040 M2 + M1c: when the extreme stop/take rules say skip, the
             # holding may still warrant a RISK-motivated trim (EV-exempt, ADR-1),
