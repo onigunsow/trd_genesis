@@ -151,6 +151,19 @@ def _reentry_cooldown_map() -> dict[str, int]:
         return {}
 
 
+def _sig_confidence(sig: dict[str, Any]) -> float | None:
+    """시그널의 confidence. 없거나 숫자가 아니면 None — 게이트는 통과시킨다.
+
+    2026-08-27: 결측을 0 으로 접으면 confidence 를 안 낸 경로(워치독 매도 등)가
+    전부 바닥선에 걸린다. 모르는 것은 막지 않는다.
+    """
+    v = sig.get("confidence")
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _bought_today_map() -> dict[str, int]:
     """오늘 매수 주문이 나간 종목 → 건수. 조회 실패 시 빈 dict."""
     from trading.risk.limits import tickers_bought_today
@@ -1469,6 +1482,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             market="KOSPI",
             overheated=bool(getattr(safety, "overheated", False)),
             held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
+            confidence=_sig_confidence(sig),
         )
         # risk_reviews.code_rules_passed 를 실제 결과로 갱신 (종전엔 항상 False).
         risk_persona.record_code_rules_result(
@@ -1972,6 +1986,7 @@ def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
             market="KOSPI",
             overheated=bool(getattr(safety, "overheated", False)),
             held_pnl_pct=(float(_held["pnl_pct"]) if _held else None),
+            confidence=_sig_confidence(sig),
         )
         # risk_reviews.code_rules_passed 를 실제 결과로 갱신 (종전엔 항상 False).
         risk_persona.record_code_rules_result(

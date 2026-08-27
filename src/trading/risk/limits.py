@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from typing import Literal
 
 from trading.config import (
+    DECISION_CONFIDENCE_FLOOR,
     REENTRY_COOLDOWN_DAYS,
     RISK_DAILY_MAX_LOSS,
     RISK_DAILY_ORDER_COUNT_MAX,
@@ -279,6 +280,7 @@ def check_pre_order(
     market: str = "KOSPI",
     overheated: bool = False,
     held_pnl_pct: float | None = None,
+    confidence: float | None = None,
 ) -> LimitCheck:
     """Run all hard-limit checks (수수료 포함 차감). Returns LimitCheck.
 
@@ -333,6 +335,16 @@ def check_pre_order(
                 f"daily_count: 오늘 주문 {cnt} → 매수 한도 {buy_limit} "
                 f"(전체 {RISK_DAILY_ORDER_COUNT_MAX}, 매도예산 {SELL_BUDGET_RESERVE} 확보)"
             )
+
+    # 2a-2. 진입 바닥선 (2026-08-27). BUY 전용 — 매도는 어떤 게이트로도 막지 않는다.
+    # 프롬프트가 "confidence 가 0.50 이하면 진입 자체를 하지 않는다" 를 하드 룰로
+    # 선언하는데 코드가 강제하지 않아 페르소나가 스스로 어겨왔다(8건). confidence 는
+    # None 일 수 있다(워치독 매도 등 페르소나 밖 경로) — 그때는 통과시킨다.
+    if side == "buy" and confidence is not None and confidence <= DECISION_CONFIDENCE_FLOOR:
+        chk.breaches.append(
+            f"confidence_floor: {ticker} 확신도 {confidence:.2f} "
+            f"<= 진입 바닥선 {DECISION_CONFIDENCE_FLOOR:.2f}"
+        )
 
     # 2b. SPEC-040 M4: 단기과열 repeat-buy block + no averaging down on a loss.
     # Buy-only — a SELL is never subject to these gates (exits always allowed).

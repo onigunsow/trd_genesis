@@ -25,6 +25,7 @@ import logging
 from dataclasses import dataclass
 
 from trading.config import (
+    DECISION_CONFIDENCE_FLOOR,
     DECISION_CONFIDENCE_FULL_SIZE,
     REENTRY_COOLDOWN_DAYS,
     RISK_DAILY_MAX_LOSS,
@@ -149,6 +150,7 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
         # 넓혔는데 프롬프트 문구는 -10% 로 남아 있어, 페르소나가 코드보다 5%p 이른
         # 손절을 제안해 왔다.
         "stop_floor_pct": abs(STOP_FLOOR_PCT),
+        "confidence_floor": DECISION_CONFIDENCE_FLOOR,
     }
 
 
