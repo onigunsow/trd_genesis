@@ -1,0 +1,2 @@
+[  501422ms] [ERROR] Failed to load resource: net::ERR_SOCKET_NOT_CONNECTED @ http://127.0.0.1:8080/api/holdings:0
+[  501422ms] [ERROR] Failed to load resource: net::ERR_SOCKET_NOT_CONNECTED @ http://127.0.0.1:8080/api/orders?limit=30:0

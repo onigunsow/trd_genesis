@@ -1,0 +1,58 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - button "사이드바 닫기" [ref=f6e5] [cursor=pointer]: ☰
+    - generic [ref=f6e6]: Trading Dashboard
+    - generic "DASHBOARD_GATE_SINCE 미설정·ACCOUNT_SWITCH 없음 — 게이트 필터 비활성" [ref=f6e8]:
+      - checkbox "수정 이후 진입분만 집계" [checked] [disabled] [ref=f6e9]
+      - text: 수정 이후만
+  - generic [ref=f6e10]: 상태 로딩 중...
+  - generic [ref=f6e12]:
+    - navigation "메인 네비게이션" [ref=f6e13]:
+      - generic [ref=f6e14]:
+        - button "◈ 개요" [ref=f6e15] [cursor=pointer]:
+          - generic [ref=f6e16]: ◈
+          - text: 개요
+        - button "◇ 검증 게이트" [ref=f6e17] [cursor=pointer]:
+          - generic [ref=f6e18]: ◇
+          - text: 검증 게이트
+        - button "◉ 포트폴리오" [ref=f6e19] [cursor=pointer]:
+          - generic [ref=f6e20]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=f6e21] [cursor=pointer]:
+          - generic [ref=f6e22]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=f6e23] [cursor=pointer]:
+          - generic [ref=f6e24]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=f6e25] [cursor=pointer]:
+          - generic [ref=f6e26]: ▶
+          - text: 파이프라인
+        - button "⑃ 결정 추적" [ref=f6e27] [cursor=pointer]:
+          - generic [ref=f6e28]: ⑃
+          - text: 결정 추적
+        - button "◐ 뉴스" [ref=f6e29] [cursor=pointer]:
+          - generic [ref=f6e30]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=f6e31] [cursor=pointer]:
+          - generic [ref=f6e32]: ☰
+          - text: 포지션/주문
+    - main [ref=f6e33]:
+      - generic [ref=f6e35]:
+        - generic [ref=f6e36]:
+          - generic [ref=f6e37]: 에쿼티 곡선
+          - generic [ref=f6e38]: 로딩 중...
+        - generic [ref=f6e39]:
+          - generic [ref=f6e40]: 드로다운 곡선
+          - generic [ref=f6e41]: 로딩 중...
+        - generic [ref=f6e42]:
+          - generic [ref=f6e43]: 일별 수익률 분포
+          - generic [ref=f6e44]: 로딩 중...
+        - generic [ref=f6e45]:
+          - generic [ref=f6e46]: 누적 손익
+          - generic [ref=f6e47]: 로딩 중...
+        - generic [ref=f6e48]:
+          - generic [ref=f6e49]: Confidence-수익 상관 (체결 기준 — 결정 전체 반사실은 검증 게이트 탭)
+          - generic [ref=f6e50]: 로딩 중...
+        - generic [ref=f6e51]:
+          - generic [ref=f6e52]: Postmortem 분류
+          - generic [ref=f6e53]: 로딩 중...

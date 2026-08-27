@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from trading.kis.market import OVERHEAT_STAT_CLS
 from trading.config import project_root
 from trading.db.session import connection
 
@@ -290,6 +291,7 @@ def assemble_micro_input(
     today: date | None = None,
     watchlist: list[str] | None = None,
     blocked_tickers: dict[str, Any] | list[str] | None = None,
+    overheat_stat_cls: str | None = None,
 ) -> dict[str, Any]:
     """Build micro persona input — watchlist tickers' technicals + recent disclosures.
 
@@ -345,6 +347,7 @@ def assemble_micro_input(
     memory_rows = _load_memory("micro_memory", limit=20, scope_filter=universe)
 
     return {
+        "overheat_stat_cls": overheat_stat_cls or OVERHEAT_STAT_CLS,
         "today": today.isoformat(),
         "macro_summary": macro_summary or "(없음)",
         "universe_snapshot": universe_snapshot,

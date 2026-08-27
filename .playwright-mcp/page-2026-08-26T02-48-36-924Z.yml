@@ -1,0 +1,135 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - generic [ref=e4]: �ㅼ륫 쨌 紐⑥쓽 �댁슜 �꾩쟻 쨌 2026-08-26 �ㅼ쟾 湲곗�
+      - heading "�쒖븞, 嫄곕�, 泥닿껐" [level=1] [ref=e5]
+      - paragraph [ref=e6]: LLM�� 3,260嫄댁쓣 �쒖븞�덇퀬, 肄붾뱶媛� 329踰� 留됱븯怨�, 143嫄댁씠 泥닿껐�먮떎. 洹� �ъ씠�먯꽌 臾댁뒯 �쇱씠 �덉뿀�붿�瑜� �レ옄濡쒕쭔 留먰븳��.
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: �꾩쟻 �좏샇
+        - generic [ref=e10]: 3,260
+        - generic [ref=e11]: 洹몄쨷 hold 2,301嫄� �� 7�좎씠 愿�留�
+      - generic [ref=e12]:
+        - generic [ref=e13]: 留ㅻℓ �섏궗
+        - generic [ref=e14]: "959"
+        - generic [ref=e15]: 留ㅼ닔 933 쨌 留ㅻ룄 26
+      - generic [ref=e16]:
+        - generic [ref=e17]: �쒕룄 李⑤떒
+        - generic [ref=e18]: "329"
+        - generic [ref=e19]: 二쇰Ц �먯껜媛� �섍�吏� �딆쓬
+      - generic [ref=e20]:
+        - generic [ref=e21]: 泥닿껐
+        - generic [ref=e22]: "143"
+        - generic [ref=e23]: 二쇰Ц 200嫄� 以�
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]: "01"
+        - heading "�뚯씠�꾨씪�몄� �� 二� �숈븞 �덈컲�� 二쎌뼱 �덉뿀��" [level=2] [ref=e27]
+      - paragraph [ref=e28]: LLM �몄텧 �ㅽ뙣�� 議곗슜�섎떎. �ъ씠�댁씠 �듭㎏濡� �щ씪�몃룄 �쒖옣�� 洹몃�濡� �섎윭媛�怨� 15遺� �� �� �ъ씠�댁씠 �④린 �뚮Ц��, 濡쒓렇瑜� �몄뼱蹂닿린 �꾧퉴吏��� �뺤긽�쇰줈 蹂댁씤��. 8�� 18��21�� �ㅽ뙣�⑥� 39%�먯꽌 65%源뚯� �щ옄��.
+      - figure [ref=e29]:
+        - generic [ref=e30]:
+          - generic [ref=e31]: �깃났
+          - generic [ref=e33]: �ㅽ뙣
+          - generic [ref=e35]: 留됰� �믪씠 = 洹몃궇�� �섎Ⅴ�뚮굹 �몄텧 ��
+        - img "嫄곕옒�쇰퀎 �섎Ⅴ�뚮굹 �몄텧 �깃났怨� �ㅽ뙣 �꾩쟻 留됰�洹몃옒��. 8�� 18�쇰��� 21�쇨퉴吏� �ㅽ뙣媛� 湲됱쬆�� 21�쇱뿉�� 40嫄� 以� 26嫄댁씠 �ㅽ뙣�덇퀬, 紐⑤뜽 怨좎젙怨� �꾧뎄 李⑤떒 �� �섏젙 �댄썑 8�� 25�쇨낵 26�쇱뿉�� �ㅽ뙣媛� 0�� �섏뿀��" [ref=e36]:
+          - generic [ref=e37]: "90"
+          - generic [ref=e38]: "60"
+          - generic [ref=e39]: "30"
+          - generic [ref=e40]: "0"
+          - generic [ref=e42]: 08-13
+          - generic [ref=e44]: 08-14
+          - generic [ref=e47]: 08-18
+          - generic [ref=e48]: "34"
+          - generic [ref=e51]: 08-19
+          - generic [ref=e52]: "32"
+          - generic [ref=e55]: 08-20
+          - generic [ref=e56]: "26"
+          - generic [ref=e59]: 08-21
+          - generic [ref=e60]: "26"
+          - generic [ref=e63]: 08-24
+          - generic [ref=e64]: "2"
+          - generic [ref=e66]: 08-25
+          - generic [ref=e68]: 08-26
+          - generic [ref=e69]: 吏꾪뻾 以�
+          - generic [ref=e70]: 08-23 紐⑤뜽 怨좎젙 ��
+          - generic [ref=e71]: �� 08-24 ���� �꾧뎄 李⑤떒
+          - generic [ref=e72]: 荑쇳꽣 寃쎌웳 援ш컙 �� 留ㅻℓ �쒖뒪�쒖씠 �댁쁺�� ���� �몄뀡怨� 媛숈� �ъ슜�� �쒕룄瑜� �먭퀬 �ㅽ돏��
+        - generic [ref=e73]:
+          - text: �� �섏젙�� �쒖꽌��濡� �ㅼ뿀��. 紐⑤뜽 怨좎젙�� 荑쇳꽣 寃쎌웳�� �딆뼱 �ㅽ뙣�⑥쓣 65%�먯꽌 2.5%濡� �대졇怨�, 洹몃윭�� 媛��ㅼ졇 �덈뜕 �� 踰덉㎏ �먯씤�� �쒕윭�щ떎 �� 紐⑤뜽�� �꾧뎄瑜� �곕젮 �섎㈃ 洹멸쾬�� �� 踰덉㎏ �댁씠 �섏뼱
+          - code [ref=e74]: "--max-turns 1"
+          - text: �� 嫄몃졇��. �꾧뎄 李⑤떒 �댄썑 �댄�媛� �ㅽ뙣 0.
+        - group [ref=e75]:
+          - generic "�쒕줈 蹂닿린" [ref=e76] [cursor=pointer]
+    - generic [ref=e77]:
+      - generic [ref=e78]:
+        - generic [ref=e79]: "02"
+        - heading "李⑤떒�� 9�좎� 媛숈� 醫낅ぉ�� �� �ш쿋�ㅻ뒗 �쒖븞�댁뿀��" [level=2] [ref=e80]
+      - paragraph [ref=e81]: �쒕룄 寃뚯씠�멸� 留됱� 329嫄댁쓽 �ъ쑀�� 怨좊Ⅴ寃� �쇱졇 �덉� �딅떎. repeat_buy�� avg_down �� 寃뚯씠�멸� 291嫄�, �꾩껜�� 88%��. �� �� �④린怨쇱뿴 醫낅ぉ�먮쭔 嫄몃━�� 洹쒖튃�대떎.
+      - figure "�� 遺꾪룷 �먯껜媛� 寃고븿�� �붿쟻�댁뿀��. �꾨＼�꾪듃�� \"�④린怨쇱뿴 醫낅ぉ�� �뱀씪 1�뚮쭔 �듦낵�쒕떎\"怨� 洹쒖튃�� 留먰븯硫댁꽌 �대뒓 醫낅ぉ�� �대� ���붿��� �뚮젮二쇱� �딆븯�� �� �섎Ⅴ�뚮굹�� �곸슜�� �곗씠�� �놁씠 洹쒖튃留� 諛쏆� �덉씠�� 留� �ъ씠�� 媛숈� 醫낅ぉ�� �ㅼ떆 �쒖븞�덈떎. 8�� 24�쇱뿉 �뱀씪 留ㅼ닔 �대젰�� �꾨＼�꾪듃�� 二쇱엯�덈떎." [ref=e82]:
+        - img "�쒕룄 寃뚯씠�몃퀎 李⑤떒 嫄댁닔 媛�濡� 留됰�洹몃옒��. repeat_buy 177嫄�, avg_down 114嫄�, reentry_cooldown 32嫄�, daily_loss 3嫄�, daily_count 3嫄�" [ref=e83]:
+          - generic [ref=e84]: repeat_buy
+          - generic [ref=e86]: "177"
+          - generic [ref=e87]: avg_down
+          - generic [ref=e89]: "114"
+          - generic [ref=e90]: reentry_cooldown
+          - generic [ref=e92]: "32"
+          - generic [ref=e93]: daily_loss
+          - generic [ref=e95]: "3"
+          - generic [ref=e96]: daily_count
+          - generic [ref=e98]: "3"
+          - generic [ref=e99]: �④린怨쇱뿴 愿��� �� 寃뚯씠�몃쭔 291嫄� �� �섎㉧吏� �� 寃뚯씠�몃� �꾨� �⑹퀜�� 38嫄�
+        - group [ref=e101]:
+          - generic "�쒕줈 蹂닿린" [ref=e102] [cursor=pointer]
+    - generic [ref=e103]:
+      - generic [ref=e104]:
+        - generic [ref=e105]: "03"
+        - heading "3,260嫄댁씠 143嫄댁쑝濡� 醫곸븘吏��� 湲�" [level=2] [ref=e106]
+      - paragraph [ref=e107]: 媛��� �� 媛먯냼�� �쒕룄 寃뚯씠�멸� �꾨땲��. �섎Ⅴ�뚮굹 �ㅼ뒪濡� 7�좎쓣 愿�留앹쑝濡� 泥섎━�쒕떎. �⑥� 959嫄댁쓽 留ㅻℓ �섏궗媛� 二쇰Ц 200嫄댁쑝濡�, �ㅼ떆 泥닿껐 143嫄댁쑝濡� 以꾩뼱�좊떎.
+      - figure "�� �� �④퀎�� �꾨��� �ш컻吏�吏� �딅뒗��. �ъ��� �뚯튂�낆씠 �섎Ⅴ�뚮굹 �ъ씠�닿낵 臾닿��섍쾶 �먯젅쨌�듭젅 留ㅻ룄瑜� �ｊ린 �뚮Ц��, 二쇰Ц 200嫄� 以� �쇰��� �� 959嫄댁뿉�� �ㅼ� �딆븯��. �④퀎 媛� 鍮꾩쑉�� �꾪솚�⑤줈 �쎌쑝硫� �� �쒕떎 �� 援녹씠 諛앺��먮뒗 �댁쑀�� �대윴 醫낅쪟�� 議곗슜�� �ㅻ룆�� �� �꾨줈�앺듃�먯꽌 媛��� �먯＜ �섏삩 吏��� 寃고븿�댁뿀湲� �뚮Ц�대떎." [ref=e108]:
+        - generic [ref=e109]:
+          - generic [ref=e110]: hold �� �됰룞 �놁쓬
+          - generic [ref=e112]: 留ㅻℓ �섏궗
+        - img "�좏샇 3260嫄� 以� hold媛� 2301嫄댁씠怨� 留ㅻℓ �섏궗媛� 959嫄댁씠硫�, �댄썑 二쇰Ц 200嫄닿낵 泥닿껐 143嫄댁쑝濡� 以꾩뼱�쒕뒗 �④퀎蹂� 異뺤냼" [ref=e114]:
+          - generic [ref=e115]: �좏샇 援ъ꽦 쨌 3,260
+          - generic [ref=e118]: hold 2,301
+          - generic [ref=e119]: "959"
+          - generic [ref=e120]: �④퀎蹂� 異뺤냼
+          - generic [ref=e122]: 留ㅻℓ �섏궗
+          - generic [ref=e123]: "959"
+          - generic [ref=e125]: 二쇰Ц
+          - generic [ref=e126]: "200"
+          - generic [ref=e128]: 泥닿껐
+          - generic [ref=e129]: "143"
+          - generic [ref=e130]: 二쇰Ц 200嫄� 以� 71.5% 泥닿껐 쨌 �섎㉧吏� 57嫄댁� 釉뚮줈而� 嫄곕� �먮뒗 留뚮즺
+    - generic [ref=e132]:
+      - generic [ref=e133]:
+        - generic [ref=e134]: "04"
+        - heading "釉뚮줈而ㅺ� 嫄곕��� 54嫄댁� �꾨왂 臾몄젣媛� �꾨땲�덈떎" [level=2] [ref=e135]
+      - paragraph [ref=e136]: �쒕룄 寃뚯씠�몃� �듦낵�� KIS源뚯� �꾨떖�� �� 嫄곕��� 54嫄댁쓣 �ъ쑀蹂꾨줈 �몃㈃, 46嫄�(85%)�� 怨꾩쥖 沅뚰븳 留뚮즺�� �� �쒓컙 �� 諛쒖넚�대떎. �먮떒�� �ㅽ뙣媛� �꾨땲�� �섍꼍怨� ���대컢�� 臾몄젣��.
+      - figure "媛��� 媛믩퉬�� ��ぉ�� 泥� 以꾩씠��. 8�� 4�쇰��� 紐⑥쓽�ъ옄 二쇰Ц 沅뚰븳�� 留뚮즺�먮뒗�� 議고쉶 API �� �뺤긽�대씪 �쒖뒪�쒖씠 硫�姨≫빐 蹂댁���. �쇱씪 由ы룷�멸� 嫄곕� �ъ쑀瑜� �몄슜�섏� �딄퀬 �덈뜕 �볦뿉 �섑쓽媛� �쒕윭�섏� �딆븯��. �댄썑 嫄곕� �꾩슜 �뚮┝怨� �ъ쑀 �몄슜�� �ｌ뿀��." [ref=e137]:
+        - img "釉뚮줈而� 嫄곕� �ъ쑀蹂� 嫄댁닔. 紐⑥쓽怨꾩쥖 二쇰Ц 遺덇� 21嫄�, �� �쒖옉 �� 18嫄�, �� 醫낅즺 �� 7嫄�, �붽퀬 �놁쓬 3嫄�, �곸뾽�� �꾨떂 3嫄�, �멸��⑥쐞 �ㅻ쪟 2嫄�" [ref=e138]:
+          - generic [ref=e139]: 紐⑥쓽怨꾩쥖 二쇰Ц 遺덇�
+          - generic [ref=e141]: "21"
+          - generic [ref=e142]: �� �쒖옉 ��
+          - generic [ref=e144]: "18"
+          - generic [ref=e145]: �� 醫낅즺 ��
+          - generic [ref=e147]: "7"
+          - generic [ref=e148]: �붽퀬 �놁쓬
+          - generic [ref=e150]: "3"
+          - generic [ref=e151]: �곸뾽�� �꾨떂
+          - generic [ref=e153]: "3"
+          - generic [ref=e154]: �멸��⑥쐞 �ㅻ쪟
+          - generic [ref=e156]: "2"
+        - group [ref=e158]:
+          - generic "�쒕줈 蹂닿린" [ref=e159] [cursor=pointer]
+    - contentinfo [ref=e160]:
+      - text: 異쒖쿂 ��
+      - code [ref=e161]: audit_log
+      - text: 쨌
+      - code [ref=e162]: orders
+      - text: 쨌
+      - code [ref=e163]: persona_decisions
+      - text: 쨌 �섎Ⅴ�뚮굹 �뚯쿂 濡쒓렇. 紐⑥쓽(paper) �댁슜 �꾩쟻, 2026-08-26 �ㅼ쟾 湲곗�. 湲덉븸�� �ｌ� �딆븯��. 踰붿＜�� 2�됱�
+      - code [ref=e164]: dataviz/scripts/validate_palette.js
+      - text: 濡� �쇱씠�맞룸떎�щ� 媛곴컖 寃�利앺뻽�� �� 紐낅룄 諛대뱶, 梨꾨룄 諛붾떏, �됯컖�댁긽 遺꾨━(protan �E 20 �댁긽), �쒕㈃ ��鍮� �� ��ぉ �듦낵. �ㅽ겕�� �쇱씠�몄쓽 諛섏쟾�� �꾨땲�� 蹂꾨룄濡� 戮묒� �됱씠��.
+  - status

@@ -122,6 +122,7 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
     numbers (REQ-035-2d). Keys mirror the ``{{ regime_* }}`` template variables.
     """
     # 손절 플로어는 volatility 패키지 소유 — 순환 임포트를 피해 지역 임포트.
+    from trading.kis.market import OVERHEAT_STAT_CLS
     from trading.strategy.volatility.thresholds import STOP_FLOOR_PCT
 
     adj = adjust_for_regime(regime)
@@ -151,6 +152,9 @@ def prompt_context(regime: str | None, risk_appetite: str | None) -> dict:
         # 손절을 제안해 왔다.
         "stop_floor_pct": abs(STOP_FLOOR_PCT),
         "confidence_floor": DECISION_CONFIDENCE_FLOOR,
+        # 2026-08-27: 프롬프트가 코드 상수를 본다. 종전엔 템플릿에 '55' 가
+        # 박혀 있었고 그 값이 틀렸다(55=신용가능, 단기과열은 59).
+        "overheat_stat_cls": OVERHEAT_STAT_CLS,
     }
 
 

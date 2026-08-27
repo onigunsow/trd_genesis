@@ -1,0 +1,149 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e89]: "갱신: 15시 14분 59초"
+  - alert [ref=e90]: SYSTEM HALTED — 매매 정지 중 (pre-order limit breach)
+  - status "시스템 상태" [ref=e91]:
+    - generic [ref=e94]: paper
+    - generic [ref=e95]:
+      - text: "Regime:"
+      - generic [ref=e96]: bull
+    - generic [ref=e97]:
+      - text: "Risk:"
+      - generic [ref=e98]: neutral
+    - generic [ref=e100]: LATE-CYCLE Lvmoderate
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [active] [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - heading "성과 개요" [level=2] [ref=e573]
+      - generic [ref=e574]:
+        - generic [ref=e575]:
+          - generic [ref=e576]: 총 자산
+          - generic [ref=e577]: 976만
+        - generic [ref=e578]:
+          - generic [ref=e579]: 일일 실현손익
+          - generic [ref=e580]: 4,434원
+        - generic [ref=e581]:
+          - generic [ref=e582]: 누적 실현손익
+          - generic [ref=e583]: "-10만"
+        - generic [ref=e584]:
+          - generic [ref=e585]: 수익률
+          - generic [ref=e586]: —
+          - generic [ref=e587]: CAGR
+        - generic [ref=e588]:
+          - generic [ref=e589]: MDD
+          - generic [ref=e590]: —
+          - generic [ref=e591]: 최대 낙폭
+        - generic [ref=e592]:
+          - generic [ref=e593]: 승률
+          - generic [ref=e594]: +30.00%
+          - generic [ref=e595]: 10건 완료
+        - generic [ref=e596]:
+          - generic [ref=e597]: 손익비
+          - generic [ref=e598]: "0.13"
+          - generic [ref=e599]: adj. profit factor
+        - generic [ref=e600]:
+          - generic [ref=e601]: Sharpe
+          - generic [ref=e602]: —
+        - generic [ref=e603]:
+          - generic [ref=e604]: Sortino
+          - generic [ref=e605]: "-7.67"
+        - generic [ref=e606]:
+          - generic [ref=e607]: KOSPI 알파
+          - generic [ref=e608]: "-9.62%"
+          - generic [ref=e609]: 전체기간 대비
+      - generic [ref=e610]:
+        - generic [ref=e611]:
+          - generic [ref=e612]: 엣지 스코어카드
+          - generic [ref=e613]:
+            - generic [ref=e614]:
+              - generic [ref=e615]:
+                - generic [ref=e616]: 판정
+                - generic [ref=e617]: NO-GO
+              - generic [ref=e618]:
+                - generic [ref=e619]: 등급
+                - generic [ref=e620]: WEAK
+              - generic [ref=e621]:
+                - generic [ref=e622]: 승률
+                - generic [ref=e623]: 30.0%
+              - generic [ref=e624]:
+                - generic [ref=e625]: CAGR
+                - generic [ref=e626]: —
+              - generic [ref=e627]:
+                - generic [ref=e628]: MDD
+                - generic [ref=e629]: —
+              - generic [ref=e630]:
+                - generic [ref=e631]: Sharpe
+                - generic [ref=e632]: —
+              - generic [ref=e633]:
+                - generic [ref=e634]: Profit Factor
+                - generic [ref=e635]: "0.13"
+              - generic [ref=e636]:
+                - generic [ref=e637]: 종료 거래 수
+                - generic [ref=e638]: "10"
+            - list [ref=e639]:
+              - listitem [ref=e640]: 슬리피지 보정 후 거래당 기대값 음성(-10,952원)
+              - listitem [ref=e641]: 슬리피지 보정 후 손익비 ≤1.0(0.13)
+        - generic [ref=e643]: 에쿼티 곡선
+        - generic [ref=e648]: 드로다운 곡선
+        - generic [ref=e652]:
+          - generic [ref=e653]: 일별 수익률 분포
+          - generic [ref=e658]:
+            - generic [ref=e659]:
+              - text: "양수:"
+              - strong [ref=e660]: 6일
+            - generic [ref=e661]:
+              - text: "음수:"
+              - strong [ref=e662]: 8일
+            - generic [ref=e663]:
+              - text: "평균:"
+              - strong [ref=e664]: "-0.091%"
+        - generic [ref=e666]: 누적 손익
+        - generic [ref=e670]:
+          - generic [ref=e671]: KOSPI 대비 알파
+          - generic [ref=e672]:
+            - generic [ref=e673]: "-9.62%"
+            - generic [ref=e674]: vs KOSPI (누적 알파)
+        - generic [ref=e675]:
+          - generic [ref=e676]: Confidence-수익 상관
+          - generic [ref=e681]:
+            - generic [ref=e682]:
+              - text: "Pearson:"
+              - strong [ref=e683]: "0.199"
+            - generic [ref=e684]:
+              - text: "Spearman:"
+              - strong [ref=e685]: "-0.053"
+            - generic [ref=e686]: (최근 30일)
+        - generic [ref=e687]:
+          - generic [ref=e688]: Postmortem 분류
+          - generic [ref=e689]:
+            - generic [ref=e690]:
+              - generic [ref=e691]: "TRUE_POSITIVE: 0"
+              - generic [ref=e692]: "FALSE_POSITIVE: 0"
+              - generic [ref=e693]: "REGIME_MISMATCH: 0"
+              - generic [ref=e694]: "MISSED: 200"
+              - generic [ref=e695]: 총 200건 / 30일
+            - generic [ref=e699]: 페르소나별 귀인

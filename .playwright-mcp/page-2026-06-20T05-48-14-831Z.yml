@@ -1,0 +1,55 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e89]: "갱신: 14시 48분 7초"
+  - alert [ref=e90]: SYSTEM HALTED — 매매 정지 중 (pre-order limit breach)
+  - status "시스템 상태" [ref=e91]:
+    - generic [ref=e94]: paper
+    - generic [ref=e95]:
+      - text: "Regime:"
+      - generic [ref=e96]: bull
+    - generic [ref=e97]:
+      - text: "Risk:"
+      - generic [ref=e98]: neutral
+    - generic [ref=e100]: LATE-CYCLE Lvmoderate
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [active] [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - heading "기간별 손익 추이" [level=2] [ref=e376]
+      - generic [ref=e377]:
+        - generic [ref=e379]:
+          - text: 전체기간 알파 (vs KOSPI)
+          - generic [ref=e380]: —
+          - generic [ref=e381]: "* 기간별 알파는 백엔드 미지원 → 전체기간 단일값만 표시"
+        - generic [ref=e382]:
+          - button "일별" [ref=e383] [cursor=pointer]
+          - button "주별" [ref=e384] [cursor=pointer]
+          - button "월별" [ref=e385] [cursor=pointer]
+          - generic [ref=e386]: "기간:"
+          - textbox "시작 날짜" [ref=e387]
+          - generic [ref=e388]: ~
+          - textbox "종료 날짜" [ref=e389]
+          - button "손익 CSV 내보내기" [ref=e390] [cursor=pointer]: CSV 내보내기

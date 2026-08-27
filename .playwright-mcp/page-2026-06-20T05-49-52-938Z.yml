@@ -1,0 +1,254 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e89]: "갱신: 14시 49분 47초"
+  - alert [ref=e90]: SYSTEM HALTED — 매매 정지 중 (pre-order limit breach)
+  - status "시스템 상태" [ref=e91]:
+    - generic [ref=e94]: paper
+    - generic [ref=e95]:
+      - text: "Regime:"
+      - generic [ref=e96]: bull
+    - generic [ref=e97]:
+      - text: "Risk:"
+      - generic [ref=e98]: neutral
+    - generic [ref=e100]: LATE-CYCLE Lvmoderate
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [active] [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - generic [ref=e445]:
+        - alert [ref=e446]: SYSTEM HALTED — pre-order limit breach
+        - generic [ref=e447]:
+          - generic [ref=e448]: 최신 사이클 파이프라인
+          - generic [ref=e449]:
+            - generic [ref=e450]:
+              - generic [ref=e451]:
+                - generic [ref=e452]: Macro
+                - generic [ref=e454]: macro
+                - generic [ref=e455]: 66.2s
+              - generic [ref=e456]: ›
+            - generic [ref=e457]:
+              - generic [ref=e459]: Micro
+              - generic [ref=e461]: ›
+            - generic [ref=e462]:
+              - generic [ref=e463]:
+                - generic [ref=e464]: 결정
+                - generic [ref=e466]: decision
+                - generic [ref=e467]: 78.6s
+              - generic [ref=e468]: ›
+            - generic [ref=e469]:
+              - generic [ref=e470]:
+                - generic [ref=e471]: 리스크
+                - generic [ref=e473]: HALT
+              - generic [ref=e474]: ›
+            - generic [ref=e475]:
+              - generic [ref=e476]:
+                - generic [ref=e477]: 포트폴리오
+                - generic [ref=e479]: LATE-CYCLE
+              - generic [ref=e480]: ›
+            - generic [ref=e483]: 사이징
+        - generic [ref=e485]:
+          - generic [ref=e486]: 결정 피드
+          - generic [ref=e487]:
+            - button "결정 상세 316140" [ref=e489] [cursor=pointer]:
+              - generic [ref=e490]: 2026. 6. 19. 15시 | decision | intraday
+              - text: BUY
+              - strong [ref=e491]: 우리금융지주 (316140)
+              - generic [ref=e492]: 15주
+              - generic [ref=e493]: 신뢰도 0.62
+            - button "결정 상세 316140" [ref=e495] [cursor=pointer]:
+              - generic [ref=e496]: 2026. 6. 19. 15시 | decision | intraday
+              - text: BUY
+              - strong [ref=e497]: 우리금융지주 (316140)
+              - generic [ref=e498]: 10주
+              - generic [ref=e499]: 신뢰도 0.60
+            - button "결정 상세 086790" [ref=e501] [cursor=pointer]:
+              - generic [ref=e502]: 2026. 6. 19. 15시 | decision | intraday
+              - text: BUY
+              - strong [ref=e503]: 하나금융지주 (086790)
+              - generic [ref=e504]: 3주
+              - generic [ref=e505]: 신뢰도 0.62
+            - button "결정 상세 316140" [ref=e507] [cursor=pointer]:
+              - generic [ref=e508]: 2026. 6. 19. 15시 | decision | intraday
+              - text: BUY
+              - strong [ref=e509]: 우리금융지주 (316140)
+              - generic [ref=e510]: 5주
+              - generic [ref=e511]: 신뢰도 0.58
+            - button "결정 상세 086790" [ref=e513] [cursor=pointer]:
+              - generic [ref=e514]: 2026. 6. 19. 15시 | decision | intraday
+              - text: BUY
+              - strong [ref=e515]: 하나금융지주 (086790)
+              - generic [ref=e516]: 3주
+              - generic [ref=e517]: 신뢰도 0.60
+            - button "결정 상세 086790" [ref=e519] [cursor=pointer]:
+              - generic [ref=e520]: 2026. 6. 19. 15시 | decision | intraday
+              - text: BUY
+              - strong [ref=e521]: 하나금융지주 (086790)
+              - generic [ref=e522]: 3주
+              - generic [ref=e523]: 신뢰도 0.60
+            - button "결정 상세 316140" [ref=e525] [cursor=pointer]:
+              - generic [ref=e526]: 2026. 6. 19. 14시 | decision | intraday
+              - text: BUY
+              - strong [ref=e527]: 우리금융지주 (316140)
+              - generic [ref=e528]: 15주
+              - generic [ref=e529]: 신뢰도 0.58
+            - button "결정 상세 086790" [ref=e531] [cursor=pointer]:
+              - generic [ref=e532]: 2026. 6. 19. 14시 | decision | intraday
+              - text: BUY
+              - strong [ref=e533]: 하나금융지주 (086790)
+              - generic [ref=e534]: 3주
+              - generic [ref=e535]: 신뢰도 0.58
+            - button "결정 상세 316140" [ref=e537] [cursor=pointer]:
+              - generic [ref=e538]: 2026. 6. 19. 14시 | decision | intraday
+              - text: BUY
+              - strong [ref=e539]: 우리금융지주 (316140)
+              - generic [ref=e540]: 15주
+              - generic [ref=e541]: 신뢰도 0.62
+            - button "결정 상세 000270" [ref=e543] [cursor=pointer]:
+              - generic [ref=e544]: 2026. 6. 19. 14시 | decision | intraday
+              - text: HOLD
+              - strong [ref=e545]: 기아 (000270)
+              - generic [ref=e546]: 0주
+              - generic [ref=e547]: 신뢰도 0.50
+            - button "결정 상세 086790" [ref=e549] [cursor=pointer]:
+              - generic [ref=e550]: 2026. 6. 19. 14시 | decision | intraday
+              - text: BUY
+              - strong [ref=e551]: 하나금융지주 (086790)
+              - generic [ref=e552]: 3주
+              - generic [ref=e553]: 신뢰도 0.60
+            - button "결정 상세 316140" [ref=e555] [cursor=pointer]:
+              - generic [ref=e556]: 2026. 6. 19. 14시 | decision | intraday
+              - text: BUY
+              - strong [ref=e557]: 우리금융지주 (316140)
+              - generic [ref=e558]: 10주
+              - generic [ref=e559]: 신뢰도 0.60
+            - button "결정 상세 086790" [ref=e561] [cursor=pointer]:
+              - generic [ref=e562]: 2026. 6. 19. 14시 | decision | intraday
+              - text: BUY
+              - strong [ref=e563]: 하나금융지주 (086790)
+              - generic [ref=e564]: 3주
+              - generic [ref=e565]: 신뢰도 0.60
+            - button "결정 상세 316140" [ref=e567] [cursor=pointer]:
+              - generic [ref=e568]: 2026. 6. 19. 13시 | decision | intraday
+              - text: BUY
+              - strong [ref=e569]: 우리금융지주 (316140)
+              - generic [ref=e570]: 10주
+              - generic [ref=e571]: 신뢰도 0.60
+            - button "결정 상세 086790" [ref=e573] [cursor=pointer]:
+              - generic [ref=e574]: 2026. 6. 19. 13시 | decision | intraday
+              - text: BUY
+              - strong [ref=e575]: 하나금융지주 (086790)
+              - generic [ref=e576]: 3주
+              - generic [ref=e577]: 신뢰도 0.62
+            - button "결정 상세 316140" [ref=e579] [cursor=pointer]:
+              - generic [ref=e580]: 2026. 6. 19. 13시 | decision | intraday
+              - text: BUY
+              - strong [ref=e581]: 우리금융지주 (316140)
+              - generic [ref=e582]: 10주
+              - generic [ref=e583]: 신뢰도 0.58
+            - button "결정 상세 086790" [ref=e585] [cursor=pointer]:
+              - generic [ref=e586]: 2026. 6. 19. 13시 | decision | intraday
+              - text: BUY
+              - strong [ref=e587]: 하나금융지주 (086790)
+              - generic [ref=e588]: 3주
+              - generic [ref=e589]: 신뢰도 0.62
+            - button "결정 상세 316140" [ref=e591] [cursor=pointer]:
+              - generic [ref=e592]: 2026. 6. 19. 13시 | decision | intraday
+              - text: BUY
+              - strong [ref=e593]: 우리금융지주 (316140)
+              - generic [ref=e594]: 7주
+              - generic [ref=e595]: 신뢰도 0.60
+            - button "결정 상세 316140" [ref=e597] [cursor=pointer]:
+              - generic [ref=e598]: 2026. 6. 19. 13시 | decision | intraday
+              - text: BUY
+              - strong [ref=e599]: 우리금융지주 (316140)
+              - generic [ref=e600]: 10주
+              - generic [ref=e601]: 신뢰도 0.60
+            - button "결정 상세 000270" [ref=e603] [cursor=pointer]:
+              - generic [ref=e604]: 2026. 6. 19. 12시 | decision | intraday
+              - text: HOLD
+              - strong [ref=e605]: 기아 (000270)
+              - generic [ref=e606]: 0주
+              - generic [ref=e607]: 신뢰도 0.50
+            - button "결정 상세 316140" [ref=e609] [cursor=pointer]:
+              - generic [ref=e610]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e611]: 우리금융지주 (316140)
+              - generic [ref=e612]: 10주
+              - generic [ref=e613]: 신뢰도 0.60
+            - button "결정 상세 086790" [ref=e615] [cursor=pointer]:
+              - generic [ref=e616]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e617]: 하나금융지주 (086790)
+              - generic [ref=e618]: 3주
+              - generic [ref=e619]: 신뢰도 0.64
+            - button "결정 상세 000270" [ref=e621] [cursor=pointer]:
+              - generic [ref=e622]: 2026. 6. 19. 12시 | decision | intraday
+              - text: HOLD
+              - strong [ref=e623]: 기아 (000270)
+              - generic [ref=e624]: 0주
+              - generic [ref=e625]: 신뢰도 0.45
+            - button "결정 상세 086790" [ref=e627] [cursor=pointer]:
+              - generic [ref=e628]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e629]: 하나금융지주 (086790)
+              - generic [ref=e630]: 3주
+              - generic [ref=e631]: 신뢰도 0.60
+            - button "결정 상세 316140" [ref=e633] [cursor=pointer]:
+              - generic [ref=e634]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e635]: 우리금융지주 (316140)
+              - generic [ref=e636]: 10주
+              - generic [ref=e637]: 신뢰도 0.62
+            - button "결정 상세 316140" [ref=e639] [cursor=pointer]:
+              - generic [ref=e640]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e641]: 우리금융지주 (316140)
+              - generic [ref=e642]: 5주
+              - generic [ref=e643]: 신뢰도 0.60
+            - button "결정 상세 086790" [ref=e645] [cursor=pointer]:
+              - generic [ref=e646]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e647]: 하나금융지주 (086790)
+              - generic [ref=e648]: 3주
+              - generic [ref=e649]: 신뢰도 0.62
+            - button "결정 상세 086790" [ref=e651] [cursor=pointer]:
+              - generic [ref=e652]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e653]: 하나금융지주 (086790)
+              - generic [ref=e654]: 2주
+              - generic [ref=e655]: 신뢰도 0.55
+            - button "결정 상세 316140" [ref=e657] [cursor=pointer]:
+              - generic [ref=e658]: 2026. 6. 19. 12시 | decision | intraday
+              - text: BUY
+              - strong [ref=e659]: 우리금융지주 (316140)
+              - generic [ref=e660]: 15주
+              - generic [ref=e661]: 신뢰도 0.58
+            - button "결정 상세 086790" [ref=e663] [cursor=pointer]:
+              - generic [ref=e664]: 2026. 6. 19. 11시 | decision | intraday
+              - text: BUY
+              - strong [ref=e665]: 하나금융지주 (086790)
+              - generic [ref=e666]: 2주
+              - generic [ref=e667]: 신뢰도 0.55

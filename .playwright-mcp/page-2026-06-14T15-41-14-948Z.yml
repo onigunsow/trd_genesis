@@ -1,0 +1,15 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]: Trading Dashboard
+  - generic [ref=e7]: 상태 로딩 중...
+  - tablist "대시보드 탭" [ref=e8]:
+    - tab "파이프라인" [selected] [ref=e9] [cursor=pointer]
+    - tab "자산 통계" [ref=e10] [cursor=pointer]
+    - tab "뉴스 인텔리전스" [ref=e11] [cursor=pointer]
+    - tab "포지션 / 주문" [ref=e12] [cursor=pointer]
+  - tabpanel [ref=e13]:
+    - generic [ref=e14]:
+      - generic [ref=e16]: 최신 사이클 파이프라인
+      - generic [ref=e17]:
+        - generic [ref=e18]: 결정 피드
+        - generic [ref=e19]: 결정 없음

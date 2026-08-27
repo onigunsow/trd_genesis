@@ -14,6 +14,8 @@ Coverage:
 
 from __future__ import annotations
 
+from trading.kis.market import OVERHEAT_STAT_CLS
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,11 +40,11 @@ class TestBuildMicroInputFiltersBlockedTickers:
         blocked_cache_payload = {
             "date": "2026-05-11",
             "blocked": {
-                "005930": {"reason": "단기과열 (stat_cls=55)", "stat_cls": "55"},
-                "000660": {"reason": "단기과열 (stat_cls=55)", "stat_cls": "55"},
-                "035420": {"reason": "단기과열 (stat_cls=55)", "stat_cls": "55"},
-                "035720": {"reason": "단기과열 (stat_cls=55)", "stat_cls": "55"},
-                "373220": {"reason": "단기과열 (stat_cls=55)", "stat_cls": "55"},
+                "005930": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})", "stat_cls": OVERHEAT_STAT_CLS},
+                "000660": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})", "stat_cls": OVERHEAT_STAT_CLS},
+                "035420": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})", "stat_cls": OVERHEAT_STAT_CLS},
+                "035720": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})", "stat_cls": OVERHEAT_STAT_CLS},
+                "373220": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})", "stat_cls": OVERHEAT_STAT_CLS},
             },
             "blocked_today_by_safety": [],
         }
@@ -263,8 +265,8 @@ class TestAssembleMicroInputIncludesBlockedTickers:
         from trading.personas import context as ctx
 
         blocked = {
-            "005930": {"reason": "단기과열 (stat_cls=55)"},
-            "000660": {"reason": "단기과열 (stat_cls=55)"},
+            "005930": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})"},
+            "000660": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})"},
         }
 
         # Stub DB-facing helpers so the test stays pure (no Postgres).
@@ -354,8 +356,8 @@ class TestMicroJinjaRendersBlockedBlock:
     def test_micro_prompt_renders_blocked_block(self, jinja_env):
         template = jinja_env.get_template("micro.jinja")
         blocked = {
-            "005930": {"reason": "단기과열 (stat_cls=55)"},
-            "000660": {"reason": "단기과열 (stat_cls=55)"},
+            "005930": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})"},
+            "000660": {"reason": f"단기과열 (stat_cls={OVERHEAT_STAT_CLS})"},
         }
         rendered = template.render(**_base_micro_context(blocked_tickers=blocked))
 

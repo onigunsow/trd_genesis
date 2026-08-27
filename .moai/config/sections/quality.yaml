@@ -1,0 +1,54 @@
+constitution:
+    development_mode: tdd
+    enforce_quality: true
+    test_coverage_target: 85
+    ddd_settings:
+        require_existing_tests: true
+        characterization_tests: true
+        behavior_snapshots: true
+        max_transformation_size: small
+        preserve_before_improve: true
+    tdd_settings:
+        red_green_refactor: true
+        test_first_required: true
+        min_coverage_per_commit: 80
+        mutation_testing_enabled: false
+    coverage_exemptions:
+        enabled: false
+        require_justification: true
+        max_exempt_percentage: 5
+    test_quality:
+        specification_based: false
+        meaningful_assertions: false
+        avoid_implementation_coupling: false
+        mutation_testing_enabled: false
+    lsp_quality_gates:
+        enabled: false
+        plan:
+            require_baseline: false
+        run:
+            max_errors: 0
+            max_type_errors: 0
+            max_lint_errors: 0
+            allow_regression: false
+        sync:
+            max_errors: 0
+            max_warnings: 0
+            require_clean_lsp: false
+        cache_ttl_seconds: 0
+        timeout_seconds: 0
+    principles:
+        simplicity:
+            max_parallel_tasks: 0
+    lsp_integration:
+        trust5_integration:
+            tested: []
+            readable: []
+            understandable: []
+            secured: []
+            trackable: []
+        diagnostic_sources: []
+        regression_detection:
+            error_increase_threshold: 0
+            warning_increase_threshold: 0
+            type_error_increase_threshold: 0

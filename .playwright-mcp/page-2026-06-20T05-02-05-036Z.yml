@@ -1,0 +1,119 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e7]: "갱신: 14시 2분 4초"
+  - alert [ref=e8]: SYSTEM HALTED — 매매 정지 중 (pre-order limit breach)
+  - status "시스템 상태" [ref=e9]:
+    - generic [ref=e12]: paper
+    - generic [ref=e13]:
+      - text: "Regime:"
+      - generic [ref=e14]: bull
+    - generic [ref=e15]:
+      - text: "Risk:"
+      - generic [ref=e16]: neutral
+    - generic [ref=e18]: LATE-CYCLE Lvmoderate
+  - generic [ref=e19]:
+    - navigation "메인 네비게이션" [ref=e20]:
+      - generic [ref=e21]:
+        - button "◈ 개요" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e26] [cursor=pointer]:
+          - generic [ref=e27]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e28] [cursor=pointer]:
+          - generic [ref=e29]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e30] [cursor=pointer]:
+          - generic [ref=e31]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e32] [cursor=pointer]:
+          - generic [ref=e33]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e34] [cursor=pointer]:
+          - generic [ref=e35]: ☰
+          - text: 포지션/주문
+    - main [ref=e36]:
+      - heading "성과 개요" [level=2] [ref=e37]
+      - generic [ref=e38]:
+        - generic [ref=e39]:
+          - generic [ref=e40]: 총 자산
+          - generic [ref=e41]: 976만
+        - generic [ref=e42]:
+          - generic [ref=e43]: 일일 실현손익
+          - generic [ref=e44]: —
+        - generic [ref=e45]:
+          - generic [ref=e46]: 누적 실현손익
+          - generic [ref=e47]: —
+        - generic [ref=e48]:
+          - generic [ref=e49]: 수익률
+          - generic [ref=e50]: —
+          - generic [ref=e51]: CAGR
+        - generic [ref=e52]:
+          - generic [ref=e53]: MDD
+          - generic [ref=e54]: —
+          - generic [ref=e55]: 최대 낙폭
+        - generic [ref=e56]:
+          - generic [ref=e57]: 승률
+          - generic [ref=e58]: —
+          - generic [ref=e59]: 0건 완료
+        - generic [ref=e60]:
+          - generic [ref=e61]: 손익비
+          - generic [ref=e62]: —
+          - generic [ref=e63]: adj. profit factor
+        - generic [ref=e64]:
+          - generic [ref=e65]: Sharpe
+          - generic [ref=e66]: —
+        - generic [ref=e67]:
+          - generic [ref=e68]: Sortino
+          - generic [ref=e69]: —
+        - generic [ref=e70]:
+          - generic [ref=e71]: KOSPI 알파
+          - generic [ref=e72]: —
+          - generic [ref=e73]: 전체기간 대비
+      - generic [ref=e74]:
+        - generic [ref=e75]:
+          - generic [ref=e76]: 엣지 스코어카드
+          - generic [ref=e77]: 로딩 중...
+        - generic [ref=e79]: 에쿼티 곡선
+        - generic [ref=e83]: 드로다운 곡선
+        - generic [ref=e86]:
+          - generic [ref=e87]: 일별 수익률 분포
+          - generic [ref=e91]:
+            - generic [ref=e92]:
+              - text: "양수:"
+              - strong [ref=e93]: 6일
+            - generic [ref=e94]:
+              - text: "음수:"
+              - strong [ref=e95]: 8일
+            - generic [ref=e96]:
+              - text: "평균:"
+              - strong [ref=e97]: "-0.091%"
+        - generic [ref=e99]: 누적 손익
+        - generic [ref=e102]:
+          - generic [ref=e103]: KOSPI 대비 알파
+          - generic [ref=e104]: 로딩 중...
+        - generic [ref=e105]:
+          - generic [ref=e106]: Confidence-수익 상관
+          - generic [ref=e110]:
+            - generic [ref=e111]:
+              - text: "Pearson:"
+              - strong [ref=e112]: "0.199"
+            - generic [ref=e113]:
+              - text: "Spearman:"
+              - strong [ref=e114]: "-0.053"
+            - generic [ref=e115]: (최근 30일)
+        - generic [ref=e116]:
+          - generic [ref=e117]: Postmortem 분류
+          - generic [ref=e118]:
+            - generic [ref=e119]:
+              - generic [ref=e120]: "TRUE_POSITIVE: 0"
+              - generic [ref=e121]: "FALSE_POSITIVE: 0"
+              - generic [ref=e122]: "REGIME_MISMATCH: 0"
+              - generic [ref=e123]: "MISSED: 200"
+              - generic [ref=e124]: 총 200건 / 30일
+            - generic [ref=e127]: 페르소나별 귀인

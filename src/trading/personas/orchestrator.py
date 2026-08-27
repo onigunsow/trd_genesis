@@ -214,7 +214,7 @@ def _split_blocked(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Partition a blocked-ticker dict into ``(hard_blocked, overheated)``.
 
-    Entries with ``stat_cls == "55"`` (단기과열) are overheated (soft); every
+    Entries with ``stat_cls == OVERHEAT_STAT_CLS`` (단기과열) are overheated (soft); every
     other entry — including those missing ``stat_cls`` (e.g. intraday
     safety-recorded blocks) — is hard-blocked (conservative default).
     """
@@ -541,8 +541,8 @@ def _build_micro_input(today: str, macro_summary: str | None) -> dict[str, Any]:
     screened = load_screened_tickers()
     blocked_cache = get_blocked_tickers()
     blocked_tickers = blocked_cache.get("blocked", {}) or {}
-    # SPEC-026: only HARD blocks (51~54 / unknown) are excluded from the
-    # watchlist. 단기과열(55) is kept so the micro persona can still consider it
+    # SPEC-026: only HARD blocks (관리/투자경고/거래정지 등) are excluded from the
+    # watchlist. 단기과열 is kept so the micro persona can still consider it
     # (the prompt marks it as a reduce-weight caution; execution then size-caps
     # and forces a limit order).
     hard_blocked, _overheated = _split_blocked(blocked_tickers)
@@ -556,6 +556,9 @@ def _build_micro_input(today: str, macro_summary: str | None) -> dict[str, Any]:
         macro_summary=macro_summary,
         watchlist=expanded_watchlist,
         blocked_tickers=blocked_tickers,
+        # 2026-08-27: 템플릿에 '55' 가 박혀 있었고 그 값이 틀렸다(55=신용가능,
+        # 단기과열은 59). 코드 상수를 주입해 한 곳에서만 정의되게 한다.
+        overheat_stat_cls=OVERHEAT_STAT_CLS,
     )
 
 

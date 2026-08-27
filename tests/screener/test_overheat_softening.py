@@ -20,6 +20,8 @@ penalty/exclusion logic from DB/KIS integration.
 
 from __future__ import annotations
 
+from trading.kis.market import OVERHEAT_STAT_CLS
+
 import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -140,8 +142,10 @@ class TestStatClsClassification:
     def test_overheated_only_55(self):
         from trading.kis.market import OVERHEAT_STAT_CLS, is_overheated
 
-        assert OVERHEAT_STAT_CLS == "55"
-        assert is_overheated("55") is True
+        # 2026-08-27: 종전엔 리터럴 "55" 를 못 박아 틀린 값을 고정했다.
+        # 값이 아니라 의미를 고정한다 — 상수가 곧 과열 코드여야 한다.
+        assert is_overheated(OVERHEAT_STAT_CLS) is True
+        assert is_overheated(OVERHEAT_STAT_CLS) is True
         for code in ("00", "51", "52", "53", "54", ""):
             assert is_overheated(code) is False
 
@@ -151,7 +155,7 @@ class TestStatClsClassification:
         for code in ("51", "52", "53", "54"):
             assert is_hard_block(code) is True
         assert is_hard_block("00") is False  # normal
-        assert is_hard_block("55") is False  # overheated → soft, not hard
+        assert is_hard_block(OVERHEAT_STAT_CLS) is False  # overheated → soft, not hard
         # Unknown / missing codes default to HARD block (conservative).
         assert is_hard_block("") is True
         assert is_hard_block("99") is True
@@ -204,13 +208,13 @@ class TestLoadBlockedMap:
         from trading.screener import daily_screen as mod
 
         path = _write_blocked(tmp_path, {
-            "005930": {"stat_cls": "55", "reason": "단기과열"},
+            "005930": {"stat_cls": OVERHEAT_STAT_CLS, "reason": "단기과열"},
             "000660": {"stat_cls": "51", "reason": "관리"},
         })
         monkeypatch.setattr(mod, "BLOCKED_FILE", path)
 
         m = mod._load_blocked_map()
-        assert m == {"005930": "55", "000660": "51"}
+        assert m == {"005930": OVERHEAT_STAT_CLS, "000660": "51"}
 
     def test_missing_stat_cls_becomes_empty_string(self, tmp_path, monkeypatch):
         from trading.screener import daily_screen as mod
@@ -226,17 +230,17 @@ class TestLoadBlockedMap:
         from trading.screener import daily_screen as mod
 
         path = _write_blocked(
-            tmp_path, {"005930": {"stat_cls": "55"}}, day_offset=1
+            tmp_path, {"005930": {"stat_cls": OVERHEAT_STAT_CLS}}, day_offset=1
         )
         monkeypatch.setattr(mod, "BLOCKED_FILE", path)
 
-        assert mod._load_blocked_map() == {"005930": "55"}
+        assert mod._load_blocked_map() == {"005930": OVERHEAT_STAT_CLS}
 
     def test_two_days_old_is_stale(self, tmp_path, monkeypatch, caplog):
         from trading.screener import daily_screen as mod
 
         path = _write_blocked(
-            tmp_path, {"005930": {"stat_cls": "55"}}, day_offset=2
+            tmp_path, {"005930": {"stat_cls": OVERHEAT_STAT_CLS}}, day_offset=2
         )
         monkeypatch.setattr(mod, "BLOCKED_FILE", path)
 
@@ -254,7 +258,7 @@ class TestRunSoftensOverheat:
         from trading.screener import daily_screen as mod
 
         universe = ["005930", "000660"]  # 005930 overheated(55), 000660 normal
-        path = _write_blocked(tmp_path, {"005930": {"stat_cls": "55"}})
+        path = _write_blocked(tmp_path, {"005930": {"stat_cls": OVERHEAT_STAT_CLS}})
 
         result = _run_with(mod, universe, path, tmp_path)
 

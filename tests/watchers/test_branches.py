@@ -10,6 +10,8 @@ in any sub-source degrade gracefully without crashing the scheduler.
 
 from __future__ import annotations
 
+from trading.kis.market import OVERHEAT_STAT_CLS
+
 from unittest.mock import MagicMock, patch
 
 
@@ -134,7 +136,7 @@ class TestBlockedReleaseHelpers:
         # Redirect project_root() so we don't pollute the real data/ dir.
         monkeypatch.setattr("trading.config.project_root", lambda: tmp_path)
 
-        previous = {"055550": {"stat_cls": "55", "reason": "단기과열"}}
+        previous = {"055550": {"stat_cls": OVERHEAT_STAT_CLS, "reason": "단기과열"}}
         current_quotes = {
             "055550": {"stat_cls": "55", "is_normal": False},
         }
@@ -157,7 +159,7 @@ class TestBlockedReleaseHelpers:
         """When KIS quote is unavailable, keep prior blocked state."""
         from trading.watchers import blocked_release
 
-        previous = {"055550": {"stat_cls": "55", "reason": "단기과열"}}
+        previous = {"055550": {"stat_cls": OVERHEAT_STAT_CLS, "reason": "단기과열"}}
         with (
             patch.object(blocked_release, "_load_previous_blocked", return_value=previous),
             patch.object(blocked_release, "_get_current_stat_cls", return_value=None),

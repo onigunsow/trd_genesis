@@ -9,6 +9,8 @@ the orchestrator can size-cap it and force a limit order (single-price auction).
 
 from __future__ import annotations
 
+from trading.kis.market import NORMAL_STAT_CLS, OVERHEAT_STAT_CLS
+
 from typing import Any
 from unittest.mock import patch
 
@@ -20,7 +22,7 @@ def _quote(stat_cls: str) -> dict[str, Any]:
         "ticker": "005930",
         "price": 70_000,
         "stat_cls": stat_cls,
-        "is_normal": stat_cls == "00",
+        "is_normal": stat_cls in NORMAL_STAT_CLS,
         "near_upper_limit": False,
         "near_lower_limit": False,
         "upper_limit": 91_000,
@@ -48,8 +50,8 @@ def _check(stat_cls: str, side: str = "buy"):
 
 
 class TestOverheatExecutionGate:
-    def test_overheated_55_allowed_and_flagged(self):
-        res = _check("55")
+    def test_overheated_allowed_and_flagged(self):
+        res = _check(OVERHEAT_STAT_CLS)
         assert res.passed is True, "단기과열(55) must NOT hard-block"
         assert res.overheated is True
         assert not res.blockers

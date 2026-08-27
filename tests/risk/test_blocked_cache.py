@@ -14,16 +14,19 @@ Coverage:
 
 from __future__ import annotations
 
+from trading.kis.market import OVERHEAT_STAT_CLS, PLAIN_STAT_CLS
+
 from unittest.mock import MagicMock, patch
 
 
 def _fake_quote_normal(ticker: str) -> dict[str, object]:
     """KIS current_price stub for a normal (tradeable) ticker."""
-    return {"is_normal": True, "stat_cls": "00", "price": 50_000}
+    return {"is_normal": True, "stat_cls": PLAIN_STAT_CLS, "price": 50_000}
 
 
-def _fake_quote_blocked(ticker: str, stat_cls: str = "55") -> dict[str, object]:
+def _fake_quote_blocked(ticker: str, stat_cls: str | None = None) -> dict[str, object]:
     """KIS current_price stub for a blocked (단기과열) ticker."""
+    stat_cls = stat_cls or OVERHEAT_STAT_CLS
     return {"is_normal": False, "stat_cls": stat_cls, "price": 50_000}
 
 
@@ -95,7 +98,7 @@ class TestRefreshBlockedUsesUniverse:
         def fake_current_price(client, ticker: str):
             # Today's reality: 055550 is 단기과열, others normal.
             if ticker == "055550":
-                return _fake_quote_blocked(ticker, stat_cls="55")
+                return _fake_quote_blocked(ticker, stat_cls=OVERHEAT_STAT_CLS)
             return _fake_quote_normal(ticker)
 
         cache_file = tmp_path / "blocked_tickers.json"

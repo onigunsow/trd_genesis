@@ -369,6 +369,14 @@ def check_pre_order(
 
     # 2b. SPEC-040 M4: 단기과열 repeat-buy block + no averaging down on a loss.
     # Buy-only — a SELL is never subject to these gates (exits always allowed).
+    #
+    # 2026-08-27: 이 두 가드는 stat_cls 표가 틀린 동안(55 를 단기과열로 오분류)
+    # 사실상 전 매수에 적용돼 왔다 — LIMIT_BREACH 329건 중 291건(88퍼센트)이 여기서
+    # 나왔다. 표를 고치면 설계 의도대로 진짜 단기과열(59) 에만 걸린다.
+    # 전 종목 적용은 설계가 아니라 버그의 부작용이었으므로 유지하지 않는다
+    # (test_non_overheated_repeat_buy_not_blocked_by_overheat_rule 이 의도를 명시한다).
+    # 일반 종목에도 이런 가드가 필요한지는 별도 판단 — 실측상 차단된 매수는
+    # -1.46퍼센트로 체결분(-1.26퍼센트)과 비슷해 효과는 중립에 가까웠다.
     if side == "buy" and overheated:
         if buy_count_today(ticker) >= _OVERHEAT_MAX_BUYS_PER_DAY:
             chk.breaches.append(

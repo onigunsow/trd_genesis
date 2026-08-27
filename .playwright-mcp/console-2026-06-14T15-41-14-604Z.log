@@ -1,0 +1,60 @@
+[     300ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8777/favicon.ico:0
+[     313ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   10299ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   18329ms] [ERROR] TypeError: Cannot convert undefined or null to object
+    at Object.entries (<anonymous>)
+    at Fie (http://localhost:8777/static/assets/index-BMq1BZyB.js:100:98237)
+    at px (http://localhost:8777/static/assets/index-BMq1BZyB.js:38:16998)
+    at Ck (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:44030)
+    at wk (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:39766)
+    at OF (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:39694)
+    at jd (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:39547)
+    at U_ (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:35914)
+    at _k (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:34865)
+    at x (http://localhost:8777/static/assets/index-BMq1BZyB.js:25:1554) @ http://localhost:8777/static/assets/index-BMq1BZyB.js:39
+[   18329ms] [ERROR] [ErrorBoundary] 대시보드 TypeError: Cannot convert undefined or null to object
+    at Object.entries (<anonymous>)
+    at Fie (http://localhost:8777/static/assets/index-BMq1BZyB.js:100:98237)
+    at px (http://localhost:8777/static/assets/index-BMq1BZyB.js:38:16998)
+    at Ck (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:44030)
+    at wk (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:39766)
+    at OF (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:39694)
+    at jd (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:39547)
+    at U_ (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:35914)
+    at _k (http://localhost:8777/static/assets/index-BMq1BZyB.js:40:34865)
+    at x (http://localhost:8777/static/assets/index-BMq1BZyB.js:25:1554) {componentStack: 
+    at Fie (http://localhost:8777/static/assets/i…:8777/static/assets/index-BMq1BZyB.js:100:117702)} @ http://localhost:8777/static/assets/index-BMq1BZyB.js:99
+[   30793ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   40785ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   50789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   60791ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   70788ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   80789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[   90790ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  100790ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  110786ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  120788ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  130787ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  140789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  150789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  160789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  170789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  180785ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  190793ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  200788ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  210789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  220798ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  230788ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  240788ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  250789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  260786ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  270789ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  280787ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0
+[  290777ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/status:0
+[  293370ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/pipeline:0
+[  293371ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/decisions?limit=30:0
+[  300776ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/status:0
+[  303370ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/pipeline:0
+[  303370ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/decisions?limit=30:0
+[  310775ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8777/api/status:0
+[  320792ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:8777/api/status:0

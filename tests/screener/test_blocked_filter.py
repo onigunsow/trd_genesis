@@ -19,6 +19,8 @@ the filter contract — they do not validate KIS or pykrx integration.
 
 from __future__ import annotations
 
+from trading.kis.market import OVERHEAT_STAT_CLS
+
 import json
 from contextlib import contextmanager
 from datetime import date, timedelta
@@ -128,8 +130,8 @@ class TestLoadBlockedSet:
                 {
                     "date": mod._today_kst_iso(),
                     "blocked": {
-                        "005930": {"stat_cls": "55", "reason": "단기과열"},
-                        "000660": {"stat_cls": "55", "reason": "단기과열"},
+                        "005930": {"stat_cls": OVERHEAT_STAT_CLS, "reason": "단기과열"},
+                        "000660": {"stat_cls": OVERHEAT_STAT_CLS, "reason": "단기과열"},
                     },
                 }
             )

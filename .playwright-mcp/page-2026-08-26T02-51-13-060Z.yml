@@ -1,0 +1,135 @@
+- generic [active] [ref=f5e1]:
+  - generic [ref=f5e2]:
+    - banner [ref=f5e3]:
+      - generic [ref=f5e4]: 실측 · 모의 운용 누적 · 2026-08-26 오전 기준
+      - heading "제안, 거부, 체결" [level=1] [ref=f5e5]
+      - paragraph [ref=f5e6]: LLM이 3,260건을 제안했고, 코드가 329번 막았고, 143건이 체결됐다. 그 사이에서 무슨 일이 있었는지를 숫자로만 말한다.
+    - generic [ref=f5e7]:
+      - generic [ref=f5e8]:
+        - generic [ref=f5e9]: 누적 신호
+        - generic [ref=f5e10]: 3,260
+        - generic [ref=f5e11]: 그중 hold 2,301건 — 7할이 관망
+      - generic [ref=f5e12]:
+        - generic [ref=f5e13]: 매매 의사
+        - generic [ref=f5e14]: "959"
+        - generic [ref=f5e15]: 매수 933 · 매도 26
+      - generic [ref=f5e16]:
+        - generic [ref=f5e17]: 한도 차단
+        - generic [ref=f5e18]: "329"
+        - generic [ref=f5e19]: 주문 자체가 나가지 않음
+      - generic [ref=f5e20]:
+        - generic [ref=f5e21]: 체결
+        - generic [ref=f5e22]: "143"
+        - generic [ref=f5e23]: 주문 200건 중
+    - generic [ref=f5e24]:
+      - generic [ref=f5e25]:
+        - generic [ref=f5e26]: "01"
+        - heading "파이프라인은 한 주 동안 절반이 죽어 있었다" [level=2] [ref=f5e27]
+      - paragraph [ref=f5e28]: LLM 호출 실패는 조용하다. 사이클이 통째로 사라져도 시장은 그대로 흘러가고 15분 뒤 새 사이클이 뜨기 때문에, 로그를 세어보기 전까지는 정상으로 보인다. 8월 18–21일 실패율은 39%에서 65%까지 올랐다.
+      - figure [ref=f5e29]:
+        - generic [ref=f5e30]:
+          - generic [ref=f5e31]: 성공
+          - generic [ref=f5e33]: 실패
+          - generic [ref=f5e35]: 막대 높이 = 그날의 페르소나 호출 수
+        - img "거래일별 페르소나 호출 성공과 실패 누적 막대그래프. 8월 18일부터 21일까지 실패가 급증해 21일에는 40건 중 26건이 실패했고, 모델 고정과 도구 차단 두 수정 이후 8월 25일과 26일에는 실패가 0이 되었다" [ref=f5e36]:
+          - generic [ref=f5e37]: "90"
+          - generic [ref=f5e38]: "60"
+          - generic [ref=f5e39]: "30"
+          - generic [ref=f5e40]: "0"
+          - generic [ref=f5e42]: 08-13
+          - generic [ref=f5e44]: 08-14
+          - generic [ref=f5e47]: 08-18
+          - generic [ref=f5e48]: "34"
+          - generic [ref=f5e51]: 08-19
+          - generic [ref=f5e52]: "32"
+          - generic [ref=f5e55]: 08-20
+          - generic [ref=f5e56]: "26"
+          - generic [ref=f5e59]: 08-21
+          - generic [ref=f5e60]: "26"
+          - generic [ref=f5e63]: 08-24
+          - generic [ref=f5e64]: "2"
+          - generic [ref=f5e66]: 08-25
+          - generic [ref=f5e68]: 08-26
+          - generic [ref=f5e69]: 진행 중
+          - generic [ref=f5e70]: 08-23 모델 고정 →
+          - generic [ref=f5e71]: ← 08-24 저녁 도구 차단
+          - generic [ref=f5e72]: 쿼터 경쟁 구간 — 매매 시스템이 운영자 대화 세션과 같은 사용량 한도를 두고 다퉜다
+        - generic [ref=f5e73]:
+          - text: 두 수정이 순서대로 들었다. 모델 고정이 쿼터 경쟁을 끊어 실패율을 65%에서 2.5%로 내렸고, 그러자 가려져 있던 두 번째 원인이 드러났다 — 모델이 도구를 쓰려 하면 그것이 두 번째 턴이 되어
+          - code [ref=f5e74]: "--max-turns 1"
+          - text: 에 걸렸다. 도구 차단 이후 이틀간 실패 0.
+        - group [ref=f5e75]:
+          - generic "표로 보기" [ref=f5e76] [cursor=pointer]
+    - generic [ref=f5e77]:
+      - generic [ref=f5e78]:
+        - generic [ref=f5e79]: "02"
+        - heading "차단의 9할은 같은 종목을 또 사겠다는 제안이었다" [level=2] [ref=f5e80]
+      - paragraph [ref=f5e81]: 한도 게이트가 막은 329건의 사유는 고르게 퍼져 있지 않다. repeat_buy와 avg_down 두 게이트가 291건, 전체의 88%다. 둘 다 단기과열 종목에만 걸리는 규칙이다.
+      - figure "이 분포 자체가 결함의 흔적이었다. 프롬프트는 \"단기과열 종목은 당일 1회만 통과한다\"고 규칙을 말하면서 어느 종목을 이미 샀는지는 알려주지 않았다 — 페르소나는 적용할 데이터 없이 규칙만 받은 셈이라 매 사이클 같은 종목을 다시 제안했다. 8월 24일에 당일 매수 이력을 프롬프트에 주입했다." [ref=f5e82]:
+        - img "한도 게이트별 차단 건수 가로 막대그래프. repeat_buy 177건, avg_down 114건, reentry_cooldown 32건, daily_loss 3건, daily_count 3건" [ref=f5e83]:
+          - generic [ref=f5e84]: repeat_buy
+          - generic [ref=f5e86]: "177"
+          - generic [ref=f5e87]: avg_down
+          - generic [ref=f5e89]: "114"
+          - generic [ref=f5e90]: reentry_cooldown
+          - generic [ref=f5e92]: "32"
+          - generic [ref=f5e93]: daily_loss
+          - generic [ref=f5e95]: "3"
+          - generic [ref=f5e96]: daily_count
+          - generic [ref=f5e98]: "3"
+          - generic [ref=f5e99]: 단기과열 관련 두 게이트만 291건 — 나머지 세 게이트를 전부 합쳐도 38건
+        - group [ref=f5e101]:
+          - generic "표로 보기" [ref=f5e102] [cursor=pointer]
+    - generic [ref=f5e103]:
+      - generic [ref=f5e104]:
+        - generic [ref=f5e105]: "03"
+        - heading "3,260건이 143건으로 좁아지는 길" [level=2] [ref=f5e106]
+      - paragraph [ref=f5e107]: 가장 큰 감소는 한도 게이트가 아니다. 페르소나 스스로 7할을 관망으로 처리한다. 남은 959건의 매매 의사가 주문 200건으로, 다시 체결 143건으로 줄어든다.
+      - figure "이 세 단계는 엄밀히 포개지지 않는다. 포지션 워치독이 페르소나 사이클과 무관하게 손절·익절 매도를 넣기 때문에, 주문 200건 중 일부는 위 959건에서 오지 않았다. 단계 간 비율을 전환율로 읽으면 안 된다 — 굳이 밝혀두는 이유는 이런 종류의 조용한 오독이 이 프로젝트에서 가장 자주 나온 지표 결함이었기 때문이다." [ref=f5e108]:
+        - generic [ref=f5e109]:
+          - generic [ref=f5e110]: hold — 행동 없음
+          - generic [ref=f5e112]: 매매 의사
+        - img "신호 3260건 중 hold가 2301건이고 매매 의사가 959건이며, 이후 주문 200건과 체결 143건으로 줄어드는 단계별 축소" [ref=f5e114]:
+          - generic [ref=f5e115]: 신호 구성 · 3,260
+          - generic [ref=f5e118]: hold 2,301
+          - generic [ref=f5e119]: "959"
+          - generic [ref=f5e120]: 단계별 축소
+          - generic [ref=f5e122]: 매매 의사
+          - generic [ref=f5e123]: "959"
+          - generic [ref=f5e125]: 주문
+          - generic [ref=f5e126]: "200"
+          - generic [ref=f5e128]: 체결
+          - generic [ref=f5e129]: "143"
+          - generic [ref=f5e130]: 주문 200건 중 71.5% 체결 · 나머지 57건은 브로커 거부 또는 만료
+    - generic [ref=f5e132]:
+      - generic [ref=f5e133]:
+        - generic [ref=f5e134]: "04"
+        - heading "브로커가 거부한 54건은 전략 문제가 아니었다" [level=2] [ref=f5e135]
+      - paragraph [ref=f5e136]: 한도 게이트를 통과해 KIS까지 도달한 뒤 거부된 54건을 사유별로 세면, 46건(85%)이 계좌 권한 만료와 장 시간 외 발송이다. 판단의 실패가 아니라 환경과 타이밍의 문제다.
+      - figure "가장 값비싼 항목은 첫 줄이다. 8월 4일부터 모의투자 주문 권한이 만료됐는데 조회 API 는 정상이라 시스템이 멀쩡해 보였다. 일일 리포트가 거부 사유를 인용하지 않고 있던 탓에 나흘간 드러나지 않았다. 이후 거부 전용 알림과 사유 인용을 넣었다." [ref=f5e137]:
+        - img "브로커 거부 사유별 건수. 모의계좌 주문 불가 21건, 장 시작 전 18건, 장 종료 후 7건, 잔고 없음 3건, 영업일 아님 3건, 호가단위 오류 2건" [ref=f5e138]:
+          - generic [ref=f5e139]: 모의계좌 주문 불가
+          - generic [ref=f5e141]: "21"
+          - generic [ref=f5e142]: 장 시작 전
+          - generic [ref=f5e144]: "18"
+          - generic [ref=f5e145]: 장 종료 후
+          - generic [ref=f5e147]: "7"
+          - generic [ref=f5e148]: 잔고 없음
+          - generic [ref=f5e150]: "3"
+          - generic [ref=f5e151]: 영업일 아님
+          - generic [ref=f5e153]: "3"
+          - generic [ref=f5e154]: 호가단위 오류
+          - generic [ref=f5e156]: "2"
+        - group [ref=f5e158]:
+          - generic "표로 보기" [ref=f5e159] [cursor=pointer]
+    - contentinfo [ref=f5e160]:
+      - text: 출처 —
+      - code [ref=f5e161]: audit_log
+      - text: ·
+      - code [ref=f5e162]: orders
+      - text: ·
+      - code [ref=f5e163]: persona_decisions
+      - text: · 페르소나 워처 로그. 모의(paper) 운용 누적, 2026-08-26 오전 기준. 금액은 싣지 않았다. 범주형 2색은
+      - code [ref=f5e164]: dataviz/scripts/validate_palette.js
+      - text: 로 라이트·다크를 각각 검증했다 — 명도 밴드, 채도 바닥, 색각이상 분리(protan ΔE 20 이상), 표면 대비 전 항목 통과. 다크는 라이트의 반전이 아니라 별도로 뽑은 색이다.
+  - status

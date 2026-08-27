@@ -1,0 +1,134 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e108]: "갱신: 15시 31분 23초"
+  - status "시스템 상태" [ref=e109]:
+    - generic [ref=e112]: paper
+    - generic [ref=e113]:
+      - text: "Regime:"
+      - generic [ref=e114]: bull
+    - generic [ref=e115]:
+      - text: "Risk:"
+      - generic [ref=e116]: neutral
+    - generic [ref=e118]: LATE-CYCLE Lvmoderate
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [active] [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - heading "포트폴리오 구성" [level=2] [ref=e613]
+      - generic [ref=e614]:
+        - generic [ref=e615]: "스냅샷 기준: 2026-06-20 (일 1회 reconcile 기준, 실시간 시세 아님)"
+        - generic [ref=e616]:
+          - generic [ref=e617]:
+            - generic [ref=e618]: 총 NAV
+            - generic [ref=e619]: 976만
+          - generic [ref=e620]:
+            - generic [ref=e621]: 현금 비율
+            - generic [ref=e622]: 83.7%
+            - generic [ref=e623]: 817만
+          - generic [ref=e624]:
+            - generic [ref=e625]: 집중도 (Herfindahl)
+            - generic [ref=e626]: "0.0165"
+            - generic [ref=e627]: 0=분산, 1=집중
+          - generic [ref=e628]:
+            - generic [ref=e629]: 상위 3종목 비중
+            - generic [ref=e630]: 15.3%
+        - generic [ref=e631]:
+          - generic [ref=e633]: 종목별 비중 (투자비중 = 시가평가액/NAV)
+          - generic [ref=e638]: 섹터별 비중
+        - generic [ref=e642]:
+          - generic [ref=e643]:
+            - generic [ref=e644]: 종목별 보유/손익
+            - button "포트폴리오 CSV 내보내기" [ref=e645] [cursor=pointer]: CSV 내보내기
+          - generic [ref=e646]:
+            - generic [ref=e647]:
+              - textbox "종목 검색" [ref=e648]:
+                - /placeholder: 종목명·코드/섹터 검색...
+              - generic [ref=e649]: 4종목
+            - table [ref=e651]:
+              - rowgroup [ref=e652]:
+                - row "종목코드 섹터 수량 평단 현재가 평가금액 평가손익 수익률 비중% ▼" [ref=e653]:
+                  - columnheader "종목코드" [ref=e654] [cursor=pointer]
+                  - columnheader "섹터" [ref=e655] [cursor=pointer]
+                  - columnheader "수량" [ref=e656] [cursor=pointer]
+                  - columnheader "평단" [ref=e657] [cursor=pointer]
+                  - columnheader "현재가" [ref=e658] [cursor=pointer]
+                  - columnheader "평가금액" [ref=e659] [cursor=pointer]
+                  - columnheader "평가손익" [ref=e660] [cursor=pointer]
+                  - columnheader "수익률" [ref=e661] [cursor=pointer]
+                  - columnheader "비중% ▼" [ref=e662] [cursor=pointer]
+              - rowgroup [ref=e663]:
+                - row "하나금융지주 086790 금융 10 12만 12만 124만 7만 +6.20% 12.65%" [ref=e664]:
+                  - cell "하나금융지주 086790" [ref=e665]:
+                    - generic [ref=e666]:
+                      - generic [ref=e667]: 하나금융지주
+                      - generic [ref=e668]: "086790"
+                  - cell "금융" [ref=e669]
+                  - cell "10" [ref=e670]
+                  - cell "12만" [ref=e671]
+                  - cell "12만" [ref=e672]
+                  - cell "124만" [ref=e673]
+                  - cell "7만" [ref=e674]
+                  - cell "+6.20%" [ref=e675]
+                  - cell "12.65%" [ref=e676]
+                - row "KB금융 105560 금융 1 16만 16만 16만 2,100 +1.34% 1.62%" [ref=e677]:
+                  - cell "KB금융 105560" [ref=e678]:
+                    - generic [ref=e679]:
+                      - generic [ref=e680]: KB금융
+                      - generic [ref=e681]: "105560"
+                  - cell "금융" [ref=e682]
+                  - cell "1" [ref=e683]
+                  - cell "16만" [ref=e684]
+                  - cell "16만" [ref=e685]
+                  - cell "16만" [ref=e686]
+                  - cell "2,100" [ref=e687]
+                  - cell "+1.34%" [ref=e688]
+                  - cell "1.62%" [ref=e689]
+                - row "신한지주 055550 금융 1 10만 10만 10만 -3,061 -2.94% 1.03%" [ref=e690]:
+                  - cell "신한지주 055550" [ref=e691]:
+                    - generic [ref=e692]:
+                      - generic [ref=e693]: 신한지주
+                      - generic [ref=e694]: "055550"
+                  - cell "금융" [ref=e695]
+                  - cell "1" [ref=e696]
+                  - cell "10만" [ref=e697]
+                  - cell "10만" [ref=e698]
+                  - cell "10만" [ref=e699]
+                  - cell "-3,061" [ref=e700]
+                  - cell "-2.94%" [ref=e701]
+                  - cell "1.03%" [ref=e702]
+                - row "우리금융지주 316140 금융 3 3만 3만 9만 -900 -0.96% 0.95%" [ref=e703]:
+                  - cell "우리금융지주 316140" [ref=e704]:
+                    - generic [ref=e705]:
+                      - generic [ref=e706]: 우리금융지주
+                      - generic [ref=e707]: "316140"
+                  - cell "금융" [ref=e708]
+                  - cell "3" [ref=e709]
+                  - cell "3만" [ref=e710]
+                  - cell "3만" [ref=e711]
+                  - cell "9만" [ref=e712]
+                  - cell "-900" [ref=e713]
+                  - cell "-0.96%" [ref=e714]
+                  - cell "0.95%" [ref=e715]

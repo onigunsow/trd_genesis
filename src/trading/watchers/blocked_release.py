@@ -20,6 +20,8 @@ import logging
 from datetime import date
 from typing import Any
 
+from trading.kis.market import NORMAL_STAT_CLS, PLAIN_STAT_CLS
+
 LOG = logging.getLogger(__name__)
 
 
@@ -122,8 +124,8 @@ def poll_blocked_release() -> dict[str, Any]:
                 next_blocked[ticker] = previous[ticker]
             continue
 
-        current_code = str(quote.get("stat_cls", "00") or "00")
-        is_normal = bool(quote.get("is_normal", current_code == "00"))
+        current_code = str(quote.get("stat_cls", PLAIN_STAT_CLS) or PLAIN_STAT_CLS)
+        is_normal = bool(quote.get("is_normal", current_code in NORMAL_STAT_CLS))
 
         if not is_normal:
             metrics["still_blocked"] += 1

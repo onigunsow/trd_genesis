@@ -1,0 +1,240 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e89]: "갱신: 14시 47분 27초"
+  - alert [ref=e90]: SYSTEM HALTED — 매매 정지 중 (pre-order limit breach)
+  - status "시스템 상태" [ref=e91]:
+    - generic [ref=e94]: paper
+    - generic [ref=e95]:
+      - text: "Regime:"
+      - generic [ref=e96]: bull
+    - generic [ref=e97]:
+      - text: "Risk:"
+      - generic [ref=e98]: neutral
+    - generic [ref=e100]: LATE-CYCLE Lvmoderate
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [active] [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - heading "라운드트립 거래 원장" [level=2] [ref=e176]
+      - generic [ref=e177]:
+        - generic [ref=e178]:
+          - textbox "라운드트립 검색" [ref=e179]:
+            - /placeholder: 종목명·코드/페르소나/verdict 검색...
+          - textbox "시작 날짜" [ref=e180]
+          - generic [ref=e181]: ~
+          - textbox "종료 날짜" [ref=e182]
+          - button "전체" [ref=e183] [cursor=pointer]
+          - button "익만" [ref=e184] [cursor=pointer]
+          - button "손만" [ref=e185] [cursor=pointer]
+          - generic [ref=e186]: 10건
+          - button "거래원장 CSV 내보내기" [ref=e187] [cursor=pointer]: CSV 내보내기
+        - table [ref=e189]:
+          - rowgroup [ref=e190]:
+            - row "종목 매수일 매도일 ▼ 수량 진입가 청산가 실현손익 수익률 수수료 보유일 페르소나 Verdict Conf." [ref=e191]:
+              - columnheader "종목" [ref=e192] [cursor=pointer]
+              - columnheader "매수일" [ref=e193] [cursor=pointer]
+              - columnheader "매도일 ▼" [ref=e194] [cursor=pointer]
+              - columnheader "수량" [ref=e195] [cursor=pointer]
+              - columnheader "진입가" [ref=e196] [cursor=pointer]
+              - columnheader "청산가" [ref=e197] [cursor=pointer]
+              - columnheader "실현손익" [ref=e198] [cursor=pointer]
+              - columnheader "수익률" [ref=e199] [cursor=pointer]
+              - columnheader "수수료" [ref=e200] [cursor=pointer]
+              - columnheader "보유일" [ref=e201] [cursor=pointer]
+              - columnheader "페르소나" [ref=e202] [cursor=pointer]
+              - columnheader "Verdict" [ref=e203] [cursor=pointer]
+              - columnheader "Conf." [ref=e204] [cursor=pointer]
+          - rowgroup [ref=e205]:
+            - row "신한지주 055550 2026-05-28 2026-06-19 1 97,766 102,200 4,434 +453.53% 0 22일 decision APPROVE 58%" [ref=e206]:
+              - cell "신한지주 055550" [ref=e207]:
+                - generic [ref=e208]:
+                  - generic [ref=e209]: 신한지주
+                  - generic [ref=e210]: "055550"
+              - cell "2026-05-28" [ref=e211]
+              - cell "2026-06-19" [ref=e212]
+              - cell "1" [ref=e213]
+              - cell "97,766" [ref=e214]
+              - cell "102,200" [ref=e215]
+              - cell "4,434" [ref=e216]
+              - cell "+453.53%" [ref=e217]
+              - cell "0" [ref=e218]
+              - cell "22일" [ref=e219]
+              - cell "decision" [ref=e220]
+              - cell "APPROVE" [ref=e221]
+              - cell "58%" [ref=e222]
+            - row "신한지주 055550 2026-05-28 2026-06-18 1 97,766 103,100 5,334 +545.59% 0 21일 decision APPROVE 56%" [ref=e223]:
+              - cell "신한지주 055550" [ref=e224]:
+                - generic [ref=e225]:
+                  - generic [ref=e226]: 신한지주
+                  - generic [ref=e227]: "055550"
+              - cell "2026-05-28" [ref=e228]
+              - cell "2026-06-18" [ref=e229]
+              - cell "1" [ref=e230]
+              - cell "97,766" [ref=e231]
+              - cell "103,100" [ref=e232]
+              - cell "5,334" [ref=e233]
+              - cell "+545.59%" [ref=e234]
+              - cell "0" [ref=e235]
+              - cell "21일" [ref=e236]
+              - cell "decision" [ref=e237]
+              - cell "APPROVE" [ref=e238]
+              - cell "56%" [ref=e239]
+            - row "KT&G 033780 2026-05-28 2026-06-08 1 187,700 174,000 -1만 -729.89% 0 11일 decision APPROVE 52%" [ref=e240]:
+              - cell "KT&G 033780" [ref=e241]:
+                - generic [ref=e242]:
+                  - generic [ref=e243]: KT&G
+                  - generic [ref=e244]: "033780"
+              - cell "2026-05-28" [ref=e245]
+              - cell "2026-06-08" [ref=e246]
+              - cell "1" [ref=e247]
+              - cell "187,700" [ref=e248]
+              - cell "174,000" [ref=e249]
+              - cell "-1만" [ref=e250]
+              - cell "-729.89%" [ref=e251]
+              - cell "0" [ref=e252]
+              - cell "11일" [ref=e253]
+              - cell "decision" [ref=e254]
+              - cell "APPROVE" [ref=e255]
+              - cell "52%" [ref=e256]
+            - row "신한지주 055550 2026-05-28 2026-06-05 1 97,766 105,400 7,634 +780.84% 0 8일 decision APPROVE 55%" [ref=e257]:
+              - cell "신한지주 055550" [ref=e258]:
+                - generic [ref=e259]:
+                  - generic [ref=e260]: 신한지주
+                  - generic [ref=e261]: "055550"
+              - cell "2026-05-28" [ref=e262]
+              - cell "2026-06-05" [ref=e263]
+              - cell "1" [ref=e264]
+              - cell "97,766" [ref=e265]
+              - cell "105,400" [ref=e266]
+              - cell "7,634" [ref=e267]
+              - cell "+780.84%" [ref=e268]
+              - cell "0" [ref=e269]
+              - cell "8일" [ref=e270]
+              - cell "decision" [ref=e271]
+              - cell "APPROVE" [ref=e272]
+              - cell "55%" [ref=e273]
+            - row "현대로템 064350 2026-05-28 2026-06-04 1 207,937 190,200 -2만 -853.00% 0 7일 decision APPROVE 52%" [ref=e274]:
+              - cell "현대로템 064350" [ref=e275]:
+                - generic [ref=e276]:
+                  - generic [ref=e277]: 현대로템
+                  - generic [ref=e278]: "064350"
+              - cell "2026-05-28" [ref=e279]
+              - cell "2026-06-04" [ref=e280]
+              - cell "1" [ref=e281]
+              - cell "207,937" [ref=e282]
+              - cell "190,200" [ref=e283]
+              - cell "-2만" [ref=e284]
+              - cell "-853.00%" [ref=e285]
+              - cell "0" [ref=e286]
+              - cell "7일" [ref=e287]
+              - cell "decision" [ref=e288]
+              - cell "APPROVE" [ref=e289]
+              - cell "52%" [ref=e290]
+            - row "현대로템 064350 2026-05-28 2026-06-04 1 207,937 190,200 -2만 -853.00% 0 7일 decision APPROVE 55%" [ref=e291]:
+              - cell "현대로템 064350" [ref=e292]:
+                - generic [ref=e293]:
+                  - generic [ref=e294]: 현대로템
+                  - generic [ref=e295]: "064350"
+              - cell "2026-05-28" [ref=e296]
+              - cell "2026-06-04" [ref=e297]
+              - cell "1" [ref=e298]
+              - cell "207,937" [ref=e299]
+              - cell "190,200" [ref=e300]
+              - cell "-2만" [ref=e301]
+              - cell "-853.00%" [ref=e302]
+              - cell "0" [ref=e303]
+              - cell "7일" [ref=e304]
+              - cell "decision" [ref=e305]
+              - cell "APPROVE" [ref=e306]
+              - cell "55%" [ref=e307]
+            - row "현대로템 064350 2026-05-28 2026-06-04 1 207,937 190,200 -2만 -853.00% 0 7일 decision APPROVE 58%" [ref=e308]:
+              - cell "현대로템 064350" [ref=e309]:
+                - generic [ref=e310]:
+                  - generic [ref=e311]: 현대로템
+                  - generic [ref=e312]: "064350"
+              - cell "2026-05-28" [ref=e313]
+              - cell "2026-06-04" [ref=e314]
+              - cell "1" [ref=e315]
+              - cell "207,937" [ref=e316]
+              - cell "190,200" [ref=e317]
+              - cell "-2만" [ref=e318]
+              - cell "-853.00%" [ref=e319]
+              - cell "0" [ref=e320]
+              - cell "7일" [ref=e321]
+              - cell "decision" [ref=e322]
+              - cell "APPROVE" [ref=e323]
+              - cell "58%" [ref=e324]
+            - row "현대로템 064350 2026-05-28 2026-06-04 1 207,937 190,200 -2만 -853.00% 0 7일 decision APPROVE 55%" [ref=e325]:
+              - cell "현대로템 064350" [ref=e326]:
+                - generic [ref=e327]:
+                  - generic [ref=e328]: 현대로템
+                  - generic [ref=e329]: "064350"
+              - cell "2026-05-28" [ref=e330]
+              - cell "2026-06-04" [ref=e331]
+              - cell "1" [ref=e332]
+              - cell "207,937" [ref=e333]
+              - cell "190,200" [ref=e334]
+              - cell "-2만" [ref=e335]
+              - cell "-853.00%" [ref=e336]
+              - cell "0" [ref=e337]
+              - cell "7일" [ref=e338]
+              - cell "decision" [ref=e339]
+              - cell "APPROVE" [ref=e340]
+              - cell "55%" [ref=e341]
+            - row "현대로템 064350 2026-05-28 2026-06-04 1 207,937 189,100 -2만 -905.90% 0 7일 decision APPROVE 58%" [ref=e342]:
+              - cell "현대로템 064350" [ref=e343]:
+                - generic [ref=e344]:
+                  - generic [ref=e345]: 현대로템
+                  - generic [ref=e346]: "064350"
+              - cell "2026-05-28" [ref=e347]
+              - cell "2026-06-04" [ref=e348]
+              - cell "1" [ref=e349]
+              - cell "207,937" [ref=e350]
+              - cell "189,100" [ref=e351]
+              - cell "-2만" [ref=e352]
+              - cell "-905.90%" [ref=e353]
+              - cell "0" [ref=e354]
+              - cell "7일" [ref=e355]
+              - cell "decision" [ref=e356]
+              - cell "APPROVE" [ref=e357]
+              - cell "58%" [ref=e358]
+            - row "현대로템 064350 2026-05-28 2026-06-04 1 207,937 189,100 -2만 -905.90% 0 7일 decision APPROVE 55%" [ref=e359]:
+              - cell "현대로템 064350" [ref=e360]:
+                - generic [ref=e361]:
+                  - generic [ref=e362]: 현대로템
+                  - generic [ref=e363]: "064350"
+              - cell "2026-05-28" [ref=e364]
+              - cell "2026-06-04" [ref=e365]
+              - cell "1" [ref=e366]
+              - cell "207,937" [ref=e367]
+              - cell "189,100" [ref=e368]
+              - cell "-2만" [ref=e369]
+              - cell "-905.90%" [ref=e370]
+              - cell "0" [ref=e371]
+              - cell "7일" [ref=e372]
+              - cell "decision" [ref=e373]
+              - cell "APPROVE" [ref=e374]
+              - cell "55%" [ref=e375]

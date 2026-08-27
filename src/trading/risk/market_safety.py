@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 
 from trading.kis.account import balance
 from trading.kis.client import KisClient
-from trading.kis.market import current_price, is_overheated, stat_cls_label
+from trading.kis.market import (
+    current_price,
+    is_hard_block,
+    is_overheated,
+    stat_cls_label,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -62,10 +67,13 @@ def check_pre_order_safety(
         return res
     res.quote = q
 
-    if not q["is_normal"]:
+    # 2026-08-27: 종전엔 is_normal(=="00") 만 통과시켜, stat_cls 표를 고치는 순간
+    # 55(신용가능) 인 전 종목이 매매 차단될 뻔했다. 차단 판정은 is_hard_block 단일
+    # 원천을 쓴다 — 정상 집합·과열 코드가 한 곳에서만 정의되도록.
+    if is_hard_block(q["stat_cls"]) or is_overheated(q["stat_cls"]):
         label = stat_cls_label(q["stat_cls"])
         if is_overheated(q["stat_cls"]):
-            # SPEC-026: 단기과열(55) is tradeable via single-price auction — flag
+            # SPEC-026: 단기과열(59) is tradeable via single-price auction — flag
             # it as a caution (size-cap + limit-only handled by the orchestrator)
             # instead of hard-blocking the order.
             res.overheated = True

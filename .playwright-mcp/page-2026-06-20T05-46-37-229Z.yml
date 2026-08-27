@@ -1,0 +1,92 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+  - generic [ref=e8]: 상태 로딩 중...
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - heading "성과 개요" [level=2] [ref=e27]
+      - generic [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]: 총 자산
+          - generic [ref=e31]: —
+        - generic [ref=e32]:
+          - generic [ref=e33]: 일일 실현손익
+          - generic [ref=e34]: —
+        - generic [ref=e35]:
+          - generic [ref=e36]: 누적 실현손익
+          - generic [ref=e37]: —
+        - generic [ref=e38]:
+          - generic [ref=e39]: 수익률
+          - generic [ref=e40]: —
+          - generic [ref=e41]: CAGR
+        - generic [ref=e42]:
+          - generic [ref=e43]: MDD
+          - generic [ref=e44]: —
+          - generic [ref=e45]: 최대 낙폭
+        - generic [ref=e46]:
+          - generic [ref=e47]: 승률
+          - generic [ref=e48]: —
+          - generic [ref=e49]: 0건 완료
+        - generic [ref=e50]:
+          - generic [ref=e51]: 손익비
+          - generic [ref=e52]: —
+          - generic [ref=e53]: adj. profit factor
+        - generic [ref=e54]:
+          - generic [ref=e55]: Sharpe
+          - generic [ref=e56]: —
+        - generic [ref=e57]:
+          - generic [ref=e58]: Sortino
+          - generic [ref=e59]: —
+        - generic [ref=e60]:
+          - generic [ref=e61]: KOSPI 알파
+          - generic [ref=e62]: —
+          - generic [ref=e63]: 전체기간 대비
+      - generic [ref=e64]:
+        - generic [ref=e65]:
+          - generic [ref=e66]: 엣지 스코어카드
+          - generic [ref=e67]: 로딩 중...
+        - generic [ref=e68]:
+          - generic [ref=e69]: 에쿼티 곡선
+          - generic [ref=e70]: 로딩 중...
+        - generic [ref=e71]:
+          - generic [ref=e72]: 드로다운 곡선
+          - generic [ref=e73]: 로딩 중...
+        - generic [ref=e74]:
+          - generic [ref=e75]: 일별 수익률 분포
+          - generic [ref=e76]: 로딩 중...
+        - generic [ref=e77]:
+          - generic [ref=e78]: 누적 손익
+          - generic [ref=e79]: 로딩 중...
+        - generic [ref=e80]:
+          - generic [ref=e81]: KOSPI 대비 알파
+          - generic [ref=e82]: 로딩 중...
+        - generic [ref=e83]:
+          - generic [ref=e84]: Confidence-수익 상관
+          - generic [ref=e85]: 로딩 중...
+        - generic [ref=e86]:
+          - generic [ref=e87]: Postmortem 분류
+          - generic [ref=e88]: 로딩 중...

@@ -15,6 +15,8 @@ Covered here:
 
 from __future__ import annotations
 
+from trading.kis.market import OVERHEAT_STAT_CLS
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,7 +32,7 @@ class TestSplitBlocked:
         from trading.personas.orchestrator import _split_blocked
 
         blocked = {
-            "005930": {"reason": "단기과열", "stat_cls": "55"},
+            "005930": {"reason": "단기과열", "stat_cls": OVERHEAT_STAT_CLS},
             "000660": {"reason": "관리", "stat_cls": "51"},
             "035720": {"reason": "intraday safety"},  # no stat_cls
         }
@@ -56,7 +58,7 @@ class TestMicroWatchlistKeepsOverheated:
         blocked_cache_payload = {
             "date": "2026-05-22",
             "blocked": {
-                "005930": {"reason": "단기과열", "stat_cls": "55"},
+                "005930": {"reason": "단기과열", "stat_cls": OVERHEAT_STAT_CLS},
                 "000660": {"reason": "관리종목", "stat_cls": "51"},
             },
             "blocked_today_by_safety": [],
@@ -107,6 +109,8 @@ def jinja_env() -> Environment:
 
 
 def _micro_ctx(**overrides):
+    # 프로덕션은 assemble_micro_input 이 항상 주입한다 — 템플릿에 리터럴을 두지 않는다.
+    overrides.setdefault("overheat_stat_cls", OVERHEAT_STAT_CLS)
     base = {
         "today": "2026-05-22",
         "macro_summary": "(없음)",
@@ -126,7 +130,7 @@ class TestMicroTemplateBuckets:
     def test_overheated_in_caution_hard_in_exclude(self, jinja_env):
         template = jinja_env.get_template("micro.jinja")
         blocked = {
-            "005930": {"reason": "단기과열", "stat_cls": "55"},
+            "005930": {"reason": "단기과열", "stat_cls": OVERHEAT_STAT_CLS},
             "000660": {"reason": "관리종목", "stat_cls": "51"},
         }
         rendered = template.render(**_micro_ctx(blocked_tickers=blocked))
@@ -151,7 +155,7 @@ class TestMicroTemplateBuckets:
     def test_only_overheated_no_exclude_header(self, jinja_env):
         """When every blocked entry is 55, the hard-exclude header is omitted."""
         template = jinja_env.get_template("micro.jinja")
-        blocked = {"005930": {"reason": "단기과열", "stat_cls": "55"}}
+        blocked = {"005930": {"reason": "단기과열", "stat_cls": OVERHEAT_STAT_CLS}}
         rendered = template.render(**_micro_ctx(blocked_tickers=blocked))
 
         assert "단기과열 주의" in rendered
@@ -253,6 +257,8 @@ class TestExecuteSignalOrderType:
 
 class TestDecisionTemplateBuckets:
     def _decision_ctx(self, **overrides):
+        # 프로덕션은 prompt_context 가 항상 주입한다.
+        overrides.setdefault("overheat_stat_cls", OVERHEAT_STAT_CLS)
         base = {
             "today": "2026-05-22",
             "cycle_kind": "intraday",
@@ -265,7 +271,7 @@ class TestDecisionTemplateBuckets:
     def test_overheated_not_in_proposal_ban(self, jinja_env):
         template = jinja_env.get_template("decision.jinja")
         blocked = {
-            "005930": {"reason": "단기과열", "stat_cls": "55"},
+            "005930": {"reason": "단기과열", "stat_cls": OVERHEAT_STAT_CLS},
             "000660": {"reason": "거래정지", "stat_cls": "54"},
         }
         rendered = template.render(**self._decision_ctx(blocked_tickers=blocked))

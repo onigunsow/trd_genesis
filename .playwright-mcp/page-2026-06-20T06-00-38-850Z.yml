@@ -1,0 +1,86 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - button "사이드바 닫기" [ref=e5] [cursor=pointer]: ☰
+    - generic [ref=e6]: Trading Dashboard
+    - generic [ref=e89]: "갱신: 15시 0분 34초"
+  - alert [ref=e90]: SYSTEM HALTED — 매매 정지 중 (pre-order limit breach)
+  - status "시스템 상태" [ref=e91]:
+    - generic [ref=e94]: paper
+    - generic [ref=e95]:
+      - text: "Regime:"
+      - generic [ref=e96]: bull
+    - generic [ref=e97]:
+      - text: "Risk:"
+      - generic [ref=e98]: neutral
+    - generic [ref=e100]: LATE-CYCLE Lvmoderate
+  - generic [ref=e9]:
+    - navigation "메인 네비게이션" [ref=e10]:
+      - generic [ref=e11]:
+        - button "◈ 개요" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: ◈
+          - text: 개요
+        - button "◉ 포트폴리오" [active] [ref=e14] [cursor=pointer]:
+          - generic [ref=e15]: ◉
+          - text: 포트폴리오
+        - button "◎ 거래원장" [ref=e16] [cursor=pointer]:
+          - generic [ref=e17]: ◎
+          - text: 거래원장
+        - button "◆ 손익 추이" [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: ◆
+          - text: 손익 추이
+        - button "▶ 파이프라인" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: ▶
+          - text: 파이프라인
+        - button "◐ 뉴스" [ref=e22] [cursor=pointer]:
+          - generic [ref=e23]: ◐
+          - text: 뉴스
+        - button "☰ 포지션/주문" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: ☰
+          - text: 포지션/주문
+    - main [ref=e26]:
+      - heading "포트폴리오 구성" [level=2] [ref=e376]
+      - generic [ref=e377]:
+        - generic [ref=e378]:
+          - generic [ref=e379]:
+            - generic [ref=e380]: 총 NAV
+            - generic [ref=e381]: 976만
+          - generic [ref=e382]:
+            - generic [ref=e383]: 현금 비율
+            - generic [ref=e384]: 100.0%
+            - generic [ref=e385]: 976만
+          - generic [ref=e386]:
+            - generic [ref=e387]: 집중도 (Herfindahl)
+            - generic [ref=e388]: "0.0000"
+            - generic [ref=e389]: 0=분산, 1=집중
+          - generic [ref=e390]:
+            - generic [ref=e391]: 상위 3종목 비중
+            - generic [ref=e392]: 0.0%
+        - generic [ref=e393]:
+          - generic [ref=e395]: 종목별 비중 (투자비중 = 시가평가액/NAV)
+          - generic [ref=e399]:
+            - generic [ref=e400]: 섹터별 비중
+            - generic [ref=e401]: 섹터 데이터 없음
+        - generic [ref=e402]:
+          - generic [ref=e403]:
+            - generic [ref=e404]: 종목별 보유/손익
+            - button "포트폴리오 CSV 내보내기" [ref=e405] [cursor=pointer]: CSV 내보내기
+          - generic [ref=e406]:
+            - generic [ref=e407]:
+              - textbox "종목 검색" [ref=e408]:
+                - /placeholder: 종목명·코드/섹터 검색...
+              - generic [ref=e409]: 0종목
+            - table [ref=e411]:
+              - rowgroup [ref=e412]:
+                - row "종목코드 섹터 수량 평단 현재가 평가금액 평가손익 수익률 비중% ▼" [ref=e413]:
+                  - columnheader "종목코드" [ref=e414] [cursor=pointer]
+                  - columnheader "섹터" [ref=e415] [cursor=pointer]
+                  - columnheader "수량" [ref=e416] [cursor=pointer]
+                  - columnheader "평단" [ref=e417] [cursor=pointer]
+                  - columnheader "현재가" [ref=e418] [cursor=pointer]
+                  - columnheader "평가금액" [ref=e419] [cursor=pointer]
+                  - columnheader "평가손익" [ref=e420] [cursor=pointer]
+                  - columnheader "수익률" [ref=e421] [cursor=pointer]
+                  - columnheader "비중% ▼" [ref=e422] [cursor=pointer]
+              - rowgroup [ref=e423]:
+                - row "보유 데이터 없음" [ref=e424]:
+                  - cell "보유 데이터 없음" [ref=e425]
