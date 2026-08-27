@@ -142,9 +142,11 @@ class TestHaltGatesWireCountBypass:
     test_halt_gate_throttle structural-wiring precedent).
     """
 
+    # 2026-08-27: intraday 본체는 단일 진입 락 뒤 _run_intraday_cycle_locked 로
+    # 분리됐다. 구조 검사는 래퍼가 아니라 본체를 봐야 의미가 있다.
     _GATE_FUNCS: ClassVar[list] = [
         orch.run_pre_market_cycle,
-        orch.run_intraday_cycle,
+        orch._run_intraday_cycle_locked,
     ]
 
     def _names_called(self, func) -> set[str]:

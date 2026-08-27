@@ -537,8 +537,10 @@ class TestThreeCycleInsertion:
     def test_all_cycles_call_apply_portfolio_adjustment(self):
         from trading.personas import orchestrator as orch
 
+        # 2026-08-27: intraday 본체는 단일 진입 락 뒤 _run_intraday_cycle_locked 로
+        # 분리됐다. 구조 검사는 래퍼가 아니라 본체를 봐야 의미가 있다.
         for func in (orch.run_pre_market_cycle,
-                     orch.run_intraday_cycle,
+                     orch._run_intraday_cycle_locked,
                      orch.run_event_trigger_cycle):
             calls = _cycle_calls(func)
             assert "_apply_portfolio_adjustment" in calls, (
@@ -550,8 +552,10 @@ class TestThreeCycleInsertion:
         the loop iterates the adjusted lists."""
         from trading.personas import orchestrator as orch
 
+        # 2026-08-27: intraday 본체는 단일 진입 락 뒤 _run_intraday_cycle_locked 로
+        # 분리됐다. 구조 검사는 래퍼가 아니라 본체를 봐야 의미가 있다.
         for func in (orch.run_pre_market_cycle,
-                     orch.run_intraday_cycle,
+                     orch._run_intraday_cycle_locked,
                      orch.run_event_trigger_cycle):
             src = textwrap.dedent(inspect.getsource(func))
             tree = ast.parse(src)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -543,6 +544,17 @@ def _build_micro_input(today: str, macro_summary: str | None) -> dict[str, Any]:
         watchlist=expanded_watchlist,
         blocked_tickers=blocked_tickers,
     )
+
+
+# 2026-08-27: intraday 사이클 단일 진입 보장.
+# 워처(volume_anomaly 등)의 handle_trigger_event 와 스케줄러의 intraday_adaptive 가
+# 둘 다 run_intraday_cycle() 을 그대로 호출한다 — 트리거는 발화 종목으로 좁히지도
+# 않으므로 두 경로가 하는 일이 완전히 같다. event_handler 의 락은 트리거끼리만 막아
+# 스케줄 경로와의 충돌은 열려 있었다.
+# 실측(8/27 09:00:02): 동일 프롬프트 121,930바이트가 7ms 간격으로 두 번 발사 →
+# 두 사이클이 각각 012330 매도를 제안, 하나는 체결·하나는 PHANTOM_SELL_BLOCKED.
+# 14일간 5건, 전부 09:00~09:30 개장 직후. 호출자마다 막지 않고 공유 함수에서 막는다.
+_INTRADAY_CYCLE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -1700,6 +1712,19 @@ def run_intraday_cycle(today: str | None = None) -> CycleResult:
     - Decision and Risk run fresh against current market data with cycle_kind="intraday".
     - On no Micro cache: log warning and proceed with empty candidates.
     """
+    if not _INTRADAY_CYCLE_LOCK.acquire(blocking=False):
+        LOG.info("intraday cycle already in flight — skip (중복 발사 차단)")
+        audit("CYCLE_SKIPPED_IN_FLIGHT", actor="orchestrator",
+              details={"cycle_kind": "intraday"})
+        return CycleResult(cycle_kind="intraday")
+    try:
+        return _run_intraday_cycle_locked(today)
+    finally:
+        _INTRADAY_CYCLE_LOCK.release()
+
+
+def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
+    """run_intraday_cycle 본체. 락은 호출자가 이미 잡고 있다."""
     today = today or date.today().isoformat()
     res = CycleResult(cycle_kind="intraday")
     state = get_system_state()
