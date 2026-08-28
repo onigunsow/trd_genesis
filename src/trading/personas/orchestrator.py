@@ -36,6 +36,7 @@ from trading.kis.broker_truth import (
 )
 from trading.kis.client import KisClient
 from trading.kis.market import OVERHEAT_STAT_CLS
+from trading.kis.order import MarketSessionClosedError
 from trading.kis.order import buy as kis_buy
 from trading.kis.order import sell as kis_sell
 from trading.kis.order_resolver import resolve_stuck_orders
@@ -273,6 +274,34 @@ def _filter_and_expand_candidates(
     # SPEC-018 blocked filter (applied AFTER expansion — R-1).
     filtered = [t for t in filtered if t not in blocked_tickers]
     return filtered, expansion_metrics
+
+
+def _audit_risk_blocked(
+    *,
+    decision_id: int | None,
+    ticker: str | None,
+    verdict: str,
+    cycle_kind: str,
+    rationale: str | None = None,
+) -> None:
+    """리스크 비승인으로 결정이 주문에 도달하지 못한 사실을 감사에 남긴다.
+
+    이전에는 res.rejected 리스트에만 담겨서, 결정이 왜 주문이 안 됐는지가
+    risk_reviews 를 따로 뒤지지 않으면 감사 경로에서 사라졌다.
+
+    순수 관측용이므로 best-effort — 감사 한 줄을 못 남긴다고 남은 시그널
+    처리까지 중단시키지 않는다.
+    """
+    try:
+        audit("ORDER_BLOCKED_RISK", actor="orchestrator", details={
+            "decision_id": decision_id,
+            "ticker": ticker,
+            "verdict": verdict,
+            "cycle_kind": cycle_kind,
+            "rationale": (rationale or "")[:500] or None,
+        })
+    except Exception:
+        LOG.exception("ORDER_BLOCKED_RISK audit 실패 (decision_id=%s)", decision_id)
 
 
 def _count_holds_today(ticker: str) -> int:
@@ -1184,6 +1213,13 @@ def _execute_signal(
                 "SPEC-042 post-submit reconcile failed (order_id=%s)", order_id
             )
         return order_id
+    except MarketSessionClosedError as e:
+        # 정규장 밖 차단은 실패가 아니라 정상 지연이다 — 다음 장중 사이클이
+        # 같은 판단을 다시 제안한다. EXEC_FAILED 로 세면 실패 지표가 오염된다.
+        LOG.info("execute signal deferred (outside session): %s", sig)
+        audit("EXEC_DEFERRED_OUTSIDE_SESSION", actor="orchestrator",
+              details={"signal": sig, "reason": str(e), "decision_id": decision_id})
+        return None
     except Exception as e:
         LOG.exception("execute signal failed: %s", sig)
         audit("EXEC_FAILED", actor="orchestrator",
@@ -1412,9 +1448,19 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
                 verdict = "APPROVE"
             else:
                 # REJECT, WITHDRAWN, or HOLD — reject signal
+                _audit_risk_blocked(
+                    decision_id=decision_id, ticker=ticker,
+                    verdict=final_verdict, cycle_kind="pre_market",
+                    rationale=(rk_res.response_json or {}).get("rationale"),
+                )
                 res.rejected.append(decision_id)
                 continue
         elif verdict != "APPROVE":
+            _audit_risk_blocked(
+                decision_id=decision_id, ticker=ticker, verdict=verdict,
+                cycle_kind="pre_market",
+                rationale=(rk_res.response_json or {}).get("rationale"),
+            )
             res.rejected.append(decision_id)
             continue
 
@@ -1742,6 +1788,11 @@ def run_event_trigger_cycle(
             if order_id:
                 res.executed_orders.append(order_id)
         else:
+            _audit_risk_blocked(
+                decision_id=decision_id, ticker=sig.get("ticker"),
+                verdict=verdict, cycle_kind="event",
+                rationale=(rk_res.response_json or {}).get("rationale"),
+            )
             res.rejected.append(decision_id)
 
     return res
@@ -1953,6 +2004,11 @@ def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
         )
 
         if verdict != "APPROVE":
+            _audit_risk_blocked(
+                decision_id=decision_id, ticker=ticker, verdict=verdict,
+                cycle_kind="intraday",
+                rationale=(rk_res.response_json or {}).get("rationale"),
+            )
             res.rejected.append(decision_id)
             continue
 

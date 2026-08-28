@@ -35,11 +35,15 @@ LOG = logging.getLogger(__name__)
 # #   correction=TRUE 만 INSERT, 기존 filled 행 불변 보장([HARD]).
 
 
-def _orders_net_by_ticker(cur: Any) -> dict[str, int]:
+def _orders_net_by_ticker(cur: Any, since: Any = None) -> dict[str, int]:
     """paper filled/partial 주문의 ticker 별 순매수 수량(교정 매도 포함).
 
     status IN ('filled','partial') 필터 — _FILL_SQL / M2 정의와 동일.
     correction=TRUE 매도도 매도로 집계해 orders_net 이 교정 후에 0 이 되도록 한다.
+
+    ``since`` 가 주어지면 그 날 이후 주문만 집계한다. 계좌를 갈아타면
+    positions 는 새 계좌의 브로커 진실로 갈아엎히는데 orders 는 전 기간
+    누적이라, 경계를 안 주면 리셋 이전 이력이 영구 드리프트로 남는다.
     """
     cur.execute(
         """
@@ -51,8 +55,10 @@ def _orders_net_by_ticker(cur: Any) -> dict[str, int]:
          WHERE mode = 'paper'
            AND status IN ('filled', 'partial')
            AND fill_qty IS NOT NULL AND fill_qty > 0
+           AND (%s::date IS NULL OR ts >= %s)
          GROUP BY ticker
-        """
+        """,
+        (since, since),
     )
     rows = cur.fetchall() or []
     return {
@@ -287,9 +293,16 @@ def orders_positions_divergence() -> dict[str, Any]:
 
     status IN ('filled','partial') 필터 — M2 / _FILL_SQL 동일.
     교정 매도(correction=TRUE) 도 매도로 집계해 수렴 후 parity==True 가 되도록.
+
+    계좌 리셋(ACCOUNT_SWITCH) 경계가 있으면 그 이후 주문만 집계한다.
+    positions 는 리셋 후 새 계좌의 브로커 진실인데 orders 는 전 기간 누적이라,
+    경계를 안 주면 되돌릴 수 없는 리셋 이전 이력이 매일 거짓 드리프트로 뜬다.
     """
+    from trading.edge.report import _account_reset_boundary
+
+    since = _account_reset_boundary()
     with connection() as conn, conn.cursor() as cur:
-        orders_net = _orders_net_by_ticker(cur)
+        orders_net = _orders_net_by_ticker(cur, since=since)
         positions_map = _positions_qty_by_ticker(cur)
 
     all_tickers = set(orders_net.keys()) | set(positions_map.keys())

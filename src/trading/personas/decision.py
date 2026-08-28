@@ -9,6 +9,7 @@ SPEC-015 REQ-ORCH-04-1: CLI routing via cli_personas_enabled feature flag.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from typing import Any
 
@@ -20,6 +21,8 @@ from trading.personas.base import (
     is_cli_mode_active,
     render_prompt,
 )
+
+LOG = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
 PERSONA = "decision"
@@ -58,6 +61,56 @@ def _bull_mode_context(regime: str, input_data: dict[str, Any]) -> dict[str, Any
     return regime_branch.bull_prompt_context(active)
 
 
+def _candidate_tickers(input_data: dict[str, Any]) -> list[str]:
+    """마이크로 후보 + 현재 보유 종목의 티커(중복 제거, 등장 순서 유지)."""
+    tickers: list[str] = []
+    candidates = input_data.get("micro_candidates") or {}
+    for side in ("buy", "sell"):
+        for c in (candidates.get(side) or []):
+            t = (c or {}).get("ticker")
+            if t and t not in tickers:
+                tickers.append(t)
+    for h in ((input_data.get("assets") or {}).get("holdings") or []):
+        t = (h or {}).get("ticker")
+        if t and t not in tickers:
+            tickers.append(t)
+    return tickers
+
+
+def _candidate_flows(input_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """후보·보유 종목의 5일 누적 수급을 억 단위로 실측 주입한다.
+
+    프롬프트는 "매수 시그널 생성 시 반드시 외국인·기관 수급 방향을 먼저 확인"
+    하라고 요구하지만, 결정 페르소나가 받던 건 마이크로 LLM 이 산문으로 요약한
+    ``flow_signal`` 문자열뿐이라 숫자가 없었다. 그래서 결정 페르소나는 정직하게
+    "수급 데이터 없음"이라 답했고, DB 를 직접 읽는 리스크 페르소나는 그걸 매
+    사이클 근거 결함으로 감점했다. 데이터 경로를 만들어 지시와 입력을 일치시킨다.
+
+    조회 실패는 빈 리스트 — 수급 블록이 빠질 뿐 사이클은 계속된다.
+    """
+    from trading.personas.context import _flows_5d
+
+    out: list[dict[str, Any]] = []
+    for ticker in _candidate_tickers(input_data):
+        try:
+            fl = _flows_5d(ticker)
+        except Exception:
+            LOG.warning("수급 조회 실패 — %s 는 수급 표에서 제외", ticker, exc_info=True)
+            continue
+        if not fl:
+            continue
+        f_e = fl["foreign_5d"] / 1e8
+        i_e = fl["institution_5d"] / 1e8
+        out.append({
+            "ticker": ticker,
+            "foreign_5d_eok": round(f_e, 1),
+            "institution_5d_eok": round(i_e, 1),
+            "individual_5d_eok": round(fl["individual_5d"] / 1e8, 1),
+            "combined_5d_eok": round(f_e + i_e, 1),
+        })
+    return out
+
+
 def run(input_data: dict[str, Any],
         cycle_kind: str = "pre_market",
         macro_run_id: int | None = None,
@@ -94,6 +147,7 @@ def run(input_data: dict[str, Any],
         **bull_ctx,
         "today": today,
         "cycle_kind": cycle_kind,
+        "candidate_flows": _candidate_flows(input_data),
     })
     user_msg = (
         "위 입력을 바탕으로 박세훈 페르소나의 매매 시그널을 JSON으로 제출하세요. "
