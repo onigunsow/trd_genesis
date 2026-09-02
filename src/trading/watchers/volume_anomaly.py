@@ -105,12 +105,47 @@ def _get_volume_volatility_stats(ticker: str) -> dict[str, Any] | None:
         LOG.warning("volume_anomaly: stats compute failed for %s: %s", ticker, exc)
         return None
 
+    # bar_date: 비교 대상이 된 '마지막 완성 일봉'의 날짜. ohlcv 는 장 마감 후
+    # 갱신되므로 장중에는 이게 대체로 전 거래일이다 — 벽시계 날짜가 아니다.
+    bar_ts = today.get("ts") if isinstance(today, dict) else None
+    bar_date = bar_ts.date().isoformat() if hasattr(bar_ts, "date") else str(bar_ts)
+
     return {
         "today_volume": today_volume,
         "avg_20d_volume": avg_20d_volume,
         "atr_today": atr_today,
         "atr_20d_median": atr_20d_median,
+        "bar_date": bar_date,
     }
+
+
+def _already_fired_for_bar(ticker: str, bar_date: str) -> bool:
+    """같은 일봉으로 이미 발사했으면 True (레벨 트리거 → 엣지 트리거).
+
+    거래량·변동성 비율은 '마지막 완성 일봉' 하나로 계산되므로 그 봉이 바뀌기
+    전까지 값이 상수다. 조건이 한 번 참이면 쿨다운(300초)마다 재발사돼
+    일일 상한(20회)까지 같은 신호로 전체 사이클(LLM)을 반복 기동한다.
+    2026-09-02 실측: 096770 한 종목이 20회 발사, 그중 9회는 정규 사이클과
+    충돌해 CYCLE_SKIPPED_IN_FLIGHT 로 버려졌다.
+
+    조회 실패는 False — 발사를 막지 않는다(감시자를 침묵시키지 않는다).
+    """
+    from trading.db.session import connection
+
+    sql = """
+        SELECT 1 FROM trigger_events
+         WHERE ticker = %s
+           AND trigger_type = 'volume_anomaly'
+           AND metadata->>'bar_date' = %s
+         LIMIT 1
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (ticker, bar_date))
+            return cur.fetchone() is not None
+    except Exception:
+        LOG.warning("volume_anomaly: 중복 봉 조회 실패 — 발사 진행", exc_info=True)
+        return False
 
 
 # @MX:ANCHOR: SPEC-TRADING-024 REQ-024-3 entry-point for volume anomaly polling
@@ -126,6 +161,7 @@ def poll_volume_anomaly(
         "fired": 0,
         "skipped_no_stats": 0,
         "throttled": 0,
+        "dup_bar": 0,
     }
     throttle = _get_shared_throttle()
     for ticker in _get_target_tickers():
@@ -151,6 +187,13 @@ def poll_volume_anomaly(
         if volume_ratio < volume_ratio_min or atr_ratio < atr_ratio_min:
             continue
 
+        # 엣지 트리거: 같은 일봉으론 한 번만. 쿨다운은 조건이 상수인 한
+        # 재발사를 늦출 뿐 막지 못한다 — 봉이 바뀌어야 새 신호다.
+        bar_date = str(stats.get("bar_date") or "")
+        if bar_date and _already_fired_for_bar(ticker, bar_date):
+            metrics["dup_bar"] += 1
+            continue
+
         if not throttle.can_fire(ticker):
             metrics["throttled"] += 1
             continue
@@ -163,6 +206,9 @@ def poll_volume_anomaly(
             "atr_20d_median": atr_median,
             "volume_ratio": volume_ratio,
             "atr_ratio": atr_ratio,
+            "bar_date": bar_date,
+            # as_of 는 발사 시각(벽시계)이다. 지표를 만든 봉은 bar_date 쪽이고,
+            # 장중에는 둘이 다르다 — 종전엔 as_of 만 있어 같은 날로 오독됐다.
             "as_of": date.today().isoformat(),
         }
         _fire_trigger_event(ticker, "volume_anomaly", metadata)

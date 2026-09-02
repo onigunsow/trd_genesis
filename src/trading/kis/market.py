@@ -22,8 +22,11 @@ def current_price(client: KisClient, ticker: str) -> dict[str, Any]:
         raise KisError(resp)
     output = resp.output if isinstance(resp.output, dict) else (resp.output[0] if resp.output else {})
 
-    # KIS iscd_stat_cls_code (종목 상태 분류)
-    # 00=정상 / 51=관리 / 52=투자위험 / 53=투자경고 / 54=거래정지 / 55=단기과열
+    # KIS iscd_stat_cls_code (종목 상태 분류).
+    # 코드표는 아래 STAT_CLS_LABELS 가 단일 원천이다.
+    # 2026-09-02: 여기 있던 옛 표(54=거래정지 / 55=단기과열)는 2026-08-27 정정이 반영되지
+    # 않은 잔존물이었다. 그 오분류가 LIMIT_BREACH 329건 중 291건의 뿌리였으므로 표를 두
+    # 곳에 두지 않는다 — 의미가 필요하면 stat_cls_label() 을 쓴다.
     stat_cls = output.get("iscd_stat_cls_code", PLAIN_STAT_CLS)
     upper_limit = int(output.get("stck_mxpr", "0") or 0)   # 상한가
     lower_limit = int(output.get("stck_llam", "0") or 0)   # 하한가

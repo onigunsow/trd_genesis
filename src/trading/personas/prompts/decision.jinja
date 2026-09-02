@@ -147,11 +147,19 @@
 {% if bought_today is defined and bought_today %}
 ## 오늘 이미 매수한 종목
 {% for ticker, n in bought_today.items() %}
-- {{ ticker }}: {{ n }}회
+{%- set _bi = (blocked_tickers or {}).get(ticker) -%}
+{%- if _bi is mapping and _bi.get('stat_cls') == overheat_stat_cls %}
+- {{ ticker }}: {{ n }}회 — **단기과열(stat_cls={{ overheat_stat_cls }}) 확인. 코드가 당일 1회로 막는다 — 추가 매수 제안 금지.**
+{%- else %}
+- {{ ticker }}: {{ n }}회 — 단기과열 아님. **코드는 막지 않는다.**
+{%- endif %}
 {% endfor %}
-단기과열(stat_cls={{ overheat_stat_cls }}) 지정 종목은 **당일 1회만** 코드를 통과한다 — 위 목록에 있으면 추가
-매수를 제안하지 마라(제안해도 주문 단계에서 거부된다). 그 외 종목도 같은 날 같은 방향
-반복은 과매매다. 재제안하려면 아침과 다른 새 근거가 있어야 한다.
+당일 1회 하드 차단은 **단기과열(stat_cls={{ overheat_stat_cls }})로 확인된 종목에만** 적용된다.
+위에서 "코드는 막지 않는다"로 표시된 종목은 추가 매수를 제안하면 주문이 나간다 —
+이 목록에 있다는 이유만으로 단기과열이라고 **추정하지 마라**. 실측상 대다수 종목은
+stat_cls=55(신용가능)로 정상이며, 추정으로 자기검열하면 코드가 허용한 매매를 놓친다.
+다만 같은 날 같은 방향 반복은 과매매다. 재제안하려면 아침과 다른 새 근거가 있어야 하고,
+근거가 같다면 제안하지 않는 게 맞다 — 코드 차단이 아니라 당신의 판단으로 결정하라.
 
 {% endif %}
 {% if hold_warnings is defined and hold_warnings %}
