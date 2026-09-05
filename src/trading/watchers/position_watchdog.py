@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import math
+import os
 from datetime import date, datetime, timedelta
-from typing import Final, Any
+from typing import Any, Final
 
 import pytz
 
@@ -307,7 +307,20 @@ def _holding_days(ticker: str, held_qty: int | None = None) -> int | None:
 # 임계는 ATR 기반 계산값을 그대로 쓴다. 시뮬레이션상 -4퍼센트가 더 좋았으나
 # (중앙 -3.01 -> +1.50) -4 와 -6 사이 낙차가 커서 견고하지 않고 인샘플이다.
 # 숫자를 지어내지 않고 이미 계산되는 값을 배선만 잇는다.
-TRAIL_ARM_PCT: Final[float] = float(os.getenv("TRAIL_ARM_PCT", "5.0"))
+#
+# 2026-09-05: 무장선 5.0 -> 12.0.
+# 보유 중 평균 최고 미실현이 +6.91퍼센트라 무장선 5는 "조금이라도 오른 포지션"
+# 거의 전부를 무장시켰고, 되돌림폭(1.5 x atr = 5~8퍼센트)이 깊어 무장되는 순간
+# 본전까지 반납한 뒤에야 팔렸다. 실측 청산 6건의 peak 는 5.20~8.89퍼센트이고
+# 청산선은 -2.76 ~ +1.63퍼센트 — 전부 본전 밴드다. 전기간 trail 실현손익은
+# -21,150원으로 이익을 낸 적이 없다.
+# 12는 실측 6건을 전부 미무장으로 만들고, 익절선(4 x atr, 약 +18퍼센트)의 3분의 2
+# 지점이라 "진짜 이익이 난 뒤에만 지킨다" 가 된다.
+#
+# 표본이 6건이라 이 값 자체는 잠정이다. 관측이 쌓이면 재검토할 것.
+# .env 가 아니라 여기에 두는 이유: .env 는 gitignore 대상이라 저장소에 흔적이
+# 남지 않고, 새 환경에서 조용히 옛 기본값으로 돌아간다.
+TRAIL_ARM_PCT: Final[float] = float(os.getenv("TRAIL_ARM_PCT", "12.0"))
 
 
 def _lot_entry_date(ticker: str, held_qty: int | None) -> date | None:
@@ -334,7 +347,7 @@ def _peak_gain_pct(ticker: str, avg_cost: float, entry_date: date | None) -> flo
                 (ticker, entry_date),
             )
             row = cur.fetchone()
-    except Exception as e:  # noqa: BLE001 — 조회 실패는 트레일링 판정 포기일 뿐
+    except Exception as e:
         LOG.warning("position_watchdog: peak lookup failed for %s: %s", ticker, e)
         return None
     hi = row.get("hi") if row else None

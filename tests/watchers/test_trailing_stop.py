@@ -18,10 +18,13 @@ from unittest.mock import MagicMock, patch
 from trading.watchers import position_watchdog as pw
 
 
-def _run(*, pnl_pct, peak_gain, trail=-6.0, marked=False, qty=10):
+def _run(*, pnl_pct, peak_gain, trail=-6.0, marked=False, qty=10, arm=5.0):
+    """``arm`` 은 무장선 오버라이드. 기본 5.0 은 이 파일의 기존 테스트가 쓰던 값이며,
+    운영 기본값(12.0)과 무관하게 트레일 *메커니즘* 을 고정하기 위한 것이다."""
     holding = {"ticker": "005930", "qty": qty, "pnl_pct": pnl_pct,
                "avg_cost": 70_000, "eval_amount": 700_000}
     with (
+        patch.object(pw, "TRAIL_ARM_PCT", arm),
         patch.object(pw, "_build_client", return_value=object()),
         patch.object(pw, "_read_holdings", return_value=[holding]),
         patch.object(pw, "_confirm_qty", return_value=qty),
@@ -133,3 +136,37 @@ class TestArmLevelCoversGiveback:
         m, trim = _run(pnl_pct=2.0, peak_gain=9.0, trail=-6.0)
         assert m["trailing_exits"] == 1
         assert trim.call_args.kwargs["threshold_pct"] == 3.0  # peak + trail
+
+
+class TestOperatingDefault:
+    """운영 기본값 12.0 이 실제로 무엇을 바꾸는가."""
+
+    def test_실측_6건이_전부_미무장이_된다(self):
+        for pnl, peak, trail in [
+            (-3.53, 5.24, -6.99), (-1.09, 5.88, -6.82), (0.91, 8.89, -7.26),
+            (-3.14, 5.20, -7.97), (0.78, 5.99, -5.12), (0.65, 6.17, -5.48),
+        ]:
+            m, _ = _run(pnl_pct=pnl, peak_gain=peak, trail=trail, arm=12.0)
+            assert m["trailing_exits"] == 0, f"peak {peak} 가 여전히 무장한다"
+
+    def test_진짜_이익은_여전히_지킨다(self):
+        """+15%까지 갔다가 되돌리는 경우 — 이걸 놓치면 트레일링을 둘 이유가 없다."""
+        m, trim = _run(pnl_pct=7.0, peak_gain=15.0, trail=-6.0, arm=12.0)
+        assert m["trailing_exits"] == 1
+        assert trim.call_args.kwargs["threshold_pct"] == 9.0
+
+
+def test_무장선_기본값이_되돌림폭을_덮는다():
+    """.env 는 gitignore 대상이라 기본값이 소스에 있어야 새 환경에서 안 되돌아간다.
+
+    12는 실측 청산 6건(peak 5.20~8.89%)을 전부 미무장으로 만드는 값이다. 표본이
+    6건이라 잠정값이며, 관측이 쌓이면 재검토 대상이다.
+    """
+    import os
+    from importlib import reload
+
+    if os.getenv("TRAIL_ARM_PCT"):
+        # 운영자가 env 로 실험 중이면 기본값 검증은 건너뛴다(오버라이드는 유효 기능).
+        return
+    reload(pw)
+    assert pw.TRAIL_ARM_PCT == 12.0
