@@ -263,6 +263,18 @@ def _safe_call(name: str, fn, *args, **kwargs):
 
 
 def main() -> None:
+    # 2026-09-05: 이 프로세스가 어떤 코드·프롬프트로 도는지 시간축에 남긴다.
+    # 성과 창이 여러 배포를 섞어 이미 고쳐진 결함을 현재 결함으로 진단하는 일을
+    # 막기 위한 표식이다(runtime_version 모듈 docstring 참조). 실패해도 무시한다 —
+    # 관측 손실이 스케줄러 기동을 막아서는 안 된다.
+    try:
+        from trading.ops.runtime_version import record_runtime_version
+
+        code_h, prompt_h = record_runtime_version()
+        LOG.info("runtime version: code=%s prompt=%s", code_h, prompt_h)
+    except Exception:
+        LOG.warning("runtime_version 기록 생략", exc_info=True)
+
     sched = BlockingScheduler(timezone=KST)
 
     # SPEC-013 — News crawl 6x/day (always runs; .md is "current snapshot")
