@@ -88,3 +88,48 @@ class TestPeakUsesTodaysMoveToo:
         m, _ = _run(pnl_pct=6.0, peak_gain=1.0, trail=-6.0)
         # peak = max(1.0, 6.0) = 6.0 >= 5.0 이지만 낙폭 0 이라 청산 아님
         assert m["trailing_exits"] == 0
+
+
+class TestArmLevelCoversGiveback:
+    """무장선이 되돌림폭보다 작으면 트레일이 본전 아래에서만 나간다 (2026-09-05).
+
+    무장선 5% 는 고정인데 되돌림폭은 1.5*atr_pct 다. DYNAMIC_THRESHOLD_SERVED 30일
+    실측 n=15,986 에서 atr_pct 중앙값이 4.51% → 되돌림폭 6.8%, 1.5*atr >= 5.0 인
+    경우가 89.1%. 실제 청산 6건의 임계선은 -2.76 ~ +1.63% 였다.
+    """
+
+    def test_되돌림폭이_무장선보다_깊으면_본전_아래로_안_판다(self):
+        """peak +5.24%, trail -6.99% → 청산선 -1.75%. 손실 확정 매도였다(011200 실측)."""
+        m, _ = _run(pnl_pct=-3.53, peak_gain=5.24, trail=-6.99)
+        assert m["trailing_exits"] == 0
+
+    def test_실측_손실_3건이_전부_차단된다(self):
+        """011200 / 373220 / 018260 — 소급 적용 시 손실로 끝난 셋만 막힌다."""
+        for pnl, peak, trail in [
+            (-3.53, 5.24, -6.99),   # 011200
+            (-1.09, 5.88, -6.82),   # 373220
+            (-3.14, 5.20, -7.97),   # 018260
+        ]:
+            m, _ = _run(pnl_pct=pnl, peak_gain=peak, trail=trail)
+            assert m["trailing_exits"] == 0, f"peak {peak} trail {trail} 가 여전히 발동"
+
+    def test_이익으로_끝난_3건은_그대로_나간다(self):
+        """051910 / 055550 / 105560 — 이익 청산은 막지 않는다(수정은 바닥만 깐다)."""
+        for pnl, peak, trail in [
+            (0.91, 8.89, -7.26),    # 051910
+            (0.78, 5.99, -5.12),    # 055550
+            (0.65, 6.17, -5.48),    # 105560
+        ]:
+            m, _ = _run(pnl_pct=pnl, peak_gain=peak, trail=trail)
+            assert m["trailing_exits"] == 1, f"peak {peak} trail {trail} 가 안 나갔다"
+
+    def test_얕은_되돌림폭이면_무장선은_5퍼센트_그대로다(self):
+        """1.5*atr < 5.0 인 저변동 종목에서는 기존 동작이 바뀌지 않는다."""
+        m, _ = _run(pnl_pct=1.0, peak_gain=5.5, trail=-3.0)
+        assert m["trailing_exits"] == 1
+
+    def test_청산선이_감사로그에_남는다(self):
+        """threshold 0.0 만 남아 왜 팔았는지 사후 재구성이 불가능했다."""
+        m, trim = _run(pnl_pct=2.0, peak_gain=9.0, trail=-6.0)
+        assert m["trailing_exits"] == 1
+        assert trim.call_args.kwargs["threshold_pct"] == 3.0  # peak + trail

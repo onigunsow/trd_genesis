@@ -419,6 +419,7 @@ def _execute_trim(
     cap_pct: float,
     *,
     kind: str = "trim",
+    threshold_pct: float | None = None,
 ) -> bool:
     """Execute one partial trim (concentration ``trim`` or stagnation ``rotate``).
 
@@ -453,10 +454,16 @@ def _execute_trim(
     _mark_action(ticker, _TRIM_ACTION)  # shared marker — one trim per ticker/day
     # threshold field reused to carry the cap% that drove a concentration trim
     # (0.0 for a stagnation rotation, which is not cap-driven).
-    _notify_and_audit(kind, ticker, pnl_pct, cap_pct * 100.0, sell_qty)
+    # 2026-09-05: 트레일은 cap 이 아니라 청산선(peak+trail_pct)이 기준이라
+    # cap_pct*100 = 0.0 만 남아 "왜 팔았는지" 를 사후에 재구성할 수 없었다.
+    # threshold_pct 가 오면 그 값을 그대로 싣는다.
+    audit_threshold = (
+        threshold_pct if threshold_pct is not None else cap_pct * 100.0
+    )
+    _notify_and_audit(kind, ticker, pnl_pct, audit_threshold, sell_qty)
     LOG.info(
-        "position_watchdog %s ticker=%s pnl=%.2f cap=%.1f%% qty=%d",
-        kind, ticker, pnl_pct, cap_pct * 100.0, sell_qty,
+        "position_watchdog %s ticker=%s pnl=%.2f threshold=%.2f%% qty=%d",
+        kind, ticker, pnl_pct, audit_threshold, sell_qty,
     )
     return True
 
@@ -533,9 +540,19 @@ def poll_position_watchdog() -> dict[str, Any]:
                     )
                     # 일봉 고가는 당일 장중을 못 보므로 현재 손익률과 합쳐 쓴다.
                     peak = max(peak_hist, pnl_pct) if peak_hist is not None else None
+                    # 2026-09-05: 무장선(5%)이 되돌림 허용폭(1.5*atr_pct)보다 작으면
+                    # 청산선 peak+trail_pct 가 구조적으로 본전 아래에 놓인다.
+                    # DYNAMIC_THRESHOLD_SERVED 30일 실측 n=15,986 에서 atr_pct 중앙값이
+                    # 4.51% 라 되돌림폭은 6.8% — 1.5*atr >= 5.0 인 경우가 89.1% 다.
+                    # 즉 대부분의 종목에서 트레일은 이익을 지킬 수 없었다(실측 6건의
+                    # 청산 임계선 -2.76 ~ +1.63%). stop_loss_pct 에는 STOP_FLOOR_PCT
+                    # 가드레일이 있는데 trailing_stop_pct 에만 없던 것이 원인이다.
+                    # 무장선을 되돌림폭까지 끌어올려 peak + trail_pct >= 0 을 보장한다.
+                    # 손절은 그대로 effective_stop 이 담당하므로 하방은 안 바뀐다.
+                    arm_pct = max(TRAIL_ARM_PCT, -float(trail_pct))
                     if (
                         peak is not None
-                        and peak >= TRAIL_ARM_PCT
+                        and peak >= arm_pct
                         and pnl_pct <= peak + float(trail_pct)
                     ):
                         LOG.info(
@@ -543,7 +560,11 @@ def poll_position_watchdog() -> dict[str, Any]:
                             "현재 %+.2f%% (trail %+.2f%%)",
                             ticker, peak, pnl_pct, float(trail_pct),
                         )
-                        if _execute_trim(client, ticker, qty, pnl_pct, 0.0, kind="trail"):
+                        if _execute_trim(
+                            client, ticker, qty, pnl_pct, 0.0,
+                            kind="trail",
+                            threshold_pct=peak + float(trail_pct),
+                        ):
                             metrics["trailing_exits"] += 1
                         else:
                             metrics["skipped"] += 1

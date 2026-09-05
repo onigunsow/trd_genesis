@@ -14,6 +14,7 @@ model guard to prevent direct Sonnet API calls when cli_only_mode is active.
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -203,6 +204,35 @@ def _cost_krw(
 
 def _prompt_dir() -> Path:
     return Path(__file__).resolve().parent / "prompts"
+
+
+@functools.lru_cache(maxsize=1)
+def prompt_set_hash() -> str | None:
+    """personas/prompts/*.jinja 전체 내용의 md5 앞 12자. 읽기 실패 시 None.
+
+    성과 시계열을 "어느 프롬프트 세트가 낸 것인지" 로 가를 수 있게 하는 단일 표식이다.
+    2026-08-27 stat_cls 정정, 08-28 수급표 주입, 09-02 자기검열 수정이 전부 이 디렉터리를
+    바꿨는데 persona_runs 에는 흔적이 없어 PF 를 한 덩어리로 재고 있었다.
+    파일명까지 해시에 넣어 이름 변경도 새 해시가 되게 한다.
+
+    프로세스 수명 동안 캐시된다 — 프롬프트를 고치면 재배포가 따라오므로 충분하다.
+    """
+    try:
+        h = hashlib.md5(usedforsecurity=False)  # 감사용 버전 표식, 보안 용도 아님
+        n = 0
+        for f in sorted(_prompt_dir().glob("*.jinja")):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+            n += 1
+        if n == 0:
+            # glob 은 없는 디렉터리에도 예외를 안 낸다 — 빈 md5(d41d8cd98f00)가
+            # 정상 해시처럼 찍히면 서로 다른 배포가 같은 버전으로 묶인다. None 이 낫다.
+            LOG.warning("prompts/*.jinja 가 없다 — prompt_hash 없이 기록")
+            return None
+        return h.hexdigest()[:12]
+    except Exception:  # 해시는 감사용 부가정보. 실패해도 매매는 진행한다.
+        LOG.warning("prompt_set_hash 산출 실패 — prompt_hash 없이 기록")
+        return None
 
 
 def render_prompt(template_name: str, **ctx: Any) -> str:
@@ -482,8 +512,9 @@ def call_persona(
              prompt, response, response_json,
              input_tokens, output_tokens, cost_krw, latency_ms, error,
              cache_read_tokens, cache_creation_tokens,
-             tool_calls_count, tool_input_tokens, tool_output_tokens)
-        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             tool_calls_count, tool_input_tokens, tool_output_tokens,
+             prompt_hash)
+        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """
     with connection() as conn, conn.cursor() as cur:
@@ -505,6 +536,7 @@ def call_persona(
             tool_calls_count,
             tool_input_tokens,
             tool_output_tokens,
+            prompt_set_hash(),
         ))
         row = cur.fetchone()
         run_id = row["id"]
@@ -986,8 +1018,9 @@ def call_persona_via_cli(
              prompt, response, response_json,
              input_tokens, output_tokens, cost_krw, latency_ms, error,
              cache_read_tokens, cache_creation_tokens,
-             tool_calls_count, tool_input_tokens, tool_output_tokens)
-        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             tool_calls_count, tool_input_tokens, tool_output_tokens,
+             prompt_hash)
+        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """
     with connection() as conn, conn.cursor() as cur:
@@ -1009,6 +1042,7 @@ def call_persona_via_cli(
             0,   # tool_calls_count = 0 (pre-computed)
             0,   # tool_input_tokens = 0
             0,   # tool_output_tokens = 0
+            prompt_set_hash(),
         ))
         row = cur.fetchone()
         run_id = row["id"]
