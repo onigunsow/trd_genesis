@@ -70,9 +70,52 @@ def test_DB가_죽어도_예외를_올리지_않는다(monkeypatch):
         raise RuntimeError("DB down")
 
     monkeypatch.setattr(rv, "connection", _boom)
+    monkeypatch.setattr(rv, "_recorded", False)
     rv.code_set_hash.cache_clear()   # 앞 테스트가 남긴 None 캐시를 지운다
-    rv.record_runtime_version.cache_clear()
     code, _prompt = rv.record_runtime_version()
 
     assert code is not None      # 해시 자체는 DB 없이도 나온다
-    rv.record_runtime_version.cache_clear()
+
+
+def test_DB가_복구되면_다시_시도한다(monkeypatch):
+    """실패를 캐시하면 안 된다 — 스케줄러가 postgres 보다 먼저 뜬 한 번의 레이스로
+    몇 주치 버전 기록이 통째로 비게 된다."""
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("DB down")
+
+    monkeypatch.setattr(rv, "_recorded", False)
+    rv.code_set_hash.cache_clear()
+    monkeypatch.setattr(rv, "connection", _boom)
+    rv.record_runtime_version()
+    rv.record_runtime_version()
+
+    assert calls["n"] == 2, "DB 실패가 캐시되어 재시도가 사라졌다"
+
+
+def test_성공하면_더_시도하지_않는다(monkeypatch):
+    calls = {"n": 0}
+
+    class _Cur:
+        def execute(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _ok(*a, **k):
+        calls["n"] += 1
+        return _Conn()
+
+    monkeypatch.setattr(rv, "_recorded", False)
+    rv.code_set_hash.cache_clear()
+    monkeypatch.setattr(rv, "connection", _ok)
+    rv.record_runtime_version()
+    rv.record_runtime_version()
+
+    assert calls["n"] == 1, "성공 후에도 매번 DB 를 두드린다"
