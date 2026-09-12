@@ -462,3 +462,63 @@ class TestComputeQtyReturnStructure:
         }
         result = compute_qty(candidate=candidate, portfolio_state=state, params=params)
         assert result["qty"] == 0
+
+
+class TestRiskAtStopSizing:
+    """손절 기준 위험 타기팅 (2026-09-12).
+
+    1-ATR 은 실제로 청산이 일어나는 지점이 아니다. 한국 시장 실측 평균 atr_pct
+    4.72%(n=19,663)에서 vol_target 1% 는 목표 비중 21.2% 를 내는데 종목당 캡이 15%
+    라, 8/17 이후 매수 37건 중 86%가 캡에 붙어 변동성 차등이 사라졌다. 분모를
+    effective_stop 으로 바꾸면 중앙값 6.67%, 캡 도달 0% 로 차등이 살아난다.
+    """
+
+    @staticmethod
+    def _state(*, stop=None, atr=None, total=10_000_000, cash=10_000_000, price=10_000):
+        s = {"total_assets": total, "cash": cash, "ref_price": price}
+        if stop is not None:
+            s["effective_stop"] = stop
+        if atr is not None:
+            s["atr_pct"] = atr
+        return s
+
+    def _qty(self, state, **kw):
+        compute_qty, SizingParams = _import_sizing()
+        return compute_qty(
+            candidate={"side": "buy", "qty": 1},
+            portfolio_state=state,
+            params=SizingParams(**kw),
+        )
+
+    def test_손절선을_분모로_쓴다(self):
+        """위험 1%, 손절 -15% -> 비중 6.67%."""
+        r = self._qty(self._state(stop=-15.0, atr=4.72))
+        assert r["sizing_reason"] == "risk_at_stop"
+        assert r["qty"] == 66          # 666,666원 / 10,000원
+
+    def test_손절이_얕으면_사이즈가_커진다(self):
+        """-7.5% 손절이면 -15% 의 약 두 배 (주수 내림 때문에 정확히 2배는 아니다)."""
+        deep = self._qty(self._state(stop=-15.0))["qty"]
+        shallow = self._qty(self._state(stop=-7.5))["qty"]
+        assert abs(shallow - 2 * deep) <= 1
+
+    def test_변동성이_커도_캡에_붙지_않는다(self):
+        """기존 공식이 86% 캡에 붙던 지점 — 실측 atr 범위 전체에서 15% 미만."""
+        for atr in (2.12, 4.51, 4.72, 6.74, 17.05):
+            stop = max(-4.0 * atr, -15.0)     # thresholds.py 와 같은 산식
+            r = self._qty(self._state(stop=stop, atr=atr))
+            share = r["qty"] * 10_000 / 10_000_000
+            assert share < 0.15, f"atr {atr}% 에서 비중 {share:.1%} 가 캡에 닿는다"
+
+    def test_손절이_없으면_기존_공식으로_되돌아간다(self):
+        r = self._qty(self._state(atr=4.72))
+        assert r["sizing_reason"] == "vol_target"
+
+    def test_0이면_이_경로를_쓰지_않는다(self):
+        r = self._qty(self._state(stop=-15.0, atr=4.72), risk_per_trade_at_stop=0.0)
+        assert r["sizing_reason"] == "vol_target"
+
+    def test_양수_손절은_무시한다(self):
+        """effective_stop 은 음수여야 한다 — 부호가 뒤집힌 값에 사이즈를 걸지 않는다."""
+        r = self._qty(self._state(stop=15.0, atr=4.72))
+        assert r["sizing_reason"] == "vol_target"

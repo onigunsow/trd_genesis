@@ -267,6 +267,19 @@ class SizingParams:
     vol_target_per_trade: float = dataclasses.field(
         default_factory=lambda: float(os.getenv("SIZING_VOL_TARGET_PER_TRADE", "0.01"))
     )
+    # 2026-09-12: 손절 기준 위험 예산. 포지션이 *실제 손절선* 에서 청산될 때 잃는
+    # 금액이 자산의 이 비율을 넘지 않도록 사이즈를 정한다.
+    #
+    # 왜 1-ATR 이 아니라 손절선인가: 1-ATR 은 실제로 청산이 일어나는 지점이 아니다.
+    # 한국 시장 실측 평균 atr_pct 4.72%(n=19,663)에서 vol_target 1% 는 목표 비중
+    # 21.2% 를 내는데, 종목당 캡이 15% 라 8/17 이후 매수 37건 중 **86%가 캡에 붙어**
+    # 변동성 차등이 사라진다("항상 최대"가 된다). 분모를 effective_stop(4xATR,
+    # -15% floor)으로 바꾸면 중앙값 6.67%, 캡 도달 0% 로 차등이 살아난다.
+    #
+    # 0 이면 이 경로를 쓰지 않고 기존 vol_target 공식으로 되돌아간다.
+    risk_per_trade_at_stop: float = dataclasses.field(
+        default_factory=lambda: float(os.getenv("SIZING_RISK_PER_TRADE_AT_STOP", "0.01"))
+    )
     # ATR lookback 윈도 (일) — 기존 ATR_PERIOD=14 재사용
     atr_lookback: int = dataclasses.field(
         default_factory=lambda: int(os.getenv("SIZING_ATR_LOOKBACK", "14"))

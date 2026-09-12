@@ -57,7 +57,8 @@ def compute_qty(
     Returns:
         dict with keys:
             - qty (int): 결정적 사이징 결과 주수 (>= 0)
-            - sizing_reason (str): 'vol_target' | 'vol_unavailable' | 'below_min_lot'
+            - sizing_reason (str): 'risk_at_stop' | 'vol_target' | 'vol_unavailable'
+                                   | 'below_min_lot'
                                    | 'sell_bypass' | 'no_cash'
             - advisory_qty (int): LLM 이 낸 원본 qty (A/B 비교/감사용, REQ-046-E3)
     """
@@ -91,7 +92,24 @@ def compute_qty(
     # Step 1: 목표 notional 계산
     # -------------------------------------------------------------------------
 
-    if atr_pct is not None and atr_pct > 0:
+    stop_pct: float | None = portfolio_state.get("effective_stop")
+
+    if params.risk_per_trade_at_stop > 0 and stop_pct is not None and stop_pct < 0:
+        # 2026-09-12: 손절 기준 위험 타기팅.
+        #   notional = (risk_per_trade_at_stop x total_assets) / |effective_stop|
+        # 실제로 청산이 일어나는 지점을 분모로 쓴다 — 포지션이 손절당하면 언제나
+        # 자산의 risk_per_trade_at_stop 만큼만 잃는다. effective_stop 이 ATR 기반
+        # (4xATR, -15% floor)이라 변동성이 큰 종목일수록 자동으로 작아진다.
+        #
+        # 1-ATR 을 분모로 쓰던 기존 공식은 한국 시장 실측 평균 atr_pct 4.72%
+        # (n=19,663)에서 목표 비중 21.2% 를 내는데 종목당 캡이 15% 라, 8/17 이후
+        # 매수 37건 중 86%가 캡에 붙어 변동성 차등이 사라졌다("항상 최대"가 됐다).
+        # 손절선을 분모로 쓰면 중앙값 6.67%, 캡 도달 0% 로 차등이 살아난다.
+        target_notional = (
+            params.risk_per_trade_at_stop * total_assets
+        ) / (abs(stop_pct) / 100.0)
+        sizing_reason = "risk_at_stop"
+    elif atr_pct is not None and atr_pct > 0:
         # 변동성 타기팅: notional = (vol_target x total_assets) / atr_pct
         # atr_pct 는 백분율 단위 (예: 2.0 = 2%)
         atr_fraction = atr_pct / 100.0
