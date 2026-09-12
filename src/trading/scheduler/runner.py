@@ -579,8 +579,15 @@ def main() -> None:
     )
 
     # Retrospective: Sunday 18:00
+    #
+    # 2026-09-12: _wrap -> _safe_call. _wrap 은 거래일이 아니면 즉시 return 하는데
+    # **일요일은 정의상 거래일이 아니다** — 발사 시각과 가드가 논리적으로 배타라
+    # 이 잡은 등록된 이래 한 번도 실행되지 않았다(persona_runs 0건, retrospectives
+    # 0행, 초기 커밋 f93e2e1 부터 4개월). 주간 회고는 지난 한 주를 돌아보는
+    # 작업이라 장이 열리는지와 무관하다 — 정적 컨텍스트 빌더와 같은 부류이므로
+    # _safe_call 이 맞는 짝이다(예외 처리는 동일).
     sched.add_job(
-        lambda: _wrap("retrospective", retrospective.run),
+        lambda: _safe_call("retrospective", retrospective.run),
         CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=KST),
         id="retrospective",
         name="retrospective 18:00",

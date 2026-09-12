@@ -151,3 +151,64 @@ class TestCheckAndAlert:
         joined = " ".join(r.message for r in caplog.records)
         for table in ("ohlcv", "fundamentals", "flows", "disclosures"):
             assert table in joined.lower()
+
+
+class TestSymbolAxis:
+    """테이블 MAX 하나로는 멈춘 시리즈가 안 보인다 (2026-09-12).
+
+    KOSPI 지수(1001)가 2026-08-20 에 멈췄는데 매매 종목 55개가 매일 들어와
+    `MAX(ts) FROM ohlcv` 는 언제나 어제였다. 3주간 "fresh" 로 통과했고 그 사이
+    알파가 한 달 전략 수익률을 9일 지수 수익률과 비교했다.
+    """
+
+    def test_멈춘_심볼이_있으면_알린다(self):
+        from datetime import date, datetime
+
+        from trading.monitoring import data_freshness as df
+
+        sent = []
+        res = df.check_and_alert(
+            clock=lambda: datetime(2026, 9, 11, 9, 0),
+            latest_ts_fn=lambda t: date(2026, 9, 10),      # 테이블 MAX 는 신선
+            alert_sender=lambda cat, msg: sent.append((cat, msg)),
+            stale_symbols_fn=lambda exp: [("1001", date(2026, 8, 20))],
+        )
+
+        assert res["alert_sent"] is True
+        sym = [e for e in res["entries"] if e["table"] == "ohlcv:symbols"]
+        assert len(sym) == 1
+        assert sym[0]["stale_symbol_count"] == 1
+        assert sym[0]["stale_symbols"][0]["symbol"] == "1001"
+
+    def test_멈춘_심볼이_없으면_조용하다(self):
+        from datetime import date, datetime
+
+        from trading.monitoring import data_freshness as df
+
+        sent = []
+        res = df.check_and_alert(
+            clock=lambda: datetime(2026, 9, 11, 9, 0),
+            latest_ts_fn=lambda t: date(2026, 9, 10),
+            alert_sender=lambda cat, msg: sent.append((cat, msg)),
+            stale_symbols_fn=lambda exp: [],
+        )
+
+        assert res["alert_sent"] is False
+        assert not [e for e in res["entries"] if e["table"] == "ohlcv:symbols"]
+
+    def test_심볼_점검_실패가_전체_점검을_막지_않는다(self):
+        from datetime import date, datetime
+
+        from trading.monitoring import data_freshness as df
+
+        def _boom(_exp):
+            raise RuntimeError("DB down")
+
+        res = df.check_and_alert(
+            clock=lambda: datetime(2026, 9, 11, 9, 0),
+            latest_ts_fn=lambda t: date(2026, 9, 10),
+            alert_sender=lambda cat, msg: None,
+            stale_symbols_fn=_boom,
+        )
+        assert res["alert_sent"] is False
+        assert len(res["entries"]) == 4

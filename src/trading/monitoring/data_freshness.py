@@ -139,11 +139,83 @@ def _default_alert_sender(category: str, message: str) -> None:
     system_briefing(category, message)
 
 
+# 2026-09-12: 심볼 축 점검. 기존 점검은 테이블당 `MAX(ts)` 하나만 봤다 — ohlcv 는
+# 심볼로 나뉜 테이블이라 매매 종목 55개가 매일 들어오면 MAX(ts) 는 언제나 어제이고,
+# KOSPI 지수(1001)가 8/20 에 멈춘 3주 내내 "fresh" 로 통과했다. 그 사이 알파 지표가
+# 한 달 전략 수익률을 9일 지수 수익률과 비교했다(+6.36p 로 보고, 실제 -7.59p).
+# 점검이 통과한 게 아니라 볼 수 있는 축이 없었다.
+#
+# 폐지·유니버스 이탈 종목까지 알리면 소음이 되므로 "최근에 살아 있던" 시리즈만 본다:
+# active_window 안에 데이터가 있었는데 expected 이후로 끊긴 것.
+STALE_SYMBOL_ACTIVE_WINDOW_DAYS = 60
+STALE_SYMBOL_REPORT_LIMIT = 10
+# 지수·매크로 시리즈: 매매 종목이 아니라 유니버스에 안 잡히지만 알파·레짐 계산의
+# 입력이라 멈추면 지표가 조용히 틀린다. 1001 이 정확히 그 사례였다.
+_BENCHMARK_SYMBOLS = ("1001",)
+
+
+def _must_be_fresh_symbols() -> set[str]:
+    """신선해야 마땅한 ohlcv 심볼 집합.
+
+    전체 심볼을 보면 안 된다 — ``refresh_ohlcv`` 는 ``get_data_universe()`` 만 돌므로
+    유니버스에서 빠진 종목은 정상적으로 갱신이 멈춘다. 실측(2026-09-12) 전체 기준
+    25개가 잡히는데 대부분 그 부류라, 그대로 알리면 매일 25건짜리 소음이 되고
+    아무도 보지 않는다.
+
+    반드시 신선해야 하는 것은 셋이다:
+      - 현재 데이터 유니버스 (스크리너·ATR·손절선의 입력)
+      - 현재 보유 종목 (평가·워치독의 입력)
+      - 지수/벤치마크 시리즈 (알파 계산의 입력 — 2026-08-20~09-11 공백의 당사자)
+    """
+    from trading.db.session import connection
+
+    out: set[str] = set(_BENCHMARK_SYMBOLS)
+    try:
+        from trading.data.universe import get_data_universe
+
+        out |= {str(t) for t in get_data_universe()}
+    except Exception:  # 유니버스 조회 실패 — 보유·지수만으로 점검한다.
+        LOG.warning("data_freshness: 유니버스 조회 실패", exc_info=True)
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT ticker FROM positions WHERE qty > 0")
+            out |= {r["ticker"] for r in cur.fetchall()}
+    except Exception:
+        LOG.warning("data_freshness: 보유 종목 조회 실패", exc_info=True)
+    return out
+
+
+def _stale_symbols_from_db(
+    expected: date, active_window_days: int = STALE_SYMBOL_ACTIVE_WINDOW_DAYS
+) -> list[tuple[str, date]]:
+    """``expected`` 이후로 끊겼지만 신선해야 마땅한 ohlcv 심볼 (오래된 순)."""
+    from trading.db.session import connection
+
+    must = _must_be_fresh_symbols()
+    if not must:
+        return []
+
+    sql = """
+        SELECT symbol, MAX(ts) AS mx
+          FROM ohlcv
+         WHERE symbol = ANY(%s)
+         GROUP BY symbol
+        HAVING MAX(ts) < %s
+           AND MAX(ts) >= %s
+         ORDER BY mx ASC
+    """
+    floor = expected - timedelta(days=active_window_days)
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, (list(must), expected, floor))
+        return [(r["symbol"], r["mx"]) for r in cur.fetchall()]
+
+
 def check_and_alert(
     clock: Callable[[], datetime] = datetime.now,
     latest_ts_fn: Callable[[str], date | None] = _latest_ts_from_db,
     alert_sender: Callable[[str, str], None] = _default_alert_sender,
     tables: tuple[str, ...] = DEFAULT_TABLES,
+    stale_symbols_fn: Callable[[date], list[tuple[str, date]]] | None = None,
 ) -> dict[str, Any]:
     """REQ-019-5: Check 4 data tables and alert on stale state.
 
@@ -198,6 +270,35 @@ def check_and_alert(
 
         if stale:
             stale_entries.append(entry)
+
+    # 심볼 축: 테이블 MAX 가 신선해도 개별 시리즈가 멈춰 있을 수 있다.
+    symbol_fn = stale_symbols_fn or _stale_symbols_from_db
+    try:
+        expected_ohlcv = _expected_ts("ohlcv", now)
+        stale_syms = symbol_fn(expected_ohlcv)
+    except Exception as exc:
+        LOG.warning("data_freshness: 심볼 축 점검 실패: %s", exc)
+        stale_syms = []
+
+    if stale_syms:
+        entry = {
+            "table": "ohlcv:symbols",
+            "latest": stale_syms[0][1],
+            "expected": expected_ohlcv,
+            "hours_stale": _hours_between(now, stale_syms[0][1]),
+            "stale": True,
+            "stale_symbol_count": len(stale_syms),
+            "stale_symbols": [
+                {"symbol": sym, "latest": d.isoformat()}
+                for sym, d in stale_syms[:STALE_SYMBOL_REPORT_LIMIT]
+            ],
+        }
+        entries.append(entry)
+        stale_entries.append(entry)
+        LOG.info(
+            "data_freshness: 멈춘 심볼 %d개 (최악 %s=%s)",
+            len(stale_syms), stale_syms[0][0], stale_syms[0][1].isoformat(),
+        )
 
     alert_sent = False
     if stale_entries:
