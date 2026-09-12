@@ -35,7 +35,21 @@ LOG = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5"
 BATCH_SIZE = 5  # Reduced from 10: Haiku produces more reliable JSON with smaller batches
-MAX_ARTICLES_PER_RUN = 100
+# 2026-09-12: 100 -> 200 (슬롯당 5청크 -> 10청크).
+# 실측: 크롤 유입 약 1,900건/일인데 용량은 100 x 6슬롯 = 600건/일이라 **유입의
+# 74%가 한 번도 분석되지 않고 보존기간(7일)에 삭제**됐다(분석률 26%, 2,795/10,853).
+# 선별 순서가 관심종목 매칭 -> 섹터 적중률 -> 최신순이라 버려지는 쪽이 무작위는
+# 아니지만, 하루 1,300건이 읽히지 않는다.
+#
+# 상한을 정하는 건 시간이 아니라 CLI 호출 횟수다. 호스트는 청크당 약 80초라
+# 10청크도 13분이면 끝나고 슬롯 간격은 3시간이다(import 를 :30 으로 옮겨 20분
+# 여유를 뒀다 — 청크 15개까지 감당). 반면 CLI 호출은 뉴스 30 + 페르소나 약 40 =
+# 하루 70회에서 100회로 늘어난다. 2026-08-23 에 쿼터 소진으로 결정의 70%를 잃은
+# 이력이 있어 한 번에 전량(95청크/일)으로 가지 않고 단계를 나눈다.
+#
+# 게이트: 한 주 관측 후 (1) persona_runs 실패 0 유지 (2) NEWS_INTEL_ALIGN_REJECT
+# 비율이 현 8.6% 수준 유지 (3) 미분석 백로그 감소. 셋 다 통과하면 다음 단계.
+MAX_ARTICLES_PER_RUN = int(os.getenv("NEWS_MAX_ARTICLES_PER_RUN", "200"))
 HAIKU_TIMEOUT = 30.0
 RETRY_DELAY = 5.0
 

@@ -313,14 +313,19 @@ def main() -> None:
         )
 
     # Step 2: Import host results + run pipeline (15 min after each crawl)
-    # Allows 10 min for host cron to run claude CLI at :10/:40
+    # 2026-09-12: import 를 :15 -> :30 으로 늦춘다 (호스트 분석 시작 +20분).
+    # 실측: 호스트 analyze_news.sh 는 청크당 약 80초, 5청크에 약 6분이 걸린다
+    # (14:40:xx 시작 -> 14:46:21 종료). import 가 :15 에 돌아 **매 슬롯 마지막
+    # 청크를 1분 차이로 놓치고** 있었고, 남은 청크는 다음 슬롯(3시간 뒤)까지
+    # 대기했다. 슬롯 간격이 3시간이라 늦추는 데 따르는 비용은 없다.
+    # :30 은 20분 여유 = 청크 15개까지 감당한다(현재 5개).
     _NEWS_IMPORT_TIMES = [
-        (8, 15),  # host analyzes at 08:10
-        (11, 15),  # host analyzes at 11:10
-        (14, 45),  # host analyzes at 14:40
-        (22, 15),  # host analyzes at 22:10
-        (1, 15),  # host analyzes at 01:10
-        (4, 15),  # host analyzes at 04:10
+        (8, 30),  # host analyzes at 08:10
+        (11, 30),  # host analyzes at 11:10
+        (15, 0),  # host analyzes at 14:40
+        (22, 30),  # host analyzes at 22:10
+        (1, 30),  # host analyzes at 01:10
+        (4, 30),  # host analyzes at 04:10
     ]
     for h, m in _NEWS_IMPORT_TIMES:
         sched.add_job(
