@@ -89,3 +89,20 @@ def test_수수료가_있으면_비용_문구를_붙이지_않는다():
 
     assert b.total_fees == 300.0
     assert "비용 반영 전" not in b.comparison_basis
+
+
+def test_지수_구간이_짧으면_경고를_붙인다():
+    """지수(1001)에는 갱신 잡이 없어 2026-08-20 에서 멈춰 있었다. 그 결과 한 달짜리
+    전략 수익률을 9일짜리 지수 수익률과 비교하고도 화면은 아무 말이 없었다."""
+    closes = [(date(2026, 1, 1), 2500.0), (date(2026, 1, 10), 2550.0)]  # end 보다 21일 이름
+    b = compute([_rt(10, 100, 120)], closes=closes, invested=(13.2, 39))
+
+    assert b.available is True          # 알파 자체는 그대로 낸다
+    assert b.kospi_end == date(2026, 1, 10)
+    assert "【경고】" in b.comparison_basis
+    assert "같은 기간 비교가 아니다" in b.comparison_basis
+
+
+def test_지수가_구간을_덮으면_경고가_없다():
+    b = compute([_rt(10, 100, 120)], closes=_CLOSES, invested=(13.2, 39))
+    assert "【경고】" not in b.comparison_basis

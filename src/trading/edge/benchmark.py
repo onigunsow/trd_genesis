@@ -26,16 +26,53 @@ _SOURCE = "pykrx"
 KOSPI_CODE = "1001"
 
 
+# 지수(1001)는 갱신 잡이 없다 — refresh_ohlcv 는 get_data_universe()(매매 종목)만
+# 돌고, 지수는 kospi200_backfill 일회성 백필로만 채워진다. 2026-09-12 실측: 캐시가
+# 2026-08-20 에서 멈춰 있었고, 그 결과 한 달짜리 전략 수익률을 9일짜리 지수 수익률과
+# 비교하고 있었다(구간 8/11~9/11, 실제 지수 8/11~8/20, KOSPI +7.99%). 소비하는 쪽에서
+# 꼬리를 스스로 채운다 — 채운 뒤 upsert 하므로 다음 호출은 캐시에 걸린다.
+_TAIL_GAP_TOLERANCE_DAYS = 3
+
+
 def kospi_closes(start: date, end: date) -> list[tuple[date, float]]:
-    """[start, end] KOSPI 종가 (date, close) 오름차순. 실패/없음 시 []."""
+    """[start, end] KOSPI 종가 (date, close) 오름차순. 실패/없음 시 [].
+
+    캐시가 ``end`` 근처까지 오지 못하면 모자란 꼬리만 pykrx 로 받아 적재한다.
+    휴장 때문에 마지막 거래일이 ``end`` 보다 며칠 이를 수 있으므로
+    ``_TAIL_GAP_TOLERANCE_DAYS`` 만큼은 정상으로 본다.
+    """
     try:
         rows = cached_ohlcv(_SOURCE, KOSPI_CODE, start, end)
     except Exception:  # noqa: BLE001 — 캐시 조회 실패는 graceful
         rows = []
     if rows:
-        return [(r["ts"], float(r["close"])) for r in rows if r.get("close")]
+        cached = [(r["ts"], float(r["close"])) for r in rows if r.get("close")]
+        if cached and (end - cached[-1][0]).days <= _TAIL_GAP_TOLERANCE_DAYS:
+            return cached
+        # 꼬리가 비었다 — 모자란 구간만 받아 채운 뒤 다시 캐시에서 읽는다.
+        tail_start = cached[-1][0] if cached else start
+        LOG.info(
+            "benchmark: KOSPI 캐시가 %s 에서 멈춤 (요청 end=%s) — 꼬리 보충 시도",
+            tail_start, end,
+        )
+        if _fetch_and_cache(tail_start, end):
+            try:
+                rows = cached_ohlcv(_SOURCE, KOSPI_CODE, start, end)
+                refreshed = [
+                    (r["ts"], float(r["close"])) for r in rows if r.get("close")
+                ]
+                if refreshed:
+                    return refreshed
+            except Exception:
+                LOG.info("benchmark: 보충 후 캐시 재조회 실패 — 기존 캐시로 진행")
+        return cached  # 보충 실패 — 있는 데까지. compute 가 그 사실을 밝힌다.
 
     # 캐시 미스 → pykrx 인덱스 폴백 후 캐시 적재.
+    return _fetch_and_cache(start, end)
+
+
+def _fetch_and_cache(start: date, end: date) -> list[tuple[date, float]]:
+    """pykrx 지수 OHLCV 를 받아 캐시에 적재하고 종가 목록을 돌려준다. 실패 시 []."""
     try:
         from pykrx import stock  # lazy import (heavy)
 
@@ -123,6 +160,10 @@ class Benchmark:
         # invested_share_pct = 구간 일평균 주식평가액/총자산 (0.0 = 미측정)
         self.invested_share_pct: float = 0.0
         self.invested_days: int = 0
+        # 지수 데이터가 실제로 덮은 구간. 전략 구간(start~end)보다 짧으면
+        # 두 수익률은 서로 다른 기간을 재고 있다.
+        self.kospi_start: date | None = None
+        self.kospi_end: date | None = None
         self.n_roundtrips: int = 0
         self.total_cost_basis: float = 0.0
         self.total_fees: float = 0.0
@@ -152,6 +193,7 @@ def compute(
         return b  # available=False
 
     closes = sorted(closes, key=lambda t: t[0])
+    b.kospi_start, b.kospi_end = closes[0][0], closes[-1][0]
     b.kospi_start_close = closes[0][1]
     b.kospi_end_close = closes[-1][1]
     if not b.kospi_start_close:
@@ -213,6 +255,17 @@ def compute(
         basis += (
             " 실측 수수료 0원(페이퍼 체결은 fee 미기록) — 이 알파는 비용 반영 전이다."
             " 비용보정 수익률은 analytics 의 *_adj 지표를 볼 것."
+        )
+
+    # 2026-09-12: 지수 구간이 전략 구간을 못 덮으면 두 수익률은 다른 기간을 잰다.
+    # 지수(1001)에는 갱신 잡이 없어 캐시가 2026-08-20 에서 멈춰 있었고, 그 결과
+    # 한 달 전략 수익률 vs 9일 지수 수익률을 알파라고 불렀다. 숫자는 그대로 내되
+    # 어긋난 사실을 화면이 말하게 한다 — 조용히 맞는 것처럼 보이는 게 최악이다.
+    if b.kospi_end is not None and (end - b.kospi_end).days > _TAIL_GAP_TOLERANCE_DAYS:
+        basis += (
+            f" 【경고】 지수 데이터가 {b.kospi_end} 까지뿐이라 KOSPI 쪽은"
+            f" {b.kospi_start}~{b.kospi_end} 구간만 잰 값이다 —"
+            f" 전략 구간({start}~{end})과 다르므로 이 알파는 같은 기간 비교가 아니다."
         )
 
     b.comparison_basis = basis
