@@ -49,6 +49,15 @@ def record_snapshot(client: Any | None = None, *, trading_day: date | None = Non
     day = trading_day or _today_kst()
     bal = balance(client)
 
+    # @MX:WARN: ``cash`` 컬럼은 ``cash_d2``(D+2 예수금)다 — 당일 현금이 아니다.
+    # @MX:REASON: 2026-09-12 실측 — ``total_assets - stock_eval - cash`` 가 매매가
+    #   많은 날 ±2,234,640원까지 벌어진다(9/10). 미결제 정산분이 total_assets 에는
+    #   들어가고 cash_d2 에는 아직 안 들어가기 때문이며 결함이 아니다. 다만
+    #   **``cash / total_assets`` 를 현금비중으로 쓰면 틀린다.** 현금비중이 필요하면
+    #   ``total_assets - stock_eval`` 를 쓰거나(현금+미결제), 잔고 %와 맞추려면
+    #   ``invest_basis``(cash + stock_eval, REQ-029-10) 를 분모로 쓸 것.
+    #   투자비중은 ``stock_eval / total_assets`` 라 이 함정과 무관하다
+    #   (edge/benchmark.py invested_share).
     row = {
         "trading_day": day,
         "total_assets": int(bal.get("total_assets", 0) or 0),

@@ -39,6 +39,8 @@ def test_투자비중이_기준문에_수치로_실린다():
     # 분모가 화면에 남는가 — 투자비중과 그 나머지(현금) 둘 다.
     assert "21.6%" in b.comparison_basis
     assert "78.4%" in b.comparison_basis
+    # 현금이 아니라 현금+미결제다 — cash 컬럼은 cash_d2(D+2 예수금)라 당일 현금과 다르다.
+    assert "현금·미결제" in b.comparison_basis
     assert "18일" in b.comparison_basis
 
 

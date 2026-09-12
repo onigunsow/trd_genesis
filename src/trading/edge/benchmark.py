@@ -196,8 +196,8 @@ def compute(
         basis += (
             f" 이 구간 일평균 투자비중은 {b.invested_share_pct:.1f}%"
             f"(스냅샷 {b.invested_days}일) — 나머지 {100.0 - b.invested_share_pct:.1f}%는"
-            " 현금이라 KOSPI 쪽 분모에만 들어간다. 비중이 낮을수록 하락장에서 알파가"
-            " 부풀려진다(종목 선택이 아니라 미투자 효과)."
+            " 현금·미결제라 KOSPI 쪽 분모에만 들어간다. 비중이 낮을수록 하락장에서"
+            " 알파가 부풀려진다(종목 선택이 아니라 미투자 효과)."
         )
     else:
         basis += (
