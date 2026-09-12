@@ -1151,6 +1151,19 @@ def _persist_cli_results(
     """
     with connection() as conn, conn.cursor() as cur:
         for aid, result in aligned:
+            # 2026-09-12: 보존기간 삭제로 사라진 기사는 건너뛴다.
+            # crawler.cleanup_old_articles(7d) 가 크롤마다 news_articles 를 지우는데,
+            # export -> 호스트 CLI 분석 -> import 사이에 경계를 넘긴 기사가 나온다.
+            # 그러면 FK(news_analysis_article_id_fkey) 위반이 나고, 이 루프가 단일
+            # 트랜잭션이라 **청크 최대 20건이 통째로 롤백**된 뒤 예외가 scheduled_import
+            # 까지 올라가 임포트 잡 전체가 중단된다(9/10 실측 4회).
+            # article_map 은 바로 위에서 news_articles 를 읽어온 것이라 추가 쿼리 0.
+            #
+            # 주의: 이 가드는 크래시만 막고 기사 유실 자체는 못 막는다. 미분석 백로그가
+            # 8,172/10,937(75%)이고 가장 오래된 미분석이 보존 경계 7일에 붙어 있다 —
+            # 처리량이 유입의 1/4이라 큐가 늘 경계까지 밀리는 구조적 문제는 별건이다.
+            if aid not in article_map:
+                continue
             cur.execute(sql, (
                 aid,
                 result["summary_2line"],

@@ -112,40 +112,49 @@ def _get_kis_quote(ticker: str) -> dict[str, Any] | None:
         return None
 
 
-def _last_fire(ticker: str) -> tuple[float, float] | None:
-    """오늘(KST) 이 종목의 마지막 price_threshold 발사값 (절대변동률, 부호변동률).
+def _fired_max_by_direction(ticker: str) -> dict[bool, float] | None:
+    """오늘(KST) 이 종목의 방향별 최대 발사 변동률. {상승여부: 절대변동률 최대}.
 
     없거나 조회 실패면 None — 발사를 막지 않는다(감시자를 침묵시키지 않는다).
     ``volume_anomaly._already_fired_for_bar`` 와 같은 규약이다.
 
+    ``MAX`` 를 쓰는 이유: ``price_change_pct`` 는 단조증가가 아니다(실측 9/09:
+    10.94 -> 10.94 -> 10.72 -> 10.58 -> 11.52). 마지막 1건을 기준으로 삼으면 값이
+    내려간 발사 뒤에 문턱도 함께 낮아져 재발사 문이 다시 열린다.
+
+    방향별로 따로 센다. 같은 방향에서는 문턱이 단조 상승하고, 방향이 뒤집히면
+    그 방향의 최대치와 비교한다 — +9% 와 -9% 를 오가며 매번 새 신호로 통과하는
+    구멍을 막는다.
+
     구 행은 ``price_change_pct_signed`` 가 없다. 그 경우 절대값을 양수로 간주한다 —
     이행기에만 해당하고, 틀려도 방향 전환 1회를 더 허용할 뿐이다.
+
+    없거나 조회 실패면 None — 발사를 막지 않는다.
     """
     from trading.db.session import connection
 
+    # COALESCE: 구 행은 signed 키가 없으므로 절대값(양수)으로 본다.
     sql = """
-        SELECT (metadata->>'price_change_pct')::float          AS pc,
-               (metadata->>'price_change_pct_signed')::float   AS pcs
+        SELECT COALESCE((metadata->>'price_change_pct_signed')::float,
+                        (metadata->>'price_change_pct')::float) >= 0 AS up,
+               MAX((metadata->>'price_change_pct')::float)            AS pc
           FROM trigger_events
          WHERE ticker = %s
            AND trigger_type = 'price_threshold'
+           AND (metadata->>'price_change_pct') IS NOT NULL
            AND (fired_at AT TIME ZONE 'Asia/Seoul')::date
                = (now() AT TIME ZONE 'Asia/Seoul')::date
-         ORDER BY fired_at DESC
-         LIMIT 1
+         GROUP BY 1
     """
     try:
         with connection() as conn, conn.cursor() as cur:
             cur.execute(sql, (ticker,))
-            row = cur.fetchone()
+            rows = cur.fetchall() or []
     except Exception:
         LOG.warning("price_threshold: 직전 발사 조회 실패 — 발사 진행", exc_info=True)
         return None
-    if row is None or row.get("pc") is None:
-        return None
-    pc = float(row["pc"])
-    pcs = row.get("pcs")
-    return pc, (float(pcs) if pcs is not None else pc)
+    out = {bool(r["up"]): float(r["pc"]) for r in rows if r.get("pc") is not None}
+    return out or None
 
 
 def _fire_trigger_event(ticker: str, trigger_type: str, metadata: dict[str, Any]) -> None:
@@ -211,11 +220,10 @@ def poll_price_threshold(
         #
         # 직전 발사보다 threshold_pct 만큼 더 움직였을 때만 새 신호로 본다.
         # 방향이 뒤집힌 경우(+9% -> -9%)는 크기와 무관하게 새 신호다.
-        last = _last_fire(ticker)
-        if last is not None:
-            last_abs, last_signed = last
-            same_direction = (signed_change_pct >= 0) == (last_signed >= 0)
-            if same_direction and price_change_pct < last_abs + threshold_pct:
+        fired = _fired_max_by_direction(ticker)
+        if fired is not None:
+            prev_max = fired.get(signed_change_pct >= 0)
+            if prev_max is not None and price_change_pct < prev_max + threshold_pct:
                 metrics["level_suppressed"] += 1
                 continue
 

@@ -175,7 +175,7 @@ class TestEdgeTrigger:
                 price_threshold, "_get_kis_quote",
                 return_value={"price": 100000, "change_pct": change_pct},
             ),
-            patch.object(price_threshold, "_last_fire", return_value=last),
+            patch.object(price_threshold, "_fired_max_by_direction", return_value=last),
             patch.object(price_threshold, "_fire_trigger_event") as fire,
         ):
             return price_threshold.poll_price_threshold(), fire
@@ -189,28 +189,46 @@ class TestEdgeTrigger:
     def test_같은_방향에서_충분히_더_안_움직이면_억제된다(self):
         """9/09 실측 모양 — 8.99 발사 후 11.52 는 8.99+1.5 를 넘지만,
         임계가 8.95 였던 실전에서는 17.94 가 필요해 전부 억제됐을 값이다."""
-        m, fire = self._poll(10.0, (9.0, 9.0))   # 9.0 + 1.5 = 10.5 > 10.0
+        m, fire = self._poll(10.0, {True: 9.0})   # 9.0 + 1.5 = 10.5 > 10.0
         assert fire.call_count == 0
         assert m["level_suppressed"] == 1
 
     def test_값이_내려가도_억제된다(self):
         """실측에 14:25 10.94 -> 14:35 10.72 재발사가 있었다."""
-        m, fire = self._poll(10.72, (10.94, 10.94))
+        m, fire = self._poll(10.72, {True: 10.94})
         assert fire.call_count == 0
         assert m["level_suppressed"] == 1
 
     def test_임계만큼_더_움직이면_새_신호다(self):
-        m, fire = self._poll(10.6, (9.0, 9.0))   # 9.0 + 1.5 = 10.5 <= 10.6
+        m, fire = self._poll(10.6, {True: 9.0})   # 9.0 + 1.5 = 10.5 <= 10.6
         assert fire.call_count == 1
         assert m["level_suppressed"] == 0
 
     def test_방향이_뒤집히면_크기와_무관하게_새_신호다(self):
         """+9% 에서 -9% 로 뒤집힌 건 같은 신호가 아니다."""
-        m, fire = self._poll(-9.0, (9.0, 9.0))
+        m, fire = self._poll(-9.0, {True: 9.0})
         assert fire.call_count == 1
         assert m["level_suppressed"] == 0
 
     def test_조회_실패는_감시자를_침묵시키지_않는다(self):
-        """_last_fire 는 실패 시 None 을 준다 — 발사를 막지 않는 규약."""
+        """_fired_max_by_direction 은 실패 시 None 을 준다 — 발사를 막지 않는 규약."""
         _, fire = self._poll(9.0, None)
         assert fire.call_count == 1
+
+    def test_값이_내려간_발사_뒤에도_문턱이_안_낮아진다(self):
+        """9/09 실측: 10.94 -> 10.72 -> 10.58 -> 11.52. 마지막 1건을 기준으로 쓰면
+        10.58 에서 문턱이 낮아져 11.52 가 다시 통과한다. MAX 를 써야 막힌다."""
+        m, fire = self._poll(11.52, {True: 10.94})   # 10.94 + 1.5 = 12.44 > 11.52
+        assert fire.call_count == 0
+        assert m["level_suppressed"] == 1
+
+    def test_방향별로_따로_센다(self):
+        """상승 최대 9.0 이 있어도 하락 첫 발사는 막지 않는다."""
+        _, fire = self._poll(-9.0, {True: 9.0})
+        assert fire.call_count == 1
+
+    def test_같은_방향_최대치와_비교한다(self):
+        """하락 최대 -9.0 이 있으면 -10.0 은 -9.0 -1.5 를 넘어야 한다."""
+        m, fire = self._poll(-10.0, {False: 9.0, True: 3.0})
+        assert fire.call_count == 0
+        assert m["level_suppressed"] == 1
