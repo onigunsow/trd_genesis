@@ -28,6 +28,25 @@ MODEL = "claude-sonnet-4-6"
 PERSONA = "decision"
 
 
+def _held_qty_map() -> dict[str, int] | None:
+    """결정 기록 시점의 ticker -> 보유수량. 조회 실패 시 None.
+
+    2026-09-12: 진입 품질 반사실이 이 값의 부재로 불가능했다. 매수 결정의 91.4%가
+    분할 추가매수인데 신규 진입과 가를 방법이 없었다 — position_eval_snapshot 은
+    2026-06-20 부터뿐이고 체결기록 재구성은 5월 오류율 66.9% 였다.
+
+    ``positions`` 는 KIS reconcile 단일 진실원이다(SPEC-042). 사이클당 1회 조회.
+    None 과 0 을 구분한다 — "모름" 을 "미보유" 로 기록하면 같은 함정이 반복된다.
+    """
+    try:
+        with connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT ticker, qty FROM positions WHERE qty > 0")
+            return {r["ticker"]: int(r["qty"]) for r in cur.fetchall()}
+    except Exception:
+        LOG.warning("held_qty 조회 실패 — 결정에 보유수량 없이 기록", exc_info=True)
+        return None
+
+
 def _stamp_regime_at_decision(persona_run_id: int | None, regime: str) -> None:
     """SPEC-TRADING-035 REQ-035-2(f): snapshot the regime onto persona_runs."""
     if persona_run_id is None:
@@ -210,12 +229,13 @@ def run(input_data: dict[str, Any],
     # Persist each signal as a row in persona_decisions.
     sig_ids: list[int] = []
     if res.response_json and isinstance(res.response_json.get("signals"), list):
+        held = _held_qty_map()
         for sig in res.response_json["signals"]:
             sql = """
                 INSERT INTO persona_decisions
                     (persona_run_id, macro_run_id, micro_run_id, cycle_kind,
-                     ticker, side, qty, rationale, confidence, raw)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                     ticker, side, qty, rationale, confidence, raw, held_qty)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
                 RETURNING id
             """
             with connection() as conn, conn.cursor() as cur:
@@ -230,6 +250,7 @@ def run(input_data: dict[str, Any],
                     sig.get("rationale", ""),
                     float(sig.get("confidence")) if sig.get("confidence") is not None else None,
                     json.dumps(sig),
+                    None if held is None else held.get(sig.get("ticker", ""), 0),
                 ))
                 row = cur.fetchone()
                 sig_ids.append(row["id"])
