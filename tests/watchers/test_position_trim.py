@@ -270,19 +270,26 @@ class TestConcentrationTrimIntegration:
         return metrics, sell, audit
 
     def test_concentrated_ticker_trimmed(self):
-        """AC-2 (reproduction): a ticker over the 25% cap is auto-trimmed by a
+        """AC-2 (reproduction): a ticker over the cap is auto-trimmed by a
         direct kis_sell of the excess qty, with a trim audit event.
 
         086790 at 40% of a 1,000,000 book (normal-range pnl, RSI<85) is left
         untouched by the extreme stop/take rules, but trimmed by the cap.
+
+        기대 수량은 운영 기본 캡에서 파생한다 — 2026-09-12 에 캡이 25% -> 16% 로
+        바뀌었을 때 이 테스트가 하드코딩된 15 로 깨졌다. 캡 값이 아니라 "초과분을
+        캡까지 덜어낸다" 는 동작을 고정한다.
         """
+        from trading.config import RISK_CONCENTRATION_CAP_PCT
+
         holdings = [_holding("086790", qty=40, pnl_pct=2.0, eval_amount=400_000)]
         metrics, sell, audit = self._run(holdings, 1_000_000)
 
+        expected = 40 - int(1_000_000 * RISK_CONCENTRATION_CAP_PCT / 10_000)
         assert sell.call_count == 1
         _, kwargs = sell.call_args
         assert kwargs["ticker"] == "086790"
-        assert kwargs["qty"] == 15  # trim back to 25%
+        assert kwargs["qty"] == expected  # 캡까지 덜어낸다
         assert metrics["trim_exits"] == 1
         kinds = [a.kwargs["details"].get("kind") for a in audit.call_args_list]
         assert "trim" in kinds
@@ -294,15 +301,32 @@ class TestConcentrationTrimIntegration:
         assert metrics["trim_exits"] == 0
 
     def test_late_cycle_tightens_trigger(self):
-        """REQ-040-2c: a 22% position is skipped normally but trimmed in
-        late-cycle defence (tighter cap)."""
-        holdings = [_holding("086790", qty=22, pnl_pct=2.0, eval_amount=220_000)]
+        """REQ-040-2c: 두 캡 사이의 비중은 평시엔 통과, 후기사이클엔 트림된다.
 
-        _normal, sell_n, _ = self._run(holdings, 1_000_000, late_cycle=False)
-        _late, sell_l, _ = self._run(holdings, 1_000_000, late_cycle=True)
+        비중을 하드코딩하지 않고 두 캡의 중간값에서 만든다 — 2026-09-12 에 캡이
+        25/20 -> 16/15 로 바뀌자 하드코딩된 22% 가 양쪽 모두 트림되어 이 테스트가
+        깨졌다. 고정할 동작은 "후기사이클 캡이 더 좁다" 이지 특정 숫자가 아니다.
+        """
+        from trading.config import (
+            RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT as LATE,
+        )
+        from trading.config import (
+            RISK_CONCENTRATION_CAP_PCT as CAP,
+        )
 
-        assert sell_n.call_count == 0
-        assert sell_l.call_count == 1
+        total = 1_000_000
+        price = 1_000
+        mid_pct = (CAP + LATE) / 2.0
+        qty = int(total * mid_pct / price)
+        holdings = [
+            _holding("086790", qty=qty, pnl_pct=2.0, eval_amount=qty * price)
+        ]
+
+        _normal, sell_n, _ = self._run(holdings, total, late_cycle=False)
+        _late, sell_l, _ = self._run(holdings, total, late_cycle=True)
+
+        assert sell_n.call_count == 0, f"평시 캡 {CAP:.0%} 에서 트림되면 안 된다"
+        assert sell_l.call_count == 1, f"후기사이클 캡 {LATE:.0%} 에서는 트림돼야 한다"
 
 
 class TestConcentrationTrimIdempotentSameStore:
@@ -639,3 +663,51 @@ class TestTrimSingleFireBothEligible:
         # exactly one trim (concentration wins, evaluated first), not two sells
         assert sell.call_count == 1
         assert metrics["trim_exits"] + metrics["rotate_exits"] == 1
+
+
+class TestRiskLimitCoherence:
+    """세 한도는 하나의 체계여야 한다 (2026-09-12).
+
+    한 종목이 손절당했을 때 포트폴리오 타격 = 비중 x 손절깊이. 이 값이 일일
+    최대손실을 넘으면 손절 한 번에 그날 매매가 멈춘다 — 손실은 그대로 안고 남은
+    하루의 기회를 포기한다. 25% x -15% = -3.75% 가 정확히 그 상태였다.
+    """
+
+    def test_집중도_캡이_일일한도_불변식을_지킨다(self):
+        from trading.config import RISK_CONCENTRATION_CAP_PCT, RISK_DAILY_MAX_LOSS
+        from trading.strategy.volatility.thresholds import STOP_FLOOR_PCT
+
+        worst = RISK_CONCENTRATION_CAP_PCT * (STOP_FLOOR_PCT / 100.0)
+        assert worst >= RISK_DAILY_MAX_LOSS, (
+            f"비중 {RISK_CONCENTRATION_CAP_PCT:.0%} x 손절 {STOP_FLOOR_PCT}% = "
+            f"{worst:.2%} 가 일일한도 {RISK_DAILY_MAX_LOSS:.2%} 를 넘는다 — "
+            "손절 한 번에 당일 매매가 멈춘다"
+        )
+
+    def test_후기사이클_캡도_같은_불변식을_지킨다(self):
+        from trading.config import (
+            RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT,
+            RISK_DAILY_MAX_LOSS,
+        )
+        from trading.strategy.volatility.thresholds import STOP_FLOOR_PCT
+
+        worst = RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT * (STOP_FLOOR_PCT / 100.0)
+        assert worst >= RISK_DAILY_MAX_LOSS
+
+    def test_후기사이클_캡이_평시보다_느슨하지_않다(self):
+        from trading.config import (
+            RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT,
+            RISK_CONCENTRATION_CAP_PCT,
+        )
+
+        assert RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT <= RISK_CONCENTRATION_CAP_PCT
+
+    def test_트림_캡이_진입_한도보다_좁지_않다(self):
+        """진입 한도 15% 로 산 포지션이 즉시 트림 대상이 되면 안 된다 —
+        드리프트 여유를 남긴다."""
+        from trading.config import (
+            RISK_CONCENTRATION_CAP_PCT,
+            RISK_PER_TICKER_MAX_POSITION,
+        )
+
+        assert RISK_CONCENTRATION_CAP_PCT >= RISK_PER_TICKER_MAX_POSITION

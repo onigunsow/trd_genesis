@@ -95,12 +95,27 @@ REENTRY_COOLDOWN_DAYS: Final[int] = int(os.getenv("REENTRY_COOLDOWN_DAYS", "10")
 # 15% since 2026-08-15): the buy cap stops a *new* over-weight entry while this cap *unwinds* an
 # already-accumulated over-weight. Under late-cycle defence the cap tightens to
 # RISK_CONCENTRATION_CAP_LATE_CYCLE so trims align with the defence (synergy).
+#
+# 2026-09-12: 25% -> 16%, late-cycle 20% -> 15%.
+# 세 한도는 하나의 체계여야 한다. 손절 바닥선이 -15%(STOP_FLOOR_PCT)이고 일일
+# 최대손실이 -2.5%(RISK_DAILY_MAX_LOSS)이므로, 한 종목이 손절당했을 때 포트폴리오가
+# 받는 타격은 비중 x 15% 다:
+#     비중 15% x -15% = -2.25%  -> 일일한도 이내
+#     비중 25% x -15% = -3.75%  -> 일일한도 초과 → 그날 매매가 멈춘다
+# 25% 는 한 번의 손절이 당일 거래를 통째로 중단시키는 값이었다. 손실은 그대로 안고
+# 남은 하루의 기회를 포기하므로 수익 극대화와 반대다. 안전 상한은
+# 2.5% / 15% = 16.67% 이고 여기서 16% 를 쓴다 — 진입 한도 15% 위로 드리프트
+# 여유를 1%p 남기면서 일일한도 불변식을 지키는 값이다.
+#
+# 실측(2026-09-12): 이 캡은 도입 이래 한 번도 구속한 적이 없다(trim 발동 0건,
+# 사상 최대 비중 15.17% / 현재 최대 13.19%). 즉 이 변경은 현재 포지션을 건드리지
+# 않고 불변식만 복원한다.
 RISK_CONCENTRATION_CAP_PCT: Final[float] = float(
-    os.getenv("RISK_CONCENTRATION_CAP_PCT", "0.25")
-)  # 25%
+    os.getenv("RISK_CONCENTRATION_CAP_PCT", "0.16")
+)  # 16% — 비중 x 15% 손절이 일일한도 -2.5% 를 넘지 않는 최대치
 RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT: Final[float] = float(
-    os.getenv("RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT", "0.20")
-)  # 20% when late-cycle defence is active
+    os.getenv("RISK_CONCENTRATION_CAP_LATE_CYCLE_PCT", "0.15")
+)  # 15% when late-cycle defence is active — 진입 한도와 동일
 
 # SPEC-TRADING-040 M3 (REQ-040-3): daily_count sell-budget reserve K. Buys are
 # capped at RISK_DAILY_ORDER_COUNT_MAX - K so K order slots are always reserved
