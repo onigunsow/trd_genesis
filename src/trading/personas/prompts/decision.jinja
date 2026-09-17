@@ -222,6 +222,33 @@ RSI·MA20 이격·PER 같은 지표는 **일봉 기준이라 장중에 값이 �
 - 보유: {{ assets.holdings | default('[]') }}
 - 일일 매매 횟수(누적, 매수·매도 합산): {{ daily_order_count if daily_order_count is defined and daily_order_count is not none else '모름(조회 실패)' }} / {{ risk_daily_order_count_max | default(10) }}건
 - 일일 실현손익(현재): {{ (daily_pnl_pct ~ '%') if daily_pnl_pct is defined and daily_pnl_pct is not none else '모름(조회 실패)' }}
+{% if sector_exposure is defined and sector_exposure %}
+
+[섹터 비중 — 코드 차단선 {{ sector_exposure.cap_pct }}%]
+신규 매수로 한 섹터 비중(보유 평가액 기준)이 {{ sector_exposure.cap_pct }}% 를 넘으면 **코드가 그 매수를 차단한다.**
+아래 "매수 여력"을 넘는 매수는 제안해도 주문이 나가지 않는다 — 제안하기 전에 여기서 걸러라.
+{% if sector_exposure.sectors %}
+| 섹터 | 현재 비중 | 매수 여력 | 보유 종목 |
+|---|---|---|---|
+{% for s in sector_exposure.sectors %}| {{ s.sector }} | {{ s.pct }}% | {% if s.room_pct <= 0 %}**없음({{ s.room_pct }}%p) — 신규 매수 차단**{% else %}{{ s.room_pct }}%p (약 {{ '{:,}'.format(s.room_krw) }}원){% endif %} | {{ s.tickers | join(', ') }} |
+{% endfor %}
+{% else %}
+- (섹터가 분류된 보유 종목 없음 — 모든 섹터 여력 {{ sector_exposure.cap_pct }}%p)
+{% endif %}
+{% if sector_exposure.candidates %}
+오늘 매수 후보가 쓰는 섹터 여력:
+{% for c in sector_exposure.candidates %}
+{%- if c.sector is none %}
+- {{ c.ticker }}: 섹터 미분류 — 코드가 섹터 한도를 적용하지 않는다
+{%- elif c.room_pct <= 0 %}
+- {{ c.ticker }}: {{ c.sector }} — **여력 없음, 매수 제안 금지(코드 차단)**
+{%- else %}
+- {{ c.ticker }}: {{ c.sector }} — 이 종목 매수금액은 약 {{ '{:,}'.format(c.room_krw) }}원 이하여야 통과
+{%- endif %}
+{% endfor %}
+같은 섹터 후보를 여러 개 매수하면 여력을 합산해서 쓴다 — 두 번째 매수부터 차단될 수 있다.
+{% endif %}
+{% endif %}
 
 [위험 한도 (코드 룰 - 절대 위반 금지)]
 - 일일 최대 손실: -{{ risk_daily_max_loss_pct | default(2.5) }}%

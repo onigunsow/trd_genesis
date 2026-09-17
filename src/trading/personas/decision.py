@@ -130,6 +130,78 @@ def _candidate_flows(input_data: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _sector_exposure(input_data: dict[str, Any], cap_pct: float) -> dict[str, Any] | None:
+    """현재 섹터별 비중과 매수 여력 — 코드 섹터 cap 가드와 같은 계산.
+
+    2026-09-17: 페르소나는 섹터 한도(35%)는 알았지만 현재 섹터 비중을 몰랐다.
+    9/14 금융 매수 3건(합산 비중 38.7%·43.5%·41.4%)을 제안했고 전부
+    portfolio_gate 의 섹터 cap 가드에 차단됐다 — 판단을 쓴 사이클이 통째로 헛돌았다.
+
+    ``enforce_sector_cap`` 과 같은 규칙: 보유 평가액을 섹터별 합산(미분류 제외),
+    총자산 대비 %, cap 은 호출자가 넘긴 체제값(= adjust_for_regime().sector_cap_pct).
+    후보 종목에 섹터를 붙여 "이 매수가 어느 섹터 여력을 쓰는지" 보이게 한다.
+    섹터 미상 후보는 코드가 차단하지 않는다(fail-open)는 사실도 그대로 알린다.
+
+    조회 실패·총자산 0 은 None — 표가 빠질 뿐 사이클은 계속된다.
+    """
+    from trading.personas.sector_cap_guard import get_sectors_from_db
+
+    assets = input_data.get("assets") or {}
+    total = int(assets.get("total_assets") or 0)
+    if total <= 0:
+        return None
+    holdings = [h for h in (assets.get("holdings") or []) if (h or {}).get("ticker")]
+    candidates = input_data.get("micro_candidates") or {}
+    cand_tickers = [
+        c["ticker"] for c in (candidates.get("buy") or []) if (c or {}).get("ticker")
+    ]
+    try:
+        sector_of = get_sectors_from_db(
+            list({h["ticker"] for h in holdings} | set(cand_tickers))
+        )
+    except Exception:
+        LOG.warning("섹터 조회 실패 — 섹터 비중 표 생략", exc_info=True)
+        return None
+
+    amount: dict[str, int] = {}
+    members: dict[str, list[str]] = {}
+    for h in holdings:
+        sector = (h.get("sector") or sector_of.get(h["ticker"]) or "").strip()
+        if not sector or sector == "미분류":
+            continue
+        amount[sector] = amount.get(sector, 0) + int(h.get("eval_amount") or 0)
+        members.setdefault(sector, []).append(h["ticker"])
+
+    def _room(amt: int) -> tuple[float, int]:
+        # 원화 여력은 반올림 전 금액으로 — 비중을 먼저 반올림하면 총자산의 0.05%
+        # (약 5천원)만큼 가드와 어긋난다(실측: 여력+2천원 매수가 가드를 통과).
+        return (
+            round(cap_pct - amt / total * 100, 1),
+            max(0, int(total * cap_pct / 100 - amt)),
+        )
+
+    sectors = []
+    for sector, amt in sorted(amount.items(), key=lambda kv: -kv[1]):
+        room_pct, room_krw = _room(amt)
+        sectors.append({
+            "sector": sector, "pct": round(amt / total * 100, 1), "room_pct": room_pct,
+            "room_krw": room_krw, "tickers": members[sector],
+        })
+
+    cands = []
+    for t in dict.fromkeys(cand_tickers):
+        sector = (sector_of.get(t) or "").strip()
+        if not sector or sector == "미분류":
+            cands.append({"ticker": t, "sector": None, "room_pct": None, "room_krw": None})
+            continue
+        room_pct, room_krw = _room(amount.get(sector, 0))
+        cands.append({
+            "ticker": t, "sector": sector, "room_pct": room_pct, "room_krw": room_krw,
+        })
+
+    return {"cap_pct": cap_pct, "sectors": sectors, "candidates": cands}
+
+
 def run(input_data: dict[str, Any],
         cycle_kind: str = "pre_market",
         macro_run_id: int | None = None,
@@ -167,6 +239,7 @@ def run(input_data: dict[str, Any],
         "today": today,
         "cycle_kind": cycle_kind,
         "candidate_flows": _candidate_flows(input_data),
+        "sector_exposure": _sector_exposure(input_data, regime_ctx["regime_sector_cap_pct"]),
     })
     user_msg = (
         "위 입력을 바탕으로 박세훈 페르소나의 매매 시그널을 JSON으로 제출하세요. "
