@@ -88,8 +88,8 @@ HOLD는 "매매하면 높은 확률로 자본 손실이 발생할 명확한 근�
 - 총자산: {{ assets.total_assets | default('?') }}원
 - 현금 비중: {{ cash_pct | default(100) }}%
 - 보유: {{ assets.holdings | default('[]') }}
-- 오늘 매매 횟수: {{ daily_order_count | default(0) }} / {{ risk_daily_order_count_max | default(10) }}
-- 오늘 손익: {{ daily_pnl_pct | default(0) }}%
+- 오늘 매매 횟수(매수·매도 합산): {{ daily_order_count if daily_order_count is defined and daily_order_count is not none else '모름(조회 실패)' }} / {{ risk_daily_order_count_max | default(10) }}
+- 오늘 실현손익: {{ (daily_pnl_pct ~ '%') if daily_pnl_pct is defined and daily_pnl_pct is not none else '모름(조회 실패)' }}
 
 [위험 한도 (절대 기준)]
 - 일일 최대 손실: -{{ risk_daily_max_loss_pct | default(2.5) }}%

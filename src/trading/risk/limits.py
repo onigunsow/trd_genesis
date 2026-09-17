@@ -167,19 +167,35 @@ def tickers_bought_today() -> dict[str, int]:
     프롬프트는 "같은 날 같은 종목 매수는 1회만 통과한다"고 룰을 말하면서 정작 어느
     종목을 이미 샀는지는 알려주지 않았다 — 재진입 쿨다운과 같은 결함이다.
     """
+    return _tickers_ordered_today("buy")
+
+
+def tickers_sold_today() -> dict[str, int]:
+    """오늘 매도 주문이 나간 종목 → 건수. 없으면 빈 dict.
+
+    매수 쪽(tickers_bought_today)의 거울. 매도는 어떤 코드 게이트로도 막지 않으므로
+    (출구는 항상 허용) 이건 순수한 사전 안내다.
+
+    2026-09-17 실측: 9/15 316140 을 같은 일봉 지표(RSI 73.7)로 15분마다 6번 매도,
+    일일 주문 10건 중 6건을 소진해 오후 매수 2건이 daily_count 로 거부됐다.
+    """
+    return _tickers_ordered_today("sell")
+
+
+def _tickers_ordered_today(side: str) -> dict[str, int]:
     sql = """
         SELECT ticker, COUNT(*) AS n FROM orders
          WHERE ts::date = CURRENT_DATE
-           AND side = 'buy'
+           AND side = %s
            AND status IN ('submitted','filled','partial')
          GROUP BY ticker
     """
     try:
         with connection() as conn, conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, (side,))
             rows = cur.fetchall()
     except Exception:  # 조회 실패는 안내 누락일 뿐 — 한도 검사가 여전히 막는다
-        LOG.warning("tickers_bought_today 조회 실패 — 프롬프트 안내 생략", exc_info=True)
+        LOG.warning("당일 %s 종목 조회 실패 — 프롬프트 안내 생략", side, exc_info=True)
         return {}
     out: dict[str, int] = {}
     for r in rows:

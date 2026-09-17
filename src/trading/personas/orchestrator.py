@@ -176,6 +176,52 @@ def _bought_today_map() -> dict[str, int]:
         return {}
 
 
+def _sold_today_map() -> dict[str, int]:
+    """오늘 매도 주문이 나간 종목 → 건수. 조회 실패 시 빈 dict.
+
+    2026-09-17: 매수 쪽(_bought_today_map, 8/24)만 있고 매도 쪽이 없었다.
+    9/15 316140 을 RSI 73.7·MA20 +9.45% — 장중에 변하지 않는 일봉 지표 — 하나로
+    15분마다 새로 "과열이니 일부 익절"을 판단해 6번 연속 매도했다(29주 전량).
+    각 사이클은 15분 전에 같은 근거로 이미 팔았다는 사실을 몰랐다.
+    """
+    from trading.risk.limits import tickers_sold_today
+
+    try:
+        return tickers_sold_today()
+    except Exception:
+        LOG.warning("당일 매도 이력 조회 실패 — 프롬프트 안내 생략", exc_info=True)
+        return {}
+
+
+def _daily_counters(total_assets: int) -> dict[str, Any]:
+    """페르소나 입력용 당일 주문수·실현손익(%) — 코드 한도 검사와 같은 원천.
+
+    2026-09-17: 결정·리스크 입력 7곳이 ``daily_order_count: 0``,
+    ``daily_pnl_pct: 0.0`` 리터럴이었다(주석 "M5: actual count" 인 채 방치).
+    9/15 11:47 리스크가 "실제 오늘 매매 횟수는 0/10" 이라며 결정을 HOLD 했는데
+    그 시각 실제 주문은 이미 10건이었고, 이후 매수 2건은 check_pre_order 의
+    daily_count 로 거부됐다 — 페르소나만 한도 소진을 몰랐다.
+
+    ``check_pre_order`` 가 쓰는 ``daily_order_count_today``·``daily_pnl_pct`` 를
+    그대로 써서 프롬프트 숫자와 코드 판정이 어긋나지 않게 한다. 손익은 프롬프트가
+    ``{{ daily_pnl_pct }}%`` 로 렌더하므로 비율을 퍼센트로 바꾼다.
+
+    조회 실패는 None — 0 으로 채우면 "모름"을 "주문 없음·손익 0"으로 속인다.
+    """
+    from trading.risk.limits import daily_order_count_today, daily_pnl_pct
+
+    out: dict[str, Any] = {"daily_order_count": None, "daily_pnl_pct": None}
+    try:
+        out["daily_order_count"] = daily_order_count_today()
+    except Exception:
+        LOG.warning("당일 주문수 조회 실패 — 페르소나에 '모름'으로 전달", exc_info=True)
+    try:
+        out["daily_pnl_pct"] = round(daily_pnl_pct(total_assets) * 100, 2)
+    except Exception:
+        LOG.warning("당일 실현손익 조회 실패 — 페르소나에 '모름'으로 전달", exc_info=True)
+    return out
+
+
 def _holding_thresholds(holdings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """보유 종목별 동적 손절/익절 임계.
 
@@ -876,8 +922,7 @@ def _run_reflection_loop(
             "decision_signals": [revised_sig],
             "assets": assets,
             "cash_pct": cash_pct,
-            "daily_order_count": 0,
-            "daily_pnl_pct": 0.0,
+            **_daily_counters(assets["total_assets"]),
             "macro_summary": macro_summary or "(없음)",
             "micro_summary": micro_summary,
         }
@@ -1281,8 +1326,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         "macro_guide": macro_summary or "(없음)",
         "micro_candidates": (micro_res.response_json or {}).get("candidates", {}),
         "assets": assets,
-        "daily_order_count": 0,    # M5: actual count
-        "daily_pnl_pct": 0.0,
+        **_daily_counters(assets["total_assets"]),
         "event_trigger": None,     # only set on event-driven cycles
         # SPEC-012: CAR context and dynamic thresholds flag
         "car_context": None,
@@ -1295,6 +1339,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
         # 2026-08-24: 오늘 이미 매수한 종목을 알린다. 없으면 단기과열 1일 1회 룰을
         # 페르소나가 적용할 수 없어 재제안 → LIMIT_BREACH 가 반복된다.
         "bought_today": _bought_today_map(),
+        "sold_today": _sold_today_map(),
         "holding_thresholds": _holding_thresholds(assets["holdings"]),
     }
     # Inject HOLD feedback from today
@@ -1402,8 +1447,7 @@ def run_pre_market_cycle(today: str | None = None) -> CycleResult:
             "decision_signals": [sig],
             "assets": assets,
             "cash_pct": cash_pct,
-            "daily_order_count": 0,
-            "daily_pnl_pct": 0.0,
+            **_daily_counters(assets["total_assets"]),
             "macro_summary": macro_summary or "(없음)",
             "micro_summary": micro_summary_text,
         }
@@ -1695,8 +1739,7 @@ def run_event_trigger_cycle(
         "macro_guide": macro_summary or "(없음)",
         "micro_candidates": {},
         "assets": assets,
-        "daily_order_count": 0,
-        "daily_pnl_pct": 0.0,
+        **_daily_counters(assets["total_assets"]),
         "event_trigger": trigger_text,
         "car_context": car_context,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
@@ -1706,6 +1749,7 @@ def run_event_trigger_cycle(
         # 나머지 두 사이클과 같은 안내를 받아야 같은 판단을 한다.
         "cooldown_tickers": _reentry_cooldown_map(),
         "bought_today": _bought_today_map(),
+        "sold_today": _sold_today_map(),
         "holding_thresholds": _holding_thresholds(assets["holdings"]),
     }
 
@@ -1772,8 +1816,7 @@ def run_event_trigger_cycle(
             "decision_signals": [sig],
             "assets": assets,
             "cash_pct": cash_pct,
-            "daily_order_count": 0,
-            "daily_pnl_pct": 0.0,
+            **_daily_counters(assets["total_assets"]),
             "macro_summary": macro_summary or "(없음)",
             "micro_summary": "(event trigger)",
         }
@@ -1868,8 +1911,7 @@ def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
         "macro_guide": macro_summary or "(없음)",
         "micro_candidates": micro_candidates,
         "assets": assets,
-        "daily_order_count": 0,
-        "daily_pnl_pct": 0.0,
+        **_daily_counters(assets["total_assets"]),
         "event_trigger": None,
         "car_context": None,
         "dynamic_thresholds_enabled": state.get("dynamic_thresholds_enabled", False),
@@ -1880,6 +1922,7 @@ def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
         # 2026-08-24: 오늘 이미 매수한 종목을 알린다. 없으면 단기과열 1일 1회 룰을
         # 페르소나가 적용할 수 없어 재제안 → LIMIT_BREACH 가 반복된다.
         "bought_today": _bought_today_map(),
+        "sold_today": _sold_today_map(),
         "holding_thresholds": _holding_thresholds(assets["holdings"]),
     }
     candidate_tickers = [
@@ -1981,8 +2024,7 @@ def _run_intraday_cycle_locked(today: str | None = None) -> CycleResult:
             "decision_signals": [sig],
             "assets": assets,
             "cash_pct": cash_pct,
-            "daily_order_count": 0,
-            "daily_pnl_pct": 0.0,
+            **_daily_counters(assets["total_assets"]),
             "macro_summary": macro_summary or "(없음)",
             "micro_summary": micro_summary_text,
         }
